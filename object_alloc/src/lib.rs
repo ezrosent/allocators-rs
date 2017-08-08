@@ -1,10 +1,10 @@
 #![no_std]
 #![feature(alloc, allocator_api)]
-// so that we can use core::intrinsics::type_name
 #![feature(core_intrinsics)]
 
 extern crate alloc;
-use alloc::allocator::{Alloc, AllocErr, Layout};
+use alloc::allocator::Layout;
+use core::intrinsics::abort;
 
 /// An error indicating that no memory is available.
 ///
@@ -71,10 +71,10 @@ pub unsafe trait ObjectAlloc<T> {
     /// `oom` aborts the thread or process, optionally performing cleanup or logging diagnostic
     /// information before panicking or aborting.
     ///
-    /// `oom` is meant to be used by clients unable to cope with an unsatisfied allocation request,
-    /// and wish to abandon computation rather than attempt to recover locally. The allocator
-    /// likely has more insight into why the request failed, and thus can likely print more
-    /// informative diagnostic information than the client could.
+    /// `oom` is meant to be used by clients which are unable to cope with an unsatisfied
+    /// allocation request, and wish to abandon computation rather than attempt to recover locally.
+    /// The allocator likely has more insight into why the request failed, and thus can likely
+    /// print more informative diagnostic information than the client could.
     ///
     /// Implementations of the `oom` method are discouraged from infinitely regressing in nested
     /// calls to `oom`. In practice this means implementors should eschew allocating, especially
@@ -84,21 +84,53 @@ pub unsafe trait ObjectAlloc<T> {
     /// memory exhaustion; instead they should return an error and let the client decide whether to
     /// invoke this `oom` method in response.
     fn oom(&mut self) -> ! {
-        panic!()
+        unsafe { abort() }
     }
 }
 
+// TODO: What to do about object initialization for UntypedObjectAlloc?
+
+/// An allocator for objects whose type or size is not known at compile time.
+///
+/// `UntypedObjectAlloc` is like `ObjectAlloc`, except that the size that it allocates may be
+/// configured at runtime.
 pub unsafe trait UntypedObjectAlloc {
+    /// Obtain the `Layout` of allocated objects.
+    ///
+    /// `layout` returns a `Layout` object describing objects allocated by this
+    /// `UntypedObjectAlloc`. All objects obtained via `alloc` are guaranteed to satisfy this
+    /// `Layout`.
     fn layout(&self) -> Layout;
     unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted>;
     unsafe fn dealloc(&mut self, x: *mut u8);
+
+    /// Allocator-specific method for signalling an out-of-memory condition.
+    ///
+    /// `oom` aborts the thread or process, optionally performing cleanup or logging diagnostic
+    /// information before panicking or aborting.
+    ///
+    /// `oom` is meant to be used by clients which are unable to cope with an unsatisfied
+    /// allocation request, and wish to abandon computation rather than attempt to recover locally.
+    /// The allocator likely has more insight into why the request failed, and thus can likely
+    /// print more informative diagnostic information than the client could.
+    ///
+    /// Implementations of the `oom` method are discouraged from infinitely regressing in nested
+    /// calls to `oom`. In practice this means implementors should eschew allocating, especially
+    /// from `self` (directly or indirectly).
+    ///
+    /// Implementions of `alloc` are discouraged from panicking (or aborting) in the event of
+    /// memory exhaustion; instead they should return an error and let the client decide whether to
+    /// invoke this `oom` method in response.
+    fn oom(&mut self) -> ! {
+        unsafe { abort() }
+    }
 }
 
 unsafe impl<T> UntypedObjectAlloc for ObjectAlloc<T> {
     fn layout(&self) -> Layout {
         // NOTE: This is safe because the layout method doesn't guarantee that it provides the most
         // specific layout, but rather simply that all objects returned from alloc are guaranteed
-        // to abide by this layout. This particular ObjectAlloc could have been configured with a
+        // to satisfy by this layout. This particular ObjectAlloc could have been configured with a
         // more strict alignment than T's alignment, but that's OK.
         Layout::new::<T>()
     }
@@ -109,24 +141,5 @@ unsafe impl<T> UntypedObjectAlloc for ObjectAlloc<T> {
 
     unsafe fn dealloc(&mut self, x: *mut u8) {
         ObjectAlloc::dealloc(self, x as *mut T);
-    }
-}
-
-unsafe impl<T, A: Alloc> ObjectAlloc<T> for A {
-    unsafe fn alloc(&mut self) -> Result<*mut T, Exhausted> {
-        match Alloc::alloc(self, Layout::new::<T>()) {
-            Ok(ptr) => Ok(ptr as *mut T),
-            Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
-            Err(AllocErr::Unsupported { details }) => {
-                use core::intrinsics::type_name;
-                panic!("Alloc does not support allocating objects of type {}: {}",
-                       type_name::<T>(),
-                       details)
-            }
-        }
-    }
-
-    unsafe fn dealloc(&mut self, x: *mut T) {
-        Alloc::dealloc(self, x as *mut u8, Layout::new::<T>());
     }
 }
