@@ -1,7 +1,6 @@
 //! A testing framework to detect memory corruption issues in object allocators.
 //!
-//! For a detailed description of how this framework works, see the dodcumentation for
-//! `CorruptionTester`.
+//! See `TestBuilder` for documentation on running tests.
 
 extern crate core;
 extern crate libc;
@@ -24,34 +23,34 @@ use self::object_alloc::ObjectAlloc;
 ///
 /// The `CorruptionTester` is wrapped in either a `CorruptionTesterDefault` or a
 /// `CorruptionTesterUnsafe`. The former initializes using the `Default` trait, and the latter
-/// using the `UnsafeDefault` trait.
+/// using a custom `unsafe_default` initializer.
 ///
 /// # Lifecycle
 ///
 /// In order to perform a corruption test, an `ObjectAlloc` is constructed to allocate
-/// `CorruptionTester` values. The `test_memory_corruption_default` and
-/// `test_memory_corruption_unsafe_default` functions in this module perform the work of allocating
+/// `CorruptionTester` values. The `Tester` object and its methods perform the work of allocating
 /// and deallocating while checking for various corruption errors.
 ///
 /// Each `CorruptionTester` object is designed to have a very particular lifecycle:
 ///
-/// 1. First, the object is created using its wrapper's `default` or `unsafe_default` methods. The
-///    resulting instance is in the `New` state.
+/// 1. First, the object is created using its wrapper's initializer (`CorruptionTesterDefault`'s
+///    `default` method or the `unsafe_default` function). The resulting instance is in the `New`
+///    state.
 ///
 ///    In the case of `default`, since the object is returned by value, it does not encode any
 ///    information about its location in memory since, during the call to `default`, it's
 ///    impossible to know where it will be placed. While it is in this state, its memory can be
-///    copied without detection. This is a fundamental limitation of this design. A more more
-///    aggressive design might have `default` register each created object in a global data
-///    structure, but this would seriously hurt the performance of this test.
+///    copied without detection. This is a fundamental limitation of this design. A more aggressive
+///    design might have `default` register each created object in a global data structure, but
+///    this would seriously hurt the performance of this test.
 ///
 ///    In the case of `unsafe_default`, the object's address is known at initialization time. An
 ///    object initialized using `unsafe_default` encodes information about its location in memory,
 ///    and is thus able to detect whether a valid object has been copied from its original
 ///    location.
 /// 2. After being created in the `New` state, an object may be returned from a call to `alloc`.
-///    At this point, the caller (`test_memory_corruption` or `test_memory_corruption_alignments`)
-///    will verify that it is in the `New` state, and will transition it to the `Valid` state.
+///    At this point, the caller will verify that it is in the `New` state, and will transition it
+///    to the `Valid` state.
 ///
 ///    Since, at this point, the caller knows the location in memory where the object is stored,
 ///    while transitioning to the `Valid` state, an object which was initialized with `default` is
@@ -59,9 +58,8 @@ use self::object_alloc::ObjectAlloc;
 ///    memory is moved or copied elsewhere, it will be detected.
 /// 3. After being moved to the `Valid` state, the object will be freed back to the allocator. The
 ///    allocator may drop the object, but it also may cache the object for use in future `alloc`
-///    calls. Thus, the test functions (`test_memory_corruption` and
-///    `test_memory_corruption_alignments`) accept objects returned from `alloc` in either the
-///    `New` or `Valid` states.
+///    calls. Thus, the test accepts objects returned from `alloc` in either the `New` or `Valid`
+///    states.
 /// 4. Eventually, every object will be dropped. `CorruptionTester` implements a custom drop method
 ///    that transitions it to the `Dropped` state. The drop method expects to find the object in
 ///    either the `New` state (indicating that it was constructed but never returned from an
@@ -114,10 +112,11 @@ use self::object_alloc::ObjectAlloc;
 ///
 /// # Corruption Test Algorithm
 ///
-/// The corruption test itself - as implemented in `test_memory_corruption` - works by randomly
-/// allocating and deallocating many objects and constantly checking their validity. For each of
-/// `N` iterations, it randomly decides to either allocate a new object or deallocate an existing
-/// object (if any exist). After the `N` iterations are up, it deallocates any remaining objects.
+/// The corruption test itself - as implemented in `TestBuilder`'s `test` method - works by
+/// randomly allocating and deallocating many objects and constantly checking their validity. For
+/// each of `N` iterations, it randomly decides to either allocate a new object or deallocate an
+/// existing object (if any exist). After the `N` iterations are up, it deallocates any remaining
+/// objects.
 ///
 /// After all objects have been deallocated, the test drops the allocator itself. This should cause
 /// all existing, constructed objects to be dropped. In order to verify this, the test walks
@@ -130,16 +129,37 @@ use self::object_alloc::ObjectAlloc;
 /// Note that this check is unfortunately incomplete. An object could be overwritten without being
 /// dropped, placing it in the `Invalid` state. Its backing memory pages could also be freed back
 /// to the kernel without being dropped. Neither of these will be detected.
-struct CorruptionTester<T = (Header, u32)>(T);
+struct CorruptionTester<T>(T);
 
-pub struct CorruptionTesterDefault<T = (Header, u32)>(CorruptionTester<T>);
-pub struct CorruptionTesterUnsafe<T = (Header, u32)>(CorruptionTester<T>);
+/// An object for use in corruption tests that implements `Default`.
+///
+/// `CorruptionTesterDefault` objects are objects that are allocated by an `ObjectAlloc` in order
+/// to test that `ObjectAlloc` for corruption issues. `CorruptionTesterDefault` implements
+/// `Default`, so new instances can be constructed using the `default` method.
+pub struct CorruptionTesterDefault<T = [u8; MIN_SIZE]>(CorruptionTester<T>);
+
+/// An object for use in corruption tests constructed by `unsafe_default`.
+///
+/// `CorruptionTesterUnsafe` objects are objects that are allocated by an `ObjectAlloc` in order
+/// to test that `ObjectAlloc` for corruption issues. New `CorruptionTesterUnsafe` instances can
+/// be constructed using the `unsafe_default` function.
+pub struct CorruptionTesterUnsafe<T = [u8; MIN_SIZE]>(CorruptionTester<T>);
 
 // This annoying setup is to sidestep the "private trait in a public interface" issue (with respect
 // to CorruptionTesterWrapper's use in the quickcheck module).
-use self::wrapper::CorruptionTesterWrapper;
+use self::wrapper::*;
 mod wrapper {
-    use super::*;
+    // Defined here (instead of in the parent) so that it's not a warning (and, in the future, an
+    // error) to have CorruptionTesterWrapper's state method return a State object (if State were
+    // defined in the parent module, it'd be private, which could make its use in
+    // CorruptionTesterWrapper, which is public, a "private type in a public interface" issue).
+    #[derive(PartialEq, Debug)]
+    pub enum State {
+        New,
+        Valid,
+        Dropped,
+        Invalid,
+    }
 
     /// A trait that abstracts over `CorruptionTesterDefault` and `CorruptionTesterUnsafe`.
     pub trait CorruptionTesterWrapper {
@@ -150,6 +170,9 @@ mod wrapper {
         /// Returns the object's state and `random_nonce`.
         fn state(&self) -> State;
 
+        // TODO: It looks like we only call with check_state = true in the 'tests' module. Consider
+        // removing the check_state parameter.
+
         /// Updates the object's state from `New` to `Valid`.
         ///
         /// If `check_state` is true, `update_new` also verifies that the object's current state is
@@ -158,18 +181,13 @@ mod wrapper {
     }
 }
 
+// MIN_SIZE is large enough to hold a Header and a one-byte random nonce.
+const MIN_SIZE: usize = core::mem::size_of::<Header>() + 1;
+
 #[derive(Debug)]
-pub struct Header {
+struct Header {
     state_nonce: u32,
     hash: u32,
-}
-
-#[derive(PartialEq, Debug)]
-enum State {
-    New,
-    Valid,
-    Dropped,
-    Invalid,
 }
 
 #[derive(PartialEq)]
@@ -379,7 +397,7 @@ impl<T> CorruptionTester<T> {
     }
 
     /// Split into a mutable header and byte slice.
-    #[allow(wrong_self_convention)]
+    #[cfg_attr(feature="cargo-clippy", allow(wrong_self_convention))]
     fn to_header_and_slice_mut(&mut self) -> (&mut Header, &mut [u8]) {
         use self::core::mem::{size_of, transmute};
         use self::core::slice::from_raw_parts_mut;
@@ -396,10 +414,7 @@ impl<T> CorruptionTester<T> {
     /// Determine whether `T` is big enough to be used for corruption checking.
     fn is_big_enough() -> bool {
         use self::core::mem::size_of;
-        let size = size_of::<CorruptionTester<T>>();
-        let header_size = size_of::<Header>();
-        // use < to ensure that there's at least one byte for the random nonce
-        header_size < size
+        size_of::<CorruptionTester<T>>() >= MIN_SIZE
     }
 
     /// Hash the pointer, state nonce, and random bytes.
@@ -503,6 +518,9 @@ mod mapped {
 
 use self::core::marker::PhantomData;
 
+/// A builder for tests.
+///
+/// A `TestBuilder` is used to configure and run corruption tests.
 pub struct TestBuilder<T, O: ObjectAlloc<T>, F: Fn() -> O> {
     new: F,
     test_iters: usize,
@@ -511,6 +529,18 @@ pub struct TestBuilder<T, O: ObjectAlloc<T>, F: Fn() -> O> {
 }
 
 impl<T, O: ObjectAlloc<T>, F: Fn() -> O> TestBuilder<T, O, F> {
+    /// Construct a new `TestBuilder`.
+    ///
+    /// `new` takes a function which, when run, returns an allocator implementing either
+    /// `ObjectAlloc<CorruptionTesterDefault>` or `ObjectAlloc<CorruptionTesterUnsafe>`.
+    /// `CorruptionTesterDefault` implements `Default`, and so `CorruptionTesterDefault` objects
+    /// can be constructed using the `default` method. `CorruptionTesterUnsafe` objects should be
+    /// constructed using the `unsafe_default` function defined in this module.
+    ///
+    /// Regardless of which object type is allocated, the tests that can be run are largely
+    /// the same. The only difference is that an allocator of `CorruptionTesterUnsafe` objects
+    /// can be tested for a slightly larger set of corruption errors, and so it should be preferred
+    /// if possible.
     pub fn new(new: F) -> TestBuilder<T, O, F> {
         TestBuilder {
             new,
@@ -520,11 +550,23 @@ impl<T, O: ObjectAlloc<T>, F: Fn() -> O> TestBuilder<T, O, F> {
         }
     }
 
+    /// Configure the number of iterations to perform.
+    ///
+    /// The test run by the `test` method works by repeatedly allocating and deallocating objects.
+    /// Each allocation or deallocation is considered an iteration, and this method configures the
+    /// number of iterations that are performed. The default is 100,000.
     pub fn test_iters(mut self, iters: usize) -> TestBuilder<T, O, F> {
         self.test_iters = iters;
         self
     }
 
+    /// Configure the number of quickcheck tests to perform.
+    ///
+    /// The test run by the `quickcheck` method works by constructing a sequence of allocations and
+    /// deallocations, and then performing that sequence. This process is repeated over and over
+    /// until a failure is found. This method configures the number of such tests that are
+    /// performed before the test is considered successful and halted. By default, the `quickcheck`
+    /// crate sets a default number of tests to run.
     pub fn quickcheck_tests(mut self, tests: usize) -> TestBuilder<T, O, F> {
         self.qc_tests = Some(tests);
         self
@@ -565,11 +607,10 @@ impl<T, O: ObjectAlloc<CorruptionTesterUnsafe<T>>, F: Fn() -> O>
 
 impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>, F: Fn() -> O> TestBuilder<C, O, F> {
     fn priv_test(self) {
-        const N: usize = 100_000;
         assert!(C::is_big_enough());
         let mut tester = Tester::new((self.new)());
 
-        for _ in 0..N {
+        for _ in 0..self.test_iters {
             if rand::random() && !tester.alloced.is_empty() {
                 tester.dealloc(rand::random());
             } else {
@@ -761,30 +802,29 @@ pub mod tests {
 
     use super::*;
     use self::core::{mem, ptr};
-    use std::boxed::Box as StdBox;
 
-    fn make_default_boxed() -> StdBox<CorruptionTesterDefault> {
-        StdBox::new(CorruptionTesterDefault::<(Header, u32)>::default())
+    fn make_default_boxed() -> Box<CorruptionTesterDefault> {
+        Box::new(CorruptionTesterDefault::default())
     }
 
-    fn make_unsafe_default_boxed() -> StdBox<CorruptionTesterUnsafe> {
+    fn make_unsafe_default_boxed() -> Box<CorruptionTesterUnsafe> {
         unsafe {
             let obj = mem::uninitialized::<CorruptionTesterUnsafe>();
-            let mut bx = StdBox::new(obj);
+            let mut bx = Box::new(obj);
             use self::core::ops::DerefMut;
             unsafe_default(bx.deref_mut());
             bx
         }
     }
 
-    fn test_corruption_tester_helper<C: CorruptionTesterWrapper>(mut obj: StdBox<C>) {
+    fn test_corruption_tester_helper<C: CorruptionTesterWrapper>(mut obj: Box<C>) {
         assert!(obj.state() == State::New);
         obj.update_new(true);
         assert!(obj.state() == State::Valid);
 
-        let ptr = StdBox::into_raw(obj);
+        let ptr = Box::into_raw(obj);
         unsafe {
-            mem::drop(StdBox::from_raw(ptr));
+            mem::drop(Box::from_raw(ptr));
             assert!((*ptr).state() == State::Dropped);
         }
     }
@@ -795,8 +835,8 @@ pub mod tests {
         test_corruption_tester_helper(make_unsafe_default_boxed());
     }
 
-    fn test_corruption_tester_corruption_helper<C: CorruptionTesterWrapper>(mut a: StdBox<C>,
-                                                                            mut b: StdBox<C>) {
+    fn test_corruption_tester_corruption_helper<C: CorruptionTesterWrapper>(mut a: Box<C>,
+                                                                            mut b: Box<C>) {
         assert!(a.state() == State::New);
         assert!(b.state() == State::New);
         a.update_new(true);
