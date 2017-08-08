@@ -1,0 +1,13 @@
+[package]
+name = "object_alloc_test"
+version = "0.1.0"
+authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+
+[dependencies]
+lazy_static = "0.2"
+libc = "0.2"
+object_alloc = { path = "../object_alloc" }
+quickcheck = "0.4"
+rand = "0.3"
+sysconf = { path = "../sysconf" }
+twox-hash = "1.1"
