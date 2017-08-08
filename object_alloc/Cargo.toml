@@ -1,0 +1,6 @@
+[package]
+name = "object_alloc"
+version = "0.1.0"
+authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+keywords = ["allocator", "cache", "object"]
+categories = ["memory-management"]
