@@ -8,8 +8,9 @@ extern crate alloc;
 extern crate libc;
 extern crate errno;
 extern crate sysconf;
-// lazy_static is only used in macros, so if no macros are called, it will appear unused.
-#[allow(unused)]
+// lazy_static's macros are only used in macros, so if no macros are called, they (and thus the
+// #[macro_use] attribute) will appear unused.
+#[allow(unused_imports)]
 #[macro_use]
 extern crate lazy_static;
 use alloc::allocator::{Alloc, AllocErr, Layout};
@@ -394,7 +395,6 @@ macro_rules! define_malloc {
 // caller needing to know about lazy_static and import its macros themselves.
 //
 // Credit to https://users.rust-lang.org/t/how-to-use-macro-inside-another-macro/12061/2
-#[allow(unused)]
 pub use lazy_static::*;
 
 #[macro_export]
