@@ -1,3 +1,11 @@
+//! Query runtime configuration information.
+//!
+//! This crate provides the ability to query for various configuration information about the
+//! runtime platform such as memory page size. On POSIX systems, it makes heavy use of the
+//! [sysconf] API.
+//!
+//! [sysconf]: http://man7.org/linux/man-pages/man3/sysconf.3.html
+
 // NOTE: According to Wikipedia, "Originally, the name "POSIX" referred to IEEE Std 1003.1-1988,
 // released in 1988." This crate assumes that any behavior required by POSIX 1003.1 will be
 // properly implemented on any POSIX system. Running on a POSIX system which does not adhere to
@@ -22,6 +30,7 @@ pub mod hugepage;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use errno::errno;
 
+/// Get the system's page size.
 #[cfg(any(unix, windows))]
 pub fn pagesize() -> usize {
     *PAGESIZE

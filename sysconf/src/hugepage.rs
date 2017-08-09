@@ -1,3 +1,6 @@
+//! Query for configuration related to huge pages.
+
+/// Determine whether huge pages of a particular size are supported.
 #[cfg(target_os = "linux")]
 pub fn hugepage_supported(size: usize) -> bool {
     // Since the hugepages directories are of the form hugepages-${size}kB, we're guaranteed that,
@@ -313,6 +316,9 @@ fn priv_hugepage_supported(exp: usize) -> bool {
     }
 }
 
+/// Get the system's default huge page size.
+///
+/// If no huge pages are supported, `default_hugepage` will return `None`.
 #[cfg(any(target_os = "linux", windows))]
 pub fn default_hugepage() -> Option<usize> {
     *DEFAULT_HUGEPAGE
