@@ -297,10 +297,18 @@ impl<P: PageSize> PageSizeAlloc<P> {
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
         if let Some(huge) = self.pagesize.huge_pagesize() {
-            debug_assert_eq!(ptr as usize % huge, 0);
+            debug_assert_eq!(ptr as usize % huge,
+                             0,
+                             "ptr {:?} not aligned to huge page size {}",
+                             ptr,
+                             huge);
             debug_assert!(layout.align() <= huge);
         } else {
-            debug_assert_eq!(ptr as usize % self.pagesize.pagesize(), 0);
+            debug_assert_eq!(ptr as usize % self.pagesize.pagesize(),
+                             0,
+                             "ptr {:?} not aligned to page size {}",
+                             ptr,
+                             self.pagesize.pagesize());
             debug_assert!(layout.align() <= self.pagesize.pagesize());
         }
         uncommit(ptr, layout.size());
@@ -435,7 +443,9 @@ fn mmap(size: usize, perms: u32, huge_pagesize: Option<usize>) -> Option<*mut u8
 fn munmap(ptr: *mut u8, size: usize) {
     use libc::{munmap, c_void};
     unsafe {
-        assert_eq!(munmap(ptr as *mut c_void, size), 0);
+        // NOTE: Don't inline the call to munmap; then errno might be called before munmap.
+        let ret = munmap(ptr as *mut c_void, size);
+        assert_eq!(ret, 0, "munmap failed: {}", errno());
     }
 }
 
