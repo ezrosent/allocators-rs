@@ -3,10 +3,6 @@ name = "bsalloc"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
 
-[features]
-# TODO: Have std be a feature instead of no-stdlib
-no-stdlib = []
-
 [profile.dev]
 panic = "abort"
 [profile.release]
