@@ -26,7 +26,9 @@ here, but we encourage anyone curious to examine Section 7 of that paper.
     are freed in the same thread in which they were allocated.
 
   * *Shbench*: Similar to *Threadtest* but with varying object sizes and
-    varying object lifetimes.
+    varying object lifetimes. We also provide numbers for larger (1-8K)
+    object sizes in addition to the smaller object sizes used by
+    *Threadtest*.
 
   * *ACDC Producer-Consumer Workload*: This benchmark involves each
     thread scattering a portion of its allocations among all other threads
@@ -59,13 +61,48 @@ getting to run on WSL due to some `mmap`-related issues).
 ## Measurements
 
 We provide measurements of both memory consumption throughput for the 3
-workloads described above. In general, we we provide comparable
+workloads described above. In general, we provide comparable
 (though sometimes slightly worse) throughput to `llalloc` while using
 substantially less memory. Compared with `jemalloc` we are consistently
 more efficient, though we have a higher memory overhead.
 
+We have had some trouble getting the rightmost points on some of these
+graphs to show differences in performance. As a result, we report those
+numbers directly as well as with a graph.
+
 ### Threadtest
+
+![Threadtest Throughput](elfmalloc-data/threadtest-tp.png?raw=true)
+
+For throughput, the final numbers for `elfmalloc`, `jemalloc` and
+`llalloc` are 4.2, 4.9, and 3.1, respectively.
+
+![Threadtest Memory](elfmalloc-data/threadtest-mem.png?raw=true)
+
 
 ### Shbench
 
+For `shbench` we see the same trend: the difference being that
+`jemalloc` and `elfmalloc` both have much lower single-threaded
+performance than `llalloc`, though they use an order of magnitude less
+memory.
+
+![Shbench Throughput](elfmalloc-data/shbench-tp.png?raw=true)
+![Shbench Memomry](elfmalloc-data/shbench-mem.png?raw=true)
+
+For throughput, the final numbers for `elfmalloc`, `jemalloc` and
+`llalloc` are 0.74, 0.96, and 0.67, respectively.
+
+Now we move onto the larger object sizes:
+
+![Shbench Large Object Throughput](elfmalloc-data/shbench-large-tp.png?raw=true)
+![Shbench Large Object Memomry](elfmalloc-data/shbench-large-mem.png?raw=true)
+
+We just barely pull ahead here: For throughput, the final numbers
+for `elfmalloc`, `jemalloc` and `llalloc` are 1.6, 1.7, and 2.7,
+respectively.
+
 ### Producer-Consumer
+
+![Producer-Consumer Throughput](elfmalloc-data/prodcons-tp.png?raw=true)
+![Producer-Consumer Memomry](elfmalloc-data/prodcons-mem.png?raw=true)
