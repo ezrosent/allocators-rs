@@ -4,9 +4,9 @@ version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 
 [dependencies]
-# use no_std libc
-libc = { version = "0.2", default-features = false }
 errno = "0.2"
 lazy_static = { version = "0.2", features = ["spin_no_std"] }
-kernel32-sys = "0.2.2"
-winapi = "0.2.8"
+# use no_std libc
+libc = { version = "0.2", default-features = false }
+kernel32-sys = "0.2"
+winapi = "0.2"

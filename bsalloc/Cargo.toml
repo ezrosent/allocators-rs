@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
 
 [features]
+# TODO: Have std be a feature instead of no-stdlib
 no-stdlib = []
 
 [profile.dev]
@@ -12,8 +13,5 @@ panic = "abort"
 panic = "abort"
 
 [dependencies]
-[dependencies.lazy_static]
-version = "0.2.8"
-features = ["spin_no_std"]
-[dependencies.mmap_alloc]
-path = "../mmap_alloc"
+lazy_static = { version = "0.2", features = ["spin_no_std"] }
+mmap-alloc = { path = "../mmap-alloc" }

@@ -1,7 +1,7 @@
 [package]
 name = "elfmalloc"
 version = "0.1.0"
-authors = ["Eli Rosenthal <ezr@google.com>"]
+authors = ["Eli Rosenthal <ezrosenthal@gmail.com>", "Joshua Liebow-Feeser <hello@joshlf.com>"]
 
 [features]
 prime_schedules = ["bagpipe/prime_schedules"]
@@ -10,11 +10,8 @@ no_lazy_region = []
 nightly = []
 
 [dependencies]
-lazy_static = "0.2.8"
-num_cpus = "1.5.1"
-[dependencies.bagpipe]
-path = "../bagpipe"
-[dependencies.bsalloc]
-path = "../bsalloc"
-[dependencies.mmap_alloc]
-path = "../mmap_alloc"
+bagpipe = { path = "../bagpipe" }
+bsalloc = { path = "../bsalloc" }
+lazy_static = "0.2"
+mmap-alloc = { path = "../mmap-alloc" }
+num_cpus = "1.5"
