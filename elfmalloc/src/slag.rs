@@ -486,7 +486,7 @@ impl AllocIter {
         unsafe {
             let cur_word = first_bitset_word.as_ref()
                 .expect("bitset must point to valid memory")
-                .fetch_and(0, Ordering::Acquire);
+                .swap(0, Ordering::Acquire);
             (*refcnt).dec_n(cur_word.count_ones() as usize);
             AllocIter {
                 cur_word: cur_word,
@@ -512,7 +512,7 @@ impl AllocIter {
                 .as_ref()
                 .expect("bitset must point to valid memory");
             self.next_word = self.next_word.offset(1);
-            self.cur_word = next.fetch_and(0, Ordering::Acquire);
+            self.cur_word = next.swap(0, Ordering::Acquire);
             (*self.refcnt).dec_n(self.cur_word.count_ones() as usize);
             self.remaining_words -= 1;
             self.cur_word_index += 1;

@@ -696,12 +696,6 @@ impl<AM: AllocMap<ObjectAlloc<PageAlloc<Creek>>, Key = usize>> ElfMalloc<PageAll
 
     unsafe fn free(&mut self, item: *mut u8) {
         if likely(self.pages.backing_memory().contains(item)) {
-            #[cfg(test)]
-            {
-                large_alloc::SEEN_PTRS.with(|hm| {
-                    assert!(hm.borrow().get(&item.offset(-4096)).is_none());
-                })
-            }
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
             self.allocs.get_mut(slag.get_metadata().object_size).free(item)
         } else {
