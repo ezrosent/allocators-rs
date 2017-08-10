@@ -109,6 +109,11 @@ impl MapAlloc {
     pub fn new() -> MapAlloc {
         MapAllocBuilder::default().build()
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+        self.0.uncommit(ptr, layout);
+    }
 }
 
 impl Default for MapAlloc {
@@ -170,6 +175,11 @@ impl HugeMapAlloc {
     #[cfg(target_os = "linux")]
     pub fn new() -> Option<HugeMapAlloc> {
         MapAllocBuilder::default().build_huge_default()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+        self.0.uncommit(ptr, layout);
     }
 }
 
@@ -269,7 +279,7 @@ impl<P: PageSize> PageSizeAlloc<P> {
             if unmap_size > 0 {
                 munmap(self.pagesize.pagesize() as *mut u8, unmap_size);
             }
-            // a) make it more likely that the kernel will not keep the page backed by physical
+            // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
             // make other bugs easier to detect.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -279,6 +289,21 @@ impl<P: PageSize> PageSizeAlloc<P> {
             Some(ptr)
         };
         mmap(size, self.perms, self.pagesize.huge_pagesize()).and_then(f)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+        // TODO: What to do about sizes that are not multiples of the page size? These are legal
+        // allocations, and so they are legal to pass to uncommit, but will madvise handle them
+        // properly?
+        if let Some(huge) = self.pagesize.huge_pagesize() {
+            debug_assert_eq!(ptr as usize % huge, 0);
+            debug_assert!(layout.align() <= huge);
+        } else {
+            debug_assert_eq!(ptr as usize % self.pagesize.pagesize(), 0);
+            debug_assert!(layout.align() <= self.pagesize.pagesize());
+        }
+        uncommit(ptr, layout.size());
     }
 }
 
@@ -430,6 +455,24 @@ fn munmap(ptr: *mut u8, _size: usize) {
             panic!("Call to VirtualFree failed with error code {}.",
                    GetLastError());
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn uncommit(ptr: *mut u8, size: usize) {
+    use libc::{c_void, MADV_DONTNEED};
+    unsafe {
+        // TODO: Other options such as MADV_FREE are available on newer versions of Linux. Is there
+        // a way that we can use those when available? Is that even desirable?
+        libc::madvise(ptr as *mut c_void, size, MADV_DONTNEED);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn uncommit(ptr: *mut u8, size: usize) {
+    use libc::{c_void, MADV_FREE};
+    unsafe {
+        libc::madvise(ptr as *mut c_void, size, MADV_FREE);
     }
 }
 
