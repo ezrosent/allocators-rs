@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 
 [dependencies]
+interpolate_idents = "0.1"
 lazy_static = "0.2"
 libc = "0.2"
 object_alloc = { path = "../object_alloc" }
