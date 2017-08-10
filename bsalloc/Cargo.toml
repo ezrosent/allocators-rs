@@ -1,0 +1,19 @@
+[package]
+name = "bsalloc"
+version = "0.1.0"
+authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
+
+[features]
+no-stdlib = []
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+
+[dependencies]
+[dependencies.lazy_static]
+version = "0.2.8"
+features = ["spin_no_std"]
+[dependencies.mmap_alloc]
+path = "../mmap_alloc"

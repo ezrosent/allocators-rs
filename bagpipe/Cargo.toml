@@ -1,0 +1,15 @@
+[package]
+name = "bagpipe"
+version = "0.1.0"
+authors = ["Eli Rosenthal <ezr@google.com>"]
+
+[features]
+default = ['check_empty_yq']
+check_empty_yq = []
+prime_schedules = []
+staggered_indexes = []
+huge_segments = []
+
+[dependencies]
+crossbeam="0.2.10"
+num_cpus = "1.5.1"

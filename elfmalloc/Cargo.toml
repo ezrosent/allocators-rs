@@ -1,0 +1,20 @@
+[package]
+name = "elfmalloc"
+version = "0.1.0"
+authors = ["Eli Rosenthal <ezr@google.com>"]
+
+[features]
+prime_schedules = ["bagpipe/prime_schedules"]
+huge_segments = ["bagpipe/huge_segments"]
+no_lazy_region = []
+nightly = []
+
+[dependencies]
+lazy_static = "0.2.8"
+num_cpus = "1.5.1"
+[dependencies.bagpipe]
+path = "../bagpipe"
+[dependencies.bsalloc]
+path = "../bsalloc"
+[dependencies.mmap_alloc]
+path = "../mmap_alloc"

@@ -1,0 +1,17 @@
+[package]
+name = "elfc"
+version = "0.1.0"
+authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
+
+[lib]
+name = "elfc"
+crate-type = ["cdylib"]
+
+[features]
+nightly = ["elfmalloc/nightly"]
+
+[dependencies]
+libc = "0.2.26"
+errno = "0.2.3"
+[dependencies.elfmalloc]
+path="../elfmalloc"
