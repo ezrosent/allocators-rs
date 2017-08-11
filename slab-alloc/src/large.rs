@@ -157,7 +157,8 @@ mod tests {
             let mut alloc =
                 SizedSlabAlloc::new(DefaultInitSystem::<T>::new(DefaultInitializer::new()),
                                     layout.clone(),
-                                    super::System::new(layout, heap::new(backing_layout)).unwrap());
+                                    super::System::new(layout, heap::get_large(backing_layout))
+                                        .unwrap());
             let mut ptrs = Vec::new();
 
             let size = super::DEFAULT_MAP_SIZE << i;

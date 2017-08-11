@@ -15,15 +15,16 @@ pub trait BackingAlloc {
     ///
     /// An `Aligned` allocator allocates the memory for aligned slabs. All memory allocated by this
     /// allocator must have an alignment which is equal to its size. An `Aligned` allocator must be
-    /// capable of allocating page-sized blocks of memory. Allocated memory should be
-    /// uninitialized.
+    /// capable of allocating page-sized blocks of memory. Smaller or larger blocks of memory are
+    /// not required to be supported. Allocated memory should be uninitialized.
     type Aligned: UntypedObjectAlloc;
 
     /// An allocator for large slabs.
     ///
     /// A `Large` allocator allocates the memory for large slabs. All memory allocated by this
     /// allocator must be page-aligned; a `Large` allocator will never be constructed with an
-    /// object size smaller than the page size. Allocated memory should be uninitialized.
+    /// object size smaller than the page size. All sizes larger than or equal to a page size must
+    /// be supported. Allocated memory should be uninitialized.
     type Large: UntypedObjectAlloc;
 }
 
@@ -84,11 +85,49 @@ pub mod heap {
         type Large = AllocObjectAlloc<Heap>;
     }
 
-    pub fn max_align() -> usize {
-        *PAGE_SIZE
+    pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<Heap>> {
+        if layout.size() > *PAGE_SIZE {
+            None
+        } else {
+            Some(AllocObjectAlloc::new(Heap, layout))
+        }
     }
 
-    pub fn new(layout: Layout) -> AllocObjectAlloc<Heap> {
+    pub fn get_large(layout: Layout) -> AllocObjectAlloc<Heap> {
         AllocObjectAlloc::new(Heap, layout)
+    }
+}
+
+/// A `BackingAlloc` that uses mmap.
+#[cfg(feature = "std")]
+pub mod mmap {
+    extern crate alloc;
+    extern crate mmap_alloc;
+    use self::alloc::allocator::Layout;
+    use self::mmap_alloc::MapAlloc;
+    use super::alloc::AllocObjectAlloc;
+    use super::BackingAlloc;
+    use PAGE_SIZE;
+
+    // TODO: Support huge pages through dynamic dispatch to global static instances or by
+    // dynamically constructing a HugeMapAlloc on each request.
+
+    pub struct MmapBackingAlloc;
+
+    impl BackingAlloc for MmapBackingAlloc {
+        type Aligned = AllocObjectAlloc<MapAlloc>;
+        type Large = AllocObjectAlloc<MapAlloc>;
+    }
+
+    pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<MapAlloc>> {
+        if layout.size() != *PAGE_SIZE {
+            None
+        } else {
+            Some(AllocObjectAlloc::new(MapAlloc::new(), layout))
+        }
+    }
+
+    pub fn get_large(layout: Layout) -> AllocObjectAlloc<MapAlloc> {
+        AllocObjectAlloc::new(MapAlloc::new(), layout)
     }
 }

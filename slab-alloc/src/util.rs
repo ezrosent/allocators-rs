@@ -16,6 +16,11 @@ pub mod size {
         let (mut best_size, mut min_unused) = (None, None);
         for size in sizes {
             if let Some((objects, unused)) = unused(size) {
+                // TODO: Instead of taking 'unused' to be the amount of space left over at the end
+                // of the slab, take this to be all space not used for objects (including space
+                // used by the header); this will take better account of used header space. Maybe
+                // the two will produce equivalent results, though, since the header size is an
+                // affine function of the number of objects (one stack element per object)?
                 let unused_per_obj = unused as f64 / objects as f64;
                 if objects > max_objects_per_slab {
                     if best_size.is_none() {

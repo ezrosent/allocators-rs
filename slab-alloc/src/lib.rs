@@ -89,7 +89,10 @@ use self::object_alloc::{Exhausted, ObjectAlloc, UntypedObjectAlloc};
 use self::alloc::allocator::Layout;
 
 pub use backing::BackingAlloc;
+#[cfg(feature = "std")]
 use backing::heap::HeapBackingAlloc;
+#[cfg(feature = "os")]
+use backing::mmap::MmapBackingAlloc;
 
 use init::NopInitSystem;
 type DefaultInitSystem<T> = init::InitInitSystem<T, init::DefaultInitializer<T>>;
@@ -154,51 +157,64 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     /// Builds a `SlabAlloc` whose memory is backed by the heap.
     #[cfg(feature = "std")]
     pub fn build(self) -> SlabAlloc<T, I, HeapBackingAlloc> {
-        use backing::heap::{new, max_align};
-        self.build_backing(new, new, max_align())
+        use backing::heap::{get_aligned, get_large};
+        self.build_backing(get_aligned, get_large)
+    }
+
+    /// Builds a `SlabAlloc` whose memory is backed by mmap.
+    #[cfg(feature = "os")]
+    pub fn build_mmap(self) -> SlabAlloc<T, I, MmapBackingAlloc> {
+        use backing::mmap::{get_aligned, get_large};
+        self.build_backing(get_aligned, get_large)
     }
 
     /// Builds an `UntypedSlabAlloc` whose memory is backed by the heap.
     #[cfg(feature = "std")]
     pub fn build_untyped(self) -> UntypedSlabAlloc<I, HeapBackingAlloc> {
-        use backing::heap::{new, max_align};
-        self.build_untyped_backing(new, new, max_align())
+        use backing::heap::{get_aligned, get_large};
+        self.build_untyped_backing(get_aligned, get_large)
+    }
+
+    /// Builds an `UntypedSlabAlloc` whose memory is backed by mmap.
+    #[cfg(feature = "os")]
+    pub fn build_untyped_mmap(self) -> UntypedSlabAlloc<I, MmapBackingAlloc> {
+        use backing::mmap::{get_aligned, get_large};
+        self.build_untyped_backing(get_aligned, get_large)
     }
 
     /// Builds a new `SlabAlloc` with a custom memory provider.
     ///
     /// `build_backing` builds a new `SlabAlloc` from the configuration `self`. `SlabAlloc`s get
     /// their memory from `UntypedObjectAlloc`s which allocate the memory necessary to back a
-    /// single slab. Under the hood, `SlabAlloc`s use two types of slabs depending on various
-    /// properties of the type being allocated and the system that is executing the program. The
-    /// two types of slabs are called "aligned" slabs and "large" slabs, and each has slightly
-    /// different requirements for the memory used to back them (see `BackingAlloc` for details).
+    /// single slab. Under the hood, slab allocators use two types of slabs - "aligned" slabs and
+    /// "large" slabs. Aligned slabs perform better, but are not always supported for all slab
+    /// sizes. Large slabs do not perform as well, but are supported for all slab sizes. In
+    /// particular, aligned slabs require that the memory used to back them is aligned to its own
+    /// size (ie, a 16K slab has alignment 16K, etc), while large slabs only require page alignment
+    /// regardless of the slab size. All slabs are always at least one page in size and are always
+    /// page-aligned at a minimum.
     ///
-    /// The type of slab to be used can only be computed at runtime, and so the caller must provide
-    /// a mechanism to obtain an allocator for each type. `get_aligned` and `get_large` each take a
-    /// `Layout` describing the memory required to back an aligned or large slab respectively, and
-    /// return an `UntypedObjectAlloc` that allocates memory with that layout. `max_align` is the
-    /// maximum alignment that can be passed to `get_aligned`; it must be no smaller than the
-    /// system's page size. Based on `max_align` and various properties about the type being
-    /// allocated and the runtime system, `build_backing` will choose which slab type to use, and
-    /// will call the appropriate function to get an allocator for that type.
-    pub fn build_backing<B, A, L>(self,
-                                  get_aligned: A,
-                                  get_large: L,
-                                  max_align: usize)
-                                  -> SlabAlloc<T, I, B>
+    /// Because support for a particular slab size may not be knowable until runtime (e.g., it may
+    /// depend on the page size, which can vary by system), which slab type will be used cannot be
+    /// known at compile time. Instead, `build_backing` computes the ideal aligned slab size, and
+    /// calls `get_aligned` with a `Layout` describing that size. `get_aligned` returns an `Option`
+    ///  - `None` if the requested size is not supported, and `Some` if the size is supported. If
+    /// the size is not supported, `build_backing` will fall back to using large slabs, and will
+    /// call `get_large` to get an allocator. It will only call `get_large` with a `Layout` that is
+    /// required to be supported (at least a page in size and page-aligned), so `get_large` returns
+    /// an allocator directly rather than an `Option`.
+    pub fn build_backing<B, A, L>(self, get_aligned: A, get_large: L) -> SlabAlloc<T, I, B>
         where B: BackingAlloc,
-              A: Fn(Layout) -> B::Aligned,
+              A: Fn(Layout) -> Option<B::Aligned>,
               L: Fn(Layout) -> B::Large
     {
-        assert!(max_align >= *PAGE_SIZE);
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
+        let aligned_slab_layout =
+            Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
         SlabAlloc {
-            alloc: if aligned_backing_size <= max_align {
-                let slab_layout =
-                    Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
-                let data = aligned::System::new(layout, get_aligned(slab_layout)).unwrap();
+            alloc: if let Some(alloc) = get_aligned(aligned_slab_layout) {
+                let data = aligned::System::new(layout, alloc).unwrap();
                 PrivateSlabAlloc::Aligned(SizedSlabAlloc::new(self.init, self.layout, data))
             } else {
                 let backing_size = large::backing_size_for::<I>(&layout);
@@ -216,21 +232,19 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     /// `UntypedSlabAlloc` instead of a `SlabAlloc`.
     pub fn build_untyped_backing<B, A, L>(self,
                                           get_aligned: A,
-                                          get_large: L,
-                                          max_align: usize)
+                                          get_large: L)
                                           -> UntypedSlabAlloc<I, B>
         where B: BackingAlloc,
-              A: Fn(Layout) -> B::Aligned,
+              A: Fn(Layout) -> Option<B::Aligned>,
               L: Fn(Layout) -> B::Large
     {
-        assert!(max_align >= *PAGE_SIZE);
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
+        let aligned_slab_layout =
+            Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
         UntypedSlabAlloc {
-            alloc: if aligned_backing_size <= max_align {
-                let slab_layout =
-                    Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
-                let data = aligned::System::new(layout, get_aligned(slab_layout)).unwrap();
+            alloc: if let Some(alloc) = get_aligned(aligned_slab_layout) {
+                let data = aligned::System::new(layout, alloc).unwrap();
                 PrivateUntypedSlabAlloc::Aligned(SizedSlabAlloc::new(self.init, self.layout, data))
             } else {
                 let backing_size = large::backing_size_for::<I>(&layout);
@@ -333,45 +347,50 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
     /// Builds an `UntypedSlabAlloc` whose memory is backed by the heap.
     #[cfg(feature = "std")]
     pub fn build(self) -> UntypedSlabAlloc<I, HeapBackingAlloc> {
-        use backing::heap::{new, max_align};
-        self.build_backing(new, new, max_align())
+        use backing::heap::{get_aligned, get_large};
+        self.build_backing(get_aligned, get_large)
+    }
+
+    /// Builds an `UntypedSlabAlloc` whose memory is backed by mmap.
+    #[cfg(feature = "os")]
+    pub fn build_mmap(self) -> UntypedSlabAlloc<I, MmapBackingAlloc> {
+        use backing::mmap::{get_aligned, get_large};
+        self.build_backing(get_aligned, get_large)
     }
 
     /// Builds a new `UntypedSlabAlloc` with a custom memory provider.
     ///
     /// `build_backing` builds a new `UntypedSlabAlloc` from the configuration `self`.
     /// `UntypedSlabAlloc`s get their memory from `UntypedObjectAlloc`s which allocate the memory
-    /// necessary to back a single slab. Under the hood, `UntypedSlabAlloc`s use two types of slabs
-    /// depending on various properties of the type being allocated and the system that is
-    /// executing the program. The two types of slabs are called "aligned" slabs and "large" slabs,
-    /// and each has slightly different requirements for the memory used to back them (see
-    /// `BackingAlloc` for details).
+    /// necessary to back a single slab. Under the hood, slab allocators use two types of slabs -
+    /// "aligned" slabs and "large" slabs. Aligned slabs perform better, but are not always
+    /// supported for all slab sizes. Large slabs do not perform as well, but are supported for all
+    /// slab sizes. In particular, aligned slabs require that the memory used to back them is
+    /// aligned to its own size (ie, a 16K slab has alignment 16K, etc), while large slabs only
+    /// require page alignment regardless of the slab size. All slabs are always at least one page
+    /// in size and are always page-aligned at a minimum.
     ///
-    /// The type of slab to be used can only be computed at runtime, and so the caller must provide
-    /// a mechanism to obtain an allocator for each type. `get_aligned` and `get_large` each take a
-    /// `Layout` describing the memory required to back an aligned or large slab respectively, and
-    /// return an `UntypedObjectAlloc` that allocates memory with that layout. `max_align` is the
-    /// maximum alignment that can be passed to `get_aligned`; it must be no smaller than the
-    /// system's page size. Based on `max_align` and various properties about the type being
-    /// allocated and the runtime system, `build_backing` will choose which slab type to use, and
-    /// will call the appropriate function to get an allocator for that type.
-    pub fn build_backing<B, A, L>(self,
-                                  get_aligned: A,
-                                  get_large: L,
-                                  max_align: usize)
-                                  -> UntypedSlabAlloc<I, B>
+    /// Because support for a particular slab size may not be knowable until runtime (e.g., it may
+    /// depend on the page size, which can vary by system), which slab type will be used cannot be
+    /// known at compile time. Instead, `build_backing` computes the ideal aligned slab size, and
+    /// calls `get_aligned` with a `Layout` describing that size. `get_aligned` returns an `Option`
+    ///  - `None` if the requested size is not supported, and `Some` if the size is supported. If
+    /// the size is not supported, `build_backing` will fall back to using large slabs, and will
+    /// call `get_large` to get an allocator. It will only call `get_large` with a `Layout` that is
+    /// required to be supported (at least a page in size and page-aligned), so `get_large` returns
+    /// an allocator directly rather than an `Option`.
+    pub fn build_backing<B, A, L>(self, get_aligned: A, get_large: L) -> UntypedSlabAlloc<I, B>
         where B: BackingAlloc,
-              A: Fn(Layout) -> B::Aligned,
+              A: Fn(Layout) -> Option<B::Aligned>,
               L: Fn(Layout) -> B::Large
     {
-        assert!(max_align >= *PAGE_SIZE);
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
+        let aligned_slab_layout =
+            Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
         UntypedSlabAlloc {
-            alloc: if aligned_backing_size <= max_align {
-                let slab_layout =
-                    Layout::from_size_align(aligned_backing_size, aligned_backing_size).unwrap();
-                let data = aligned::System::new(layout, get_aligned(slab_layout)).unwrap();
+            alloc: if let Some(alloc) = get_aligned(aligned_slab_layout) {
+                let data = aligned::System::new(layout, alloc).unwrap();
                 PrivateUntypedSlabAlloc::Aligned(SizedSlabAlloc::new(self.init, self.layout, data))
             } else {
                 let backing_size = large::backing_size_for::<I>(&layout);

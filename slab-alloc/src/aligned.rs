@@ -19,7 +19,7 @@
 extern crate alloc;
 extern crate object_alloc;
 
-use {OBJECTS_PER_SLAB, stack};
+use {OBJECTS_PER_SLAB, PAGE_SIZE, stack};
 use stack::{SlabHeader, Layout};
 use init::InitSystem;
 use self::alloc::allocator;
@@ -70,14 +70,8 @@ pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
                                                              })
     };
 
-    // pick a reasonable lower bound on slab size to avoid wasting unnecessary work on slab sizes
-    // that are too small to accomodate even a single object
-    let init_size = if layout.size() == 0 {
-        // make sure we never start at 0, or doubling will do nothing and we'll spin forever
-        1
-    } else {
-        layout.size().next_power_of_two()
-    };
-
-    ::util::size::choose_size(PowerOfTwoIterator(init_size), unused, OBJECTS_PER_SLAB)
+    // We guarantee that we never request aligned slabs smaller than a page (see the Documentation
+    // on SlabAllocBuilder::build_backing), so we start off with an initial size of *PAGE_SIZE and
+    // go up from there.
+    ::util::size::choose_size(PowerOfTwoIterator(*PAGE_SIZE), unused, OBJECTS_PER_SLAB)
 }
