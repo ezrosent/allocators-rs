@@ -99,7 +99,7 @@ pub mod heap {
 }
 
 /// A `BackingAlloc` that uses mmap.
-#[cfg(feature = "std")]
+#[cfg(feature = "os")]
 pub mod mmap {
     extern crate alloc;
     extern crate mmap_alloc;

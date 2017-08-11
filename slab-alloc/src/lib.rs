@@ -34,7 +34,7 @@
 // - Consider improvements to the slab size selection algorithm. For example, might we be willing
 //   to take sub-optimal space utilization in order to use an aligned slab with fewer than the
 //   number of objects per slab, and thus reap the performance benefits of aligned slabs?
-// - Make sure everything is unwind-safe.
+// - Make sure everything is exception-safe.
 
 // Guarantees made by Rust about the memory layout (see https://doc.rust-lang.org/nomicon/repr-rust.html):
 // - Addresses of type T must be a multiple of T's alignment
@@ -162,6 +162,8 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     }
 
     /// Builds a `SlabAlloc` whose memory is backed by mmap.
+    ///
+    /// On Unix and Linux, `mmap` is used. On Windows, `VirtualAlloc` is used.
     #[cfg(feature = "os")]
     pub fn build_mmap(self) -> SlabAlloc<T, I, MmapBackingAlloc> {
         use backing::mmap::{get_aligned, get_large};
@@ -176,6 +178,8 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     }
 
     /// Builds an `UntypedSlabAlloc` whose memory is backed by mmap.
+    ///
+    /// On Unix and Linux, `mmap` is used. On Windows, `VirtualAlloc` is used.
     #[cfg(feature = "os")]
     pub fn build_untyped_mmap(self) -> UntypedSlabAlloc<I, MmapBackingAlloc> {
         use backing::mmap::{get_aligned, get_large};
@@ -352,6 +356,8 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
     }
 
     /// Builds an `UntypedSlabAlloc` whose memory is backed by mmap.
+    ///
+    /// On Unix and Linux, `mmap` is used. On Windows, `VirtualAlloc` is used.
     #[cfg(feature = "os")]
     pub fn build_mmap(self) -> UntypedSlabAlloc<I, MmapBackingAlloc> {
         use backing::mmap::{get_aligned, get_large};
