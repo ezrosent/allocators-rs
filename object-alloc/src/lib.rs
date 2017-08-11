@@ -34,7 +34,7 @@ pub struct Exhausted;
 /// When an `ObjectAlloc` is dropped, all cached `T` objects that have not yet been dropped are
 /// dropped. The order in which they are dropped is undefined.
 pub unsafe trait ObjectAlloc<T> {
-    /// Allocate an object of type `T`.
+    /// Allocates an object of type `T`.
     ///
     /// The memory pointed to by the returned raw pointer is guaranteed to be a valid, initialized
     /// instance of `T`. In particular, the returned object will be in one of the following two
@@ -55,7 +55,7 @@ pub unsafe trait ObjectAlloc<T> {
     /// `T` (that is, according to `core::mem::align_of::<T>()`).
     unsafe fn alloc(&mut self) -> Result<*mut T, Exhausted>;
 
-    /// Deallocate an object previously returned by `alloc`.
+    /// Deallocates an object previously returned by `alloc`.
     ///
     /// If `x` was not obtained through a call to `alloc`, or if `x` has already been `dealloc`'d,
     /// the behavior of `dealloc` is undefined.
@@ -95,7 +95,7 @@ pub unsafe trait ObjectAlloc<T> {
 /// `UntypedObjectAlloc` is like `ObjectAlloc`, except that the size that it allocates may be
 /// configured at runtime.
 pub unsafe trait UntypedObjectAlloc {
-    /// Obtain the `Layout` of allocated objects.
+    /// Obtains the `Layout` of allocated objects.
     ///
     /// `layout` returns a `Layout` object describing objects allocated by this
     /// `UntypedObjectAlloc`. All objects obtained via `alloc` are guaranteed to satisfy this
