@@ -1,0 +1,30 @@
+[package]
+name = "slab-alloc"
+version = "0.1.0"
+authors = ["Joshua Liebow-Feeser <hello@joshlf.com>", "Eli Rosenthal <ezrosenthal@gmail.com>"]
+keywords = ["allocator", "cache", "object", "slab", "magazine"]
+categories = ["algorithm", "caching", "no-std", "memory-management"]
+
+[profile.release]
+debug = true
+
+[features]
+# NOTE: Until Vec supports parametric allocators, we will be unable to compile
+# without the std feature because the large slab's pointer hash map uses Vecs.
+default = ["std", "os"]
+std = ["os"]
+os = []
+
+build-ignored-tests = []
+use-stdlib-hashmap = []
+no-coloring = []
+hashmap-no-resize = []
+hashmap-no-coalesce = []
+
+[dependencies]
+interpolate_idents = "0.1"
+lazy_static = { version = "0.2", features = ["spin_no_std"] }
+object-alloc = { path = "../object-alloc" }
+object-alloc-test = { path = "../object-alloc-test" }
+rand = "0.3"
+sysconf = { path = "../sysconf" }
