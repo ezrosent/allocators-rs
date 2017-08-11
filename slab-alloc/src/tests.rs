@@ -15,7 +15,7 @@ fn infer_allocator_type<T>(alloc: &mut ObjectAlloc<T>) {
     }
 }
 
-fn test_memory_corruption<T: Send + 'static>() {
+fn test_memory_corruption<T: Copy + Send + 'static>() {
     use self::object_alloc_test::foreach_align;
     use self::object_alloc_test::corruption::{CorruptionTesterDefault, TestBuilder};
     use std::env;
@@ -32,7 +32,7 @@ fn test_memory_corruption<T: Send + 'static>() {
     foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::pagesize());
 }
 
-fn test_quickcheck_memory_corruption<T: Send + 'static>() {
+fn test_quickcheck_memory_corruption<T: Copy + Send + 'static>() {
     use self::object_alloc_test::foreach_align;
     use self::object_alloc_test::corruption::{CorruptionTesterDefault, TestBuilder};
     use std::env;

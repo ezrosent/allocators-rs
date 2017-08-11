@@ -129,21 +129,25 @@ use self::object_alloc::ObjectAlloc;
 /// Note that this check is unfortunately incomplete. An object could be overwritten without being
 /// dropped, placing it in the `Invalid` state. Its backing memory pages could also be freed back
 /// to the kernel without being dropped. Neither of these will be detected.
-struct CorruptionTester<T>(T);
+union CorruptionTester<T: Copy> {
+// ensure that a CorruptionTester is always large enough even if T isn't
+    _min: [u8; MIN_SIZE],
+    _t: T,
+}
 
 /// An object for use in corruption tests that implements `Default`.
 ///
 /// `CorruptionTesterDefault` objects are objects that are allocated by an `ObjectAlloc` in order
 /// to test that `ObjectAlloc` for corruption issues. `CorruptionTesterDefault` implements
 /// `Default`, so new instances can be constructed using the `default` method.
-pub struct CorruptionTesterDefault<T = [u8; MIN_SIZE]>(CorruptionTester<T>);
+pub struct CorruptionTesterDefault<T: Copy = [u8; MIN_SIZE]>(CorruptionTester<T>);
 
 /// An object for use in corruption tests constructed by `unsafe_default`.
 ///
 /// `CorruptionTesterUnsafe` objects are objects that are allocated by an `ObjectAlloc` in order
 /// to test that `ObjectAlloc` for corruption issues. New `CorruptionTesterUnsafe` instances can
 /// be constructed using the `unsafe_default` function.
-pub struct CorruptionTesterUnsafe<T = [u8; MIN_SIZE]>(CorruptionTester<T>);
+pub struct CorruptionTesterUnsafe<T: Copy = [u8; MIN_SIZE]>(CorruptionTester<T>);
 
 // This annoying setup is to sidestep the "private trait in a public interface" issue (with respect
 // to CorruptionTesterWrapper's use in the quickcheck module).
@@ -163,10 +167,6 @@ mod wrapper {
 
     /// A trait that abstracts over `CorruptionTesterDefault` and `CorruptionTesterUnsafe`.
     pub trait CorruptionTesterWrapper {
-        /// Returns true if this type is large enough to perform corruption checking (at least 9
-        /// bytes).
-        fn is_big_enough() -> bool;
-
         /// Returns the object's state and `random_nonce`.
         fn state(&self) -> State;
 
@@ -201,7 +201,7 @@ const NONCE_NEW: u32 = 3_254_320_468;
 const NONCE_VALID: u32 = 3_033_817_838;
 const NONCE_DROPPED: u32 = 2_620_515_550;
 
-impl<T> Default for CorruptionTesterDefault<T> {
+impl<T: Copy> Default for CorruptionTesterDefault<T> {
     fn default() -> CorruptionTesterDefault<T> {
         use self::core::mem::uninitialized;
         let mut tester = unsafe { uninitialized::<CorruptionTesterDefault<T>>() };
@@ -215,7 +215,7 @@ impl<T> Default for CorruptionTesterDefault<T> {
 ///
 /// `unsafe_default` is like `Default`'s `default` method, but it takes a pointer to a block of
 /// uninitialized memory and initializes it to an instance of `CorruptionTesterUnsafe`.
-pub unsafe fn unsafe_default<T>(ptr: *mut CorruptionTesterUnsafe<T>) {
+pub unsafe fn unsafe_default<T: Copy>(ptr: *mut CorruptionTesterUnsafe<T>) {
     // The memory we're being given should either be invalid (i.e., not a CorruptionTester) or
     // should be an already-dropped CorruptionTester.
     let state = (*ptr).0.state(Initializer::Unsafe);
@@ -225,30 +225,26 @@ pub unsafe fn unsafe_default<T>(ptr: *mut CorruptionTesterUnsafe<T>) {
     assert_eq!((*ptr).0.state(Initializer::Unsafe), State::New);
 }
 
-impl<T> Drop for CorruptionTesterDefault<T> {
+impl<T: Copy> Drop for CorruptionTesterDefault<T> {
     fn drop(&mut self) {
         self.0.drop(Initializer::Default);
     }
 }
 
-impl<T> Drop for CorruptionTesterUnsafe<T> {
+impl<T: Copy> Drop for CorruptionTesterUnsafe<T> {
     fn drop(&mut self) {
         self.0.drop(Initializer::Unsafe);
     }
 }
 
-impl<T> Debug for CorruptionTester<T> {
+impl<T: Copy> Debug for CorruptionTester<T> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let (hdr, slc) = self.to_header_and_slice();
         write!(f, "{{header: {:?} hash: {:?}}}", hdr, slc)
     }
 }
 
-impl<T> CorruptionTesterWrapper for CorruptionTesterDefault<T> {
-    fn is_big_enough() -> bool {
-        CorruptionTester::<T>::is_big_enough()
-    }
-
+impl<T: Copy> CorruptionTesterWrapper for CorruptionTesterDefault<T> {
     fn state(&self) -> State {
         self.0.state(Initializer::Default)
     }
@@ -258,11 +254,7 @@ impl<T> CorruptionTesterWrapper for CorruptionTesterDefault<T> {
     }
 }
 
-impl<T> CorruptionTesterWrapper for CorruptionTesterUnsafe<T> {
-    fn is_big_enough() -> bool {
-        CorruptionTester::<T>::is_big_enough()
-    }
-
+impl<T: Copy> CorruptionTesterWrapper for CorruptionTesterUnsafe<T> {
     fn state(&self) -> State {
         self.0.state(Initializer::Unsafe)
     }
@@ -272,7 +264,7 @@ impl<T> CorruptionTesterWrapper for CorruptionTesterUnsafe<T> {
     }
 }
 
-impl<T> CorruptionTester<T> {
+impl<T: Copy> CorruptionTester<T> {
     /// Initialize a new tester.
     ///
     /// `ptr` points to an uninitialized `CorruptionTester<T>`. If `init` is `UnsafeDefault`, then
@@ -409,12 +401,6 @@ impl<T> CorruptionTester<T> {
             (transmute(ptr),
              from_raw_parts_mut((ptr + header_size) as *mut u8, (size - header_size)))
         }
-    }
-
-    /// Determine whether `T` is big enough to be used for corruption checking.
-    fn is_big_enough() -> bool {
-        use self::core::mem::size_of;
-        size_of::<CorruptionTester<T>>() >= MIN_SIZE
     }
 
     /// Hash the pointer, state nonce, and random bytes.
@@ -573,14 +559,13 @@ impl<T, O: ObjectAlloc<T>, F: Fn() -> O> TestBuilder<T, O, F> {
     }
 }
 
-impl<T, O: ObjectAlloc<CorruptionTesterDefault<T>>, F: Fn() -> O>
+impl<T: Copy, O: ObjectAlloc<CorruptionTesterDefault<T>>, F: Fn() -> O>
     TestBuilder<CorruptionTesterDefault<T>, O, F>
     where T: Send + 'static,
           O: 'static,
           F: Send + Sync + 'static
 {
     pub fn quickcheck(self) {
-        assert!(CorruptionTesterDefault::<T>::is_big_enough());
         self::quickcheck::test(self.new, self.qc_tests)
     }
 
@@ -589,14 +574,13 @@ impl<T, O: ObjectAlloc<CorruptionTesterDefault<T>>, F: Fn() -> O>
     }
 }
 
-impl<T, O: ObjectAlloc<CorruptionTesterUnsafe<T>>, F: Fn() -> O>
+impl<T: Copy, O: ObjectAlloc<CorruptionTesterUnsafe<T>>, F: Fn() -> O>
     TestBuilder<CorruptionTesterUnsafe<T>, O, F>
     where T: Send + 'static,
           O: 'static,
           F: Send + Sync + 'static
 {
     pub fn quickcheck(self) {
-        assert!(CorruptionTesterUnsafe::<T>::is_big_enough());
         self::quickcheck::test(self.new, self.qc_tests)
     }
 
@@ -607,7 +591,6 @@ impl<T, O: ObjectAlloc<CorruptionTesterUnsafe<T>>, F: Fn() -> O>
 
 impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>, F: Fn() -> O> TestBuilder<C, O, F> {
     fn priv_test(self) {
-        assert!(C::is_big_enough());
         let mut tester = Tester::new((self.new)());
 
         for _ in 0..self.test_iters {

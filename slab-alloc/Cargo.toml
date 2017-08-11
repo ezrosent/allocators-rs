@@ -5,8 +5,8 @@ authors = ["Joshua Liebow-Feeser <hello@joshlf.com>", "Eli Rosenthal <ezrosentha
 keywords = ["allocator", "cache", "object", "slab", "magazine"]
 categories = ["algorithm", "caching", "no-std", "memory-management"]
 
-[profile.release]
-debug = true
+[profile.test]
+opt-level = 3
 
 [features]
 # NOTE: Until Vec supports parametric allocators, we will be unable to compile

@@ -35,10 +35,17 @@ macro_rules! call_macro {
 
 macro_rules! impl_byte_n {
     ($type:ident, $n:tt) => (
+        #[derive(Copy)]
         pub struct $type(pub [u8; $n]);
         impl Default for $type {
             fn default() -> $type {
                 $type([0; $n])
+            }
+        }
+
+        impl Clone for $type {
+            fn clone(&self) -> $type {
+                *self
             }
         }
     )
