@@ -75,7 +75,7 @@ impl stack::ConfigData for ConfigData {
     }
 }
 
-pub type System<A: UntypedObjectAlloc> = stack::System<A, ConfigData>;
+pub type System<A> = stack::System<A, ConfigData>;
 
 pub const DEFAULT_MAP_SIZE: usize = 256;
 

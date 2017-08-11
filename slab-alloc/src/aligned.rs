@@ -35,7 +35,7 @@ impl stack::ConfigData for ConfigData {
     }
 }
 
-pub type System<A: UntypedObjectAlloc> = stack::System<A, ConfigData>;
+pub type System<A> = stack::System<A, ConfigData>;
 
 impl<A: UntypedObjectAlloc> System<A> {
     pub fn new(layout: allocator::Layout, alloc: A) -> Option<System<A>> {

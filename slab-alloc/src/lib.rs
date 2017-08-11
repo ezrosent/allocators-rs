@@ -96,8 +96,8 @@ use backing::mmap::MmapBackingAlloc;
 
 use init::NopInitSystem;
 type DefaultInitSystem<T> = init::InitInitSystem<T, init::DefaultInitializer<T>>;
-type FnInitSystem<T, F: Fn() -> T> = init::InitInitSystem<T, init::FnInitializer<T, F>>;
-type UnsafeFnInitSystem<T, F: Fn() -> T> = init::InitInitSystem<T, init::UnsafeFnInitializer<T, F>>;
+type FnInitSystem<T, F> = init::InitInitSystem<T, init::FnInitializer<T, F>>;
+type UnsafeFnInitSystem<T, F> = init::InitInitSystem<T, init::UnsafeFnInitializer<T, F>>;
 
 lazy_static!{
     static ref PAGE_SIZE: usize = self::sysconf::pagesize();
