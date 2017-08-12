@@ -11,7 +11,7 @@ use core::intrinsics::abort;
 /// The `Exhausted` error indicates that an allocation request has failed due to resources being
 /// unavailable. It strongly implies that *some* sequence of deallocations would allow a subsequent
 /// reissuing of the original allocation request to succeed.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Exhausted;
 
 /// Allocators which allocate objects of a particular type.
