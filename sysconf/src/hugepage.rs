@@ -2,6 +2,7 @@
 
 /// Determine whether huge pages of a particular size are supported.
 #[cfg(target_os = "linux")]
+#[inline(always)]
 pub fn hugepage_supported(size: usize) -> bool {
     // Since the hugepages directories are of the form hugepages-${size}kB, we're guaranteed that,
     // barring a huge change, Linux will never support hugepages smaller than 1kB. Since this
@@ -320,6 +321,7 @@ fn priv_hugepage_supported(exp: usize) -> bool {
 ///
 /// If no huge pages are supported, `default_hugepage` will return `None`.
 #[cfg(any(target_os = "linux", windows))]
+#[inline(always)]
 pub fn default_hugepage() -> Option<usize> {
     *DEFAULT_HUGEPAGE
 }
@@ -339,10 +341,11 @@ fn priv_default_hugepage() -> Option<usize> {
     use kernel32::GetLargePageMinimum;
     unsafe {
         let size = GetLargePageMinimum();
-        // While u64 might be larger than usize (on 32-bit systems), if 'size' were to overflow
-        // usize (and thus be larger than 2^32), that would imply that the huge page size was too
-        // large for the address of the second huge page on the system to be representable with a
-        // pointer. Obviously that wouldn't happen, so we don't bother to check for overflow.
+        // While u64 (GetLargePageMinimum's return type) might be larger than usize (on 32-bit
+        // systems), if 'size' were to overflow usize (and thus be larger than 2^32), that would
+        // imply that the huge page size was too large for the address of the second huge page on
+        // the system to be representable with a pointer. Obviously that wouldn't happen, so we
+        // don't bother to check for overflow.
         if size == 0 { None } else { Some(size as usize) }
     }
 }

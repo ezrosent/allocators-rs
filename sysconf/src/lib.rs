@@ -32,6 +32,7 @@ use errno::errno;
 
 /// Get the system's page size.
 #[cfg(any(unix, windows))]
+#[inline(always)]
 pub fn pagesize() -> usize {
     *PAGESIZE
 }
