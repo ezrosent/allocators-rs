@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
 
 [features]
+# TODO: Rename these features to use dashes instead of underscores
 default = ["check_empty_yq"]
 check_empty_yq = []
 prime_schedules = []

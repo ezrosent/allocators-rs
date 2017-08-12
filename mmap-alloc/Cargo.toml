@@ -5,7 +5,7 @@ authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 
 [features]
 # By default, test builds are not no_std. This feature makes test builds no_std.
-test_no_std = []
+test-no-std = []
 
 [dependencies]
 errno = "0.2"

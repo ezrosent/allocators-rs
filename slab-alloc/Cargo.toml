@@ -9,8 +9,9 @@ categories = ["algorithm", "caching", "no-std", "memory-management"]
 opt-level = 3
 
 [features]
-# NOTE: Until Vec supports parametric allocators, we will be unable to compile
-# without the std feature because the large slab's pointer hash map uses Vecs.
+# NOTE: no-std and no-os are not currently supported; see
+# https://github.com/ezrosent/allocators-rs/issues/2 for
+# progress towards no-std and no-os.
 default = ["std", "os"]
 std = ["os"]
 os = []

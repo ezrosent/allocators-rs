@@ -1,11 +1,11 @@
 // TODO:
 // - Figure out how to panic without allocating
 
-#![cfg_attr(any(not(test), feature = "test_no_std"), no_std)]
-#![cfg_attr(all(test, not(feature = "test_no_std")), feature(test))]
+#![cfg_attr(any(not(test), feature = "test-no-std"), no_std)]
+#![cfg_attr(all(test, not(feature = "test-no-std")), feature(test))]
 #![feature(alloc, allocator_api)]
 
-#[cfg(all(test, not(feature = "test_no_std")))]
+#[cfg(all(test, not(feature = "test-no-std")))]
 extern crate core;
 
 extern crate alloc;
@@ -549,15 +549,15 @@ mod tests {
     use super::perms::*;
 
 
-    #[cfg(not(feature = "test_no_std"))]
+    #[cfg(not(feature = "test-no-std"))]
     extern crate test;
 
     // allow(unused) because these imports aren't used on windows
     #[allow(unused)]
-    #[cfg(not(feature = "test_no_std"))]
+    #[cfg(not(feature = "test-no-std"))]
     use std::time::{Instant, Duration};
     #[allow(unused)]
-    #[cfg(not(feature = "test_no_std"))]
+    #[cfg(not(feature = "test-no-std"))]
     use self::test::Bencher;
 
     // NOTE: Technically mmap is allowed to return 0, but (according to our empirical experience)
@@ -655,10 +655,10 @@ mod tests {
         // NOTE: Pick 2^29 bytes because, on Linux, 2^30 causes mmap to return null, which breaks
         // test_valid_map_address.
         let size = 1 << 29;
-        #[cfg(not(feature = "test_no_std"))]
+        #[cfg(not(feature = "test-no-std"))]
         let t0 = Instant::now();
         ptr = mmap(size, PROT_READ_WRITE, None).unwrap();
-        #[cfg(not(feature = "test_no_std"))]
+        #[cfg(not(feature = "test-no-std"))]
         {
             // In tests on a 2016 MacBook Pro (see bench_large_mmap), a 2^31 byte map/unmap pair
             // took ~5 usec natively (Mac OS X) and ~350 ns in a Linux VM. Thus, 1 ms is a safe
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[cfg(not(windows))]
-    #[cfg(not(feature = "test_no_std"))]
+    #[cfg(not(feature = "test-no-std"))]
     #[bench]
     #[ignore]
     fn bench_large_mmap(b: &mut Bencher) {

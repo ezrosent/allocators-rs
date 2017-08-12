@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>", "Joshua Liebow-Feeser <hello@joshlf.com>"]
 
 [features]
+# TODO: Rename these features to use dashes instead of underscores
 prime_schedules = ["bagpipe/prime_schedules"]
 huge_segments = ["bagpipe/huge_segments"]
 no_lazy_region = []
