@@ -1,10 +1,12 @@
 extern crate elfmalloc;
 extern crate errno;
 extern crate libc;
+extern crate sysconf;
 use errno::{Errno, set_errno};
 use libc::{c_void, size_t, c_int};
 use elfmalloc::general::global;
 use std::ptr;
+use sysconf::pagesize;
 
 #[no_mangle]
 pub extern "C" fn malloc(bytes: size_t) -> *mut c_void {
@@ -66,9 +68,8 @@ pub extern "C" fn posix_memalign(p: *mut *mut c_void, align: size_t, size: size_
 
 #[no_mangle]
 pub extern "C" fn valloc(bytes: size_t) -> *mut c_void {
-    // TODO(ezrosent) make this platform-independent.
-    const PAGE_SIZE: usize = 4096;
-    memalign(PAGE_SIZE, if bytes < PAGE_SIZE { PAGE_SIZE } else { bytes })
+    use std::cmp;
+    memalign(pagesize(), cmp::max(pagesize(), bytes))
 }
 
 #[no_mangle]
