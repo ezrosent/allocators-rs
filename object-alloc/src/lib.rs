@@ -33,6 +33,18 @@ pub struct Exhausted;
 ///
 /// When an `ObjectAlloc` is dropped, all cached `T` objects that have not yet been dropped are
 /// dropped. The order in which they are dropped is undefined.
+///
+/// # Use in unsafe code
+///
+/// Unsafe code may rely on the fact that objects allocated by an `ObjectAlloc` are initialized.
+/// Because of this, it must _not_ be possible for safe code to construct an `ObjectAlloc` that
+/// doesn't properly initialize objects, or else safe code could construct such an `ObjectAlloc`,
+/// pass it to a safe API that uses unsafe code under the hood (and that relies on the
+/// initialization behavior of `ObjectAlloc`s), and thus cause memory unsafety.
+///
+/// It is acceptable for implementors to provide constructors that produce `ObjectAlloc`s that do
+/// not abide by the initialization requirements, but these constructors must be `unsafe` so that
+/// they cannot be called from safe code.
 pub unsafe trait ObjectAlloc<T> {
     /// Allocates an object of type `T`.
     ///
@@ -88,12 +100,13 @@ pub unsafe trait ObjectAlloc<T> {
     }
 }
 
-// TODO: What to do about object initialization for UntypedObjectAlloc?
-
 /// An allocator for objects whose type or size is not known at compile time.
 ///
 /// `UntypedObjectAlloc` is like `ObjectAlloc`, except that the size that it allocates may be
-/// configured at runtime.
+/// configured at runtime. Also unlike `ObjectAlloc`, `UntypedObjectAlloc`s make no guarantees
+/// about initialization of objects. An individual implementation of `UntypedObjectAlloc` may
+/// decide to make such guarantees, but it is not required in order to be a correct implementation
+/// of this trait, and the correctness of unsafe code must not rely on this behavior.
 pub unsafe trait UntypedObjectAlloc {
     /// Obtains the `Layout` of allocated objects.
     ///
@@ -101,7 +114,17 @@ pub unsafe trait UntypedObjectAlloc {
     /// `UntypedObjectAlloc`. All objects obtained via `alloc` are guaranteed to satisfy this
     /// `Layout`.
     fn layout(&self) -> Layout;
+
+    /// Allocates an object of type `T`.
+    ///
+    /// The memory returned by `alloc` is guaranteed to abide by the `Layout` returned from
+    /// `layout`.
     unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted>;
+
+    /// Deallocates an object previously returned by `alloc`.
+    ///
+    /// If `x` was not obtained through a call to `alloc`, or if `x` has already been `dealloc`'d,
+    /// the behavior of `dealloc` is undefined.
     unsafe fn dealloc(&mut self, x: *mut u8);
 
     /// Allocator-specific method for signalling an out-of-memory condition.
