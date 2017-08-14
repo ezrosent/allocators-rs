@@ -129,5 +129,5 @@ outperforming the other allocators in terms of throughput, while using memory at
 a level in between `llalloc` and `jemalloc`. `elfmalloc` performs similarly,
 though it often falls behind `jemalloc` in terms of throughput.
 
-![Producer-Consumer Throughput](elfmalloc-data/prodcons-tp.png?raw=true)
-![Producer-Consumer Memomry](elfmalloc-data/prodcons-mem.png?raw=true)
+![Producer-Consumer Throughput](elfmalloc-data/prod-cons-tp.png?raw=true)
+![Producer-Consumer Memomry](elfmalloc-data/prod-cons-mem.png?raw=true)
