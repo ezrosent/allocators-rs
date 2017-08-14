@@ -8,6 +8,7 @@ prime_schedules = ["bagpipe/prime_schedules"]
 huge_segments = ["bagpipe/huge_segments"]
 no_lazy_region = []
 nightly = []
+local_cache = []
 
 [dependencies]
 bagpipe = { path = "../bagpipe" }

@@ -5,13 +5,23 @@ benchmarks that have been used to evaluate `malloc` performance in
 C/C++. Using the `LD_PRELOAD` mechanism on Linux, we can get something
 of an apples-to-apples measure of how our work stacks up.
 
-Currently, we povide comparable or better performance to the state of
-the art.
-
 This document is a work in progress. We are currently working on
 providing results for more `malloc` implementations in more
 workloads. We are also exploring various optimizations for the
 allocator.
+
+## Two variants of `elfmalloc`
+
+In addition to a standard version (called simply `elfmalloc`), we provide the
+variant `elfmalloc-l`. The `-l` refers to the use of the `LocalCache` front-end
+for the allocator, as opposed to the `MagazineCache` frontend used in the
+default configuration. While `elfmalloc` is almost always superior in terms of
+both throughput and memory usage, `elfmalloc-l` provides better performance in
+the producer-consumer benchmark.
+
+While we are still working on improving the default to have the advantages of
+both frontends, we report the performance numbers of both allocators for the
+time being.
 
 ## Benchmarks
 
@@ -40,10 +50,16 @@ The data here were gathered using a version of the
 The only modifications to the artifact were ones that allowed it to run
 on our testing setup.
 
-These benchmarks were conducted on a 16-core 32-thread workstation with
-2 Xeon E5-2620v4 CPUs on the Windows Subsystem for Linux (WSL).
+These benchmarks were conducted on a 16-core 32-thread workstation with 2 Xeon
+E5-2620v4 CPUs on the Windows Subsystem for Linux (WSL). We benchmark these
+workloads at 1, 2, 4, 8, 16, 24, and 32 threads. For the (1-8) thread
+configurations, all use physical cores.For 16 threads, all threads are scheduled
+on a single socket using all hardware threads. The 24-thread configuration uses
+some subset of the available hardware threads, this time crossing a NUMA domain.
+Finally, the 32-thread benchmark uses all available hardware threads across
+both sockets.
 
-### Competing Allocators
+### Other Allocators Measured
 
 We include two representative allocators to benchmark against. We plan
 to add more in the future (e.g. `scalloc`, which we are having trouble
@@ -58,51 +74,60 @@ getting to run on WSL due to some `mmap`-related issues).
   * `llalloc`: An efficient, proprietary `malloc` from Lockless Inc.
     [link](https://locklessinc.com/)
 
+  * `ptmalloc2`: The default allocator on Linux. Throughput numbers are
+    expressed as a multiple of the numbers for this allocator.
+
 ## Measurements
 
 We provide measurements of both memory consumption throughput for the 3
-workloads described above. In general, we provide comparable
-(though sometimes slightly worse) throughput to `llalloc` while using
-substantially less memory. Compared with `jemalloc` we are consistently
-more efficient, though we have a higher memory overhead.
+workloads described above. A common theme among these results is that `llalloc`
+provides substantially higher throughput compared to `jemalloc`, at the cost of
+much higher memory consumption. By contrast, `elfmalloc` often provides better
+performance than `llalloc` while using a similar amount of memory to `jemalloc`.
 
-We have had some trouble getting the rightmost points on some of these
-graphs to show differences in performance. As a result, we report those
-numbers directly as well as with a graph.
+In order to make the graphs at all readable, we express throughput in terms of a
+multiple over the performance of `ptmalloc2`, which is consistently the slowest
+allocator. For `threadtest` and `shbench`, we provide numbers for both small (64
+bytes or smaller) and medium-sized (a few KB) objects.
 
 ### Threadtest
 
-![Threadtest Throughput](elfmalloc-data/threadtest-tp.png?raw=true)
+Threadtest shows `elfmalloc` almost splitting the difference between `jemalloc`
+and `llalloc`: both in terms of memory usage and throughput. `elfmalloc-l` has
+dissapointing memory performance that we are still looking into.
 
-For throughput, the final numbers for `elfmalloc`, `jemalloc` and
-`llalloc` are 4.2, 4.9, and 3.1, respectively.
 
-![Threadtest Memory](elfmalloc-data/threadtest-mem.png?raw=true)
+![Threadtest Throughput](elfmalloc-data/threadtest-small-tp.png?raw=true)
 
+![Threadtest Memory](elfmalloc-data/threadtest-small-mem.png?raw=true)
+
+For larger objects, `elfmalloc` gets closer in terms of throughput to `llalloc`
+while exceeding the memory efficiency of `jemalloc` at higher thread-counts.
+Both object sizes show an odd spike of memory usage at 4 and 8 threads: we are
+still looking into why this occurs.
+
+![Threadtest Throughput](elfmalloc-data/threadtest-large-tp.png?raw=true)
+
+![Threadtest Memory](elfmalloc-data/threadtest-large-mem.png?raw=true)
 
 ### Shbench
 
-For `shbench` we see the same trend: the difference being that
-`jemalloc` and `elfmalloc` both have much lower single-threaded
-performance than `llalloc`, though they use an order of magnitude less
-memory.
+For `shbench`, `elfmalloc` consistently out-performs all competition in terms of
+both memory and throughput. `elfmalloc-l` performs similarly well, though
+slightly worse on average.
 
-![Shbench Throughput](elfmalloc-data/shbench-tp.png?raw=true)
-![Shbench Memomry](elfmalloc-data/shbench-mem.png?raw=true)
-
-For throughput, the final numbers for `elfmalloc`, `jemalloc` and
-`llalloc` are 0.74, 0.96, and 0.67, respectively.
-
-Now we move onto the larger object sizes:
+![Shbench Throughput](elfmalloc-data/shbench-small-tp.png?raw=true)
+![Shbench Memomry](elfmalloc-data/shbench-small-mem.png?raw=true)
 
 ![Shbench Large Object Throughput](elfmalloc-data/shbench-large-tp.png?raw=true)
 ![Shbench Large Object Memomry](elfmalloc-data/shbench-large-mem.png?raw=true)
 
-We just barely pull ahead here: For throughput, the final numbers
-for `elfmalloc`, `jemalloc` and `llalloc` are 1.6, 1.7, and 2.7,
-respectively.
-
 ### Producer-Consumer
+
+As mentioned above, the producer-consumer benchmark shows `elfmalloc-l`
+outperforming the other allocators in terms of throughput, while using memory at
+a level in between `llalloc` and `jemalloc`. `elfmalloc` performs similarly,
+though it often falls behind `jemalloc` in terms of throughput.
 
 ![Producer-Consumer Throughput](elfmalloc-data/prodcons-tp.png?raw=true)
 ![Producer-Consumer Memomry](elfmalloc-data/prodcons-mem.png?raw=true)
