@@ -731,8 +731,8 @@ mod large_alloc {
     //! This module governs "large" allocations that are beyond the size of the largest size class
     //! of a dynamic allocator.
     //!
-    //! Large allocations are handles by mapping a region of memory of the indicated size, with an
-    //! additional page of padding to store the size information.
+    //! Large allocations are implemented by mapping a region of memory of the indicated size, with
+    //! an additional page of padding to store the size information.
     #[cfg(test)]
     use std::collections::HashMap;
     #[cfg(test)]
@@ -745,6 +745,7 @@ mod large_alloc {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
     use super::mmap::{map, unmap};
+    // TODO(ezrosent): sysconf
     const PAGE_SIZE: isize = 4096;
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
@@ -899,6 +900,9 @@ mod tests {
                 let item = global::alloc(size);
                 write_volatile(item, 10);
                 global::free(item);
+                if size + 2 > 1 << 20 {
+                    return;
+                }
             }
         }
     }
