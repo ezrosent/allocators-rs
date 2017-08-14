@@ -1,14 +1,13 @@
 # elfmalloc Performance Evaluation
 
-This document describes the performance of `elfmalloc` in existing
-benchmarks that have been used to evaluate `malloc` performance in
-C/C++. Using the `LD_PRELOAD` mechanism on Linux, we can get something
-of an apples-to-apples measure of how our work stacks up.
+This document describes the performance of `elfmalloc` in existing benchmarks
+that have been used to evaluate `malloc` performance in C/C++. Using the
+`LD_PRELOAD` mechanism on Linux, we can get something of an apples-to-apples
+measure of how our work stacks up.
 
-This document is a work in progress. We are currently working on
-providing results for more `malloc` implementations in more
-workloads. We are also exploring various optimizations for the
-allocator.
+This document is a work in progress. We are currently working on providing
+results for more `malloc` implementations in more workloads. We are also
+exploring various optimizations for the allocator.
 
 ## Two variants of `elfmalloc`
 
@@ -36,28 +35,26 @@ here, but we encourage anyone curious to examine Section 7 of that paper.
     are freed in the same thread in which they were allocated.
 
   * *Shbench*: Similar to *Threadtest* but with varying object sizes and
-    varying object lifetimes. We also provide numbers for larger (1-8K)
-    object sizes in addition to the smaller object sizes used by
-    *Threadtest*.
+    varying object lifetimes.
 
   * *ACDC Producer-Consumer Workload*: This benchmark involves each
     thread scattering a portion of its allocations among all other threads
     participating in the benchmark. Threads that receive these allocations
     are the ones that free the objects themselves.
 
-The data here were gathered using a version of the
-[`scalloc` artifact](https://github.com/cksystemsgroup/scalloc-artifact).
-The only modifications to the artifact were ones that allowed it to run
-on our testing setup.
+The data here were gathered using a version of the [`scalloc`
+artifact](https://github.com/cksystemsgroup/scalloc-artifact).  The only
+modifications to the artifact were ones that allowed it to run on our testing
+setup.
 
 These benchmarks were conducted on a 16-core 32-thread workstation with 2 Xeon
 E5-2620v4 CPUs on the Windows Subsystem for Linux (WSL). We benchmark these
 workloads at 1, 2, 4, 8, 16, 24, and 32 threads. For the (1-8) thread
-configurations, all use physical cores.For 16 threads, all threads are scheduled
-on a single socket using all hardware threads. The 24-thread configuration uses
-some subset of the available hardware threads, this time crossing a NUMA domain.
-Finally, the 32-thread benchmark uses all available hardware threads across
-both sockets.
+configurations, all use physical cores. For 16 threads, all threads are
+scheduled on a single socket using all hardware threads. The 24-thread
+configuration uses some subset of the available hardware threads, this time
+crossing a NUMA domain.  Finally, the 32-thread benchmark uses all available
+hardware threads across both sockets.
 
 ### Other Allocators Measured
 
@@ -125,9 +122,9 @@ slightly worse on average.
 ### Producer-Consumer
 
 As mentioned above, the producer-consumer benchmark shows `elfmalloc-l`
-outperforming the other allocators in terms of throughput, while using memory at
-a level in between `llalloc` and `jemalloc`. `elfmalloc` performs similarly,
-though it often falls behind `jemalloc` in terms of throughput.
+outperforming the other allocators in terms of throughput, while using memory
+at a level between those of `llalloc` and `jemalloc`. `elfmalloc` performs
+similarly, though it often falls behind `jemalloc` in terms of throughput.
 
 ![Producer-Consumer Throughput](elfmalloc-data/prod-cons-tp.png?raw=true)
 ![Producer-Consumer Memomry](elfmalloc-data/prod-cons-mem.png?raw=true)

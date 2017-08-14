@@ -581,9 +581,8 @@ impl DynamicAllocator {
     }
 }
 
-// NOTE: `type ObjectAlloc<CA> = Lazy<LocalCache<CA>>` also type-checks. We currently feel that
-// MagazineCache provides better trade-offs for dynamic allocation. LocalCache may be suitable for
-// object allocator workloads that emphasize locality and memory efficiency.
+// we default to using the `MagazineCache` here, as it performs better in general. There are some
+// settings in which the `LocalCache` frontend is superior. Hence, we feature-gate this.
 #[cfg(not(feature = "local_cache"))]
 type ObjectAlloc<CA> = Lazy<MagazineCache<CA>>;
 #[cfg(feature = "local_cache")]
