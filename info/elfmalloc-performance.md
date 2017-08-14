@@ -109,15 +109,22 @@ still looking into why this occurs.
 
 ### Shbench
 
-For `shbench`, `elfmalloc` consistently out-performs all competition in terms of
-both memory and throughput. `elfmalloc-l` performs similarly well, though
-slightly worse on average.
+For `shbench`, `elfmalloc` out-performs all competition in terms of both memory
+and throughput for higher core-counts, though it lags behind `llalloc` early
+on.. `elfmalloc-l` performs similarly well, though slightly worse on average.
+It provides very good memory performance across the board, sometimes better
+than `jemalloc`.
+
+Also of note is the memory consumption of `ptmalloc2` and `llalloc`: something
+about the varying lifetimes of objects seems to trip these allocators up here,
+as they use over an order of magnitude more memory than `jemalloc` and
+`elfmalloc`.
 
 ![Shbench Throughput](elfmalloc-data/shbench-small-tp.png?raw=true)
 ![Shbench Memomry](elfmalloc-data/shbench-small-mem.png?raw=true)
 
 ![Shbench Large Object Throughput](elfmalloc-data/shbench-large-tp.png?raw=true)
-![Shbench Large Object Memomry](elfmalloc-data/shbench-large-mem.png?raw=true)
+![Shbench Large Object Memory](elfmalloc-data/shbench-large-mem.png?raw=true)
 
 ### Producer-Consumer
 
@@ -127,4 +134,4 @@ at a level between those of `llalloc` and `jemalloc`. `elfmalloc` performs
 similarly, though it often falls behind `jemalloc` in terms of throughput.
 
 ![Producer-Consumer Throughput](elfmalloc-data/prod-cons-tp.png?raw=true)
-![Producer-Consumer Memomry](elfmalloc-data/prod-cons-mem.png?raw=true)
+![Producer-Consumer Memory](elfmalloc-data/prod-cons-mem.png?raw=true)
