@@ -16,3 +16,4 @@ bsalloc = { path = "../bsalloc" }
 lazy_static = "0.2"
 mmap-alloc = { path = "../mmap-alloc" }
 num_cpus = "1.5"
+object-alloc = { path = "../object-alloc" }

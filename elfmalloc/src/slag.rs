@@ -59,6 +59,9 @@ use super::bagpipe::queue::{RevocableFAAQueue, FAAQueueLowLevel};
 use super::utils::{LazyInitializable, OwnedArray, mmap};
 use std::marker::PhantomData;
 use std::ptr;
+use backing::{BarBackedObjectAlloc, Foo};
+use backing::creek::Creek;
+use backing::page_cache::PageCache;
 
 #[cfg(feature = "nightly")]
 use std::intrinsics::{unlikely, likely};
@@ -348,12 +351,12 @@ pub fn compute_metadata(obj_size: usize,
         debug_assert!(round_up_to_bytes.is_power_of_two());
         debug_assert!(gran > 0);
         debug_assert!({
-            if gran == 1 {
-                padded_size.is_power_of_two()
-            } else {
-                true
-            }
-        });
+                          if gran == 1 {
+                              padded_size.is_power_of_two()
+                          } else {
+                              true
+                          }
+                      });
         let bits_per_object = padded_size >> round_up_to_shift;
         let bits_per_word = mem::size_of::<usize>() * 8;
         let slush_size = bits_per_object - (bits_per_word % bits_per_object);
@@ -413,13 +416,13 @@ pub fn compute_metadata(obj_size: usize,
     #[allow(unused)]
     let (frag, _, mut meta) = (1..(obj_size.next_power_of_two().trailing_zeros() as usize + 1))
         .map(|shift| {
-            meta_inner(obj_size,
-                       page_size,
-                       shift,
-                       local_index,
-                       cutoff_factor,
-                       usable_size)
-        })
+                 meta_inner(obj_size,
+                            page_size,
+                            shift,
+                            local_index,
+                            cutoff_factor,
+                            usable_size)
+             })
         .fold((-10.0, 1000, test_meta),
               |o1, o2| if o1.0 < o2.0 || (o1.0 - o2.0).abs() < 1e-5 && o1.1 > o2.1 {
                   o2
@@ -484,7 +487,8 @@ impl AllocIter {
            object_size: usize)
            -> AllocIter {
         unsafe {
-            let cur_word = first_bitset_word.as_ref()
+            let cur_word = first_bitset_word
+                .as_ref()
                 .expect("bitset must point to valid memory")
                 .swap(0, Ordering::Acquire);
             (*refcnt).dec_n(cur_word.count_ones() as usize);
@@ -816,7 +820,7 @@ impl Coalescer {
 /// structure also allows us to batch together remote frees (by simply composing bit-set masks
 /// ahead of a fetch-or), reducing the number of atomic instructionss that must be issued for most
 /// remote frees.
-pub struct MagazineCache<CA: CoarseAllocator> {
+pub struct MagazineCache<CA: BarBackedObjectAlloc> {
     stack_size: usize,
     s: PtrStack,
     iter: AllocIter,
@@ -824,7 +828,7 @@ pub struct MagazineCache<CA: CoarseAllocator> {
     coalescer: Coalescer,
 }
 
-impl<CA: CoarseAllocator> LazyInitializable for MagazineCache<CA> {
+impl<CA: BarBackedObjectAlloc> LazyInitializable for MagazineCache<CA> {
     type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
     fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
         let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
@@ -832,7 +836,7 @@ impl<CA: CoarseAllocator> LazyInitializable for MagazineCache<CA> {
     }
 }
 
-impl<CA: CoarseAllocator> LazyInitializable for LocalCache<CA> {
+impl<CA: BarBackedObjectAlloc> LazyInitializable for LocalCache<CA> {
     type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
     fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
         let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
@@ -840,7 +844,7 @@ impl<CA: CoarseAllocator> LazyInitializable for LocalCache<CA> {
     }
 }
 
-impl<CA: CoarseAllocator> Drop for MagazineCache<CA> {
+impl<CA: BarBackedObjectAlloc> Drop for MagazineCache<CA> {
     fn drop(&mut self) {
         unsafe {
             let meta = &*self.alloc.m;
@@ -856,13 +860,13 @@ impl<CA: CoarseAllocator> Drop for MagazineCache<CA> {
     }
 }
 
-impl<CA: CoarseAllocator> Clone for MagazineCache<CA> {
+impl<CA: BarBackedObjectAlloc> Clone for MagazineCache<CA> {
     fn clone(&self) -> Self {
         MagazineCache::new_sized(self.alloc.clone(), self.stack_size)
     }
 }
 
-impl<CA: CoarseAllocator> MagazineCache<CA> {
+impl<CA: BarBackedObjectAlloc> MagazineCache<CA> {
     pub fn new_sized(mut alloc: SlagAllocator<CA>, magazine_size: usize) -> Self {
         assert!(magazine_size > 0);
         let s = PtrStack::new(magazine_size);
@@ -945,13 +949,13 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     }
 }
 
-pub struct LocalCache<CA: CoarseAllocator> {
+pub struct LocalCache<CA: BarBackedObjectAlloc> {
     alloc: SlagAllocator<CA>,
     vals: PtrStack,
     iter: AllocIter,
 }
 
-impl<CA: CoarseAllocator> Drop for LocalCache<CA> {
+impl<CA: BarBackedObjectAlloc> Drop for LocalCache<CA> {
     fn drop(&mut self) {
         unsafe {
             let meta = &*self.alloc.m;
@@ -966,13 +970,13 @@ impl<CA: CoarseAllocator> Drop for LocalCache<CA> {
         }
     }
 }
-impl<CA: CoarseAllocator> Clone for LocalCache<CA> {
+impl<CA: BarBackedObjectAlloc> Clone for LocalCache<CA> {
     fn clone(&self) -> LocalCache<CA> {
         LocalCache::new(self.alloc.clone())
     }
 }
 
-impl<CA: CoarseAllocator> LocalCache<CA> {
+impl<CA: BarBackedObjectAlloc> LocalCache<CA> {
     fn new(mut alloc: SlagAllocator<CA>) -> Self {
         unsafe {
             let stack = PtrStack::new((*alloc.m).n_objects);
@@ -994,147 +998,16 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
     }
 
     pub unsafe fn alloc(&mut self) -> *mut u8 {
-        self.vals.pop().or_else(|| self.iter.next()).unwrap_or_else(|| {
-            let next_iter = self.alloc.refresh();
-            self.iter = next_iter;
-            self.iter.next().expect("New iterator should have values")
-        })
-    }
-}
-
-/// Base address and size of a memory map.
-///
-/// This could also just be a `*mut [u8]`, but having two fields is more explicit. We need a new
-/// type because the `Drop` implementation calls `unmap`.
-#[derive(Debug)]
-struct MapAddr(*mut u8, usize);
-
-impl Drop for MapAddr {
-    fn drop(&mut self) {
-        use self::mmap::unmap;
-        unsafe {
-            unmap(self.0, self.1);
-        }
-    }
-}
-
-/// A large, contiguous, memory-mapped region of memory.
-///
-/// A `Creek` can be seen as a very basic memory allocator that can hand back multiples of its
-/// `page_size`. While it does not implement `free`, the programmer can still call `uncommit` or
-/// `unmap` on pages that are returned from a `Creek`. In this module, the `Creek` is used to
-/// manage the (thread-safe) introduction of fresh (clean) pages into the rest of the allocator to
-/// be used.
-///
-/// `Creek`s are initialized with a maximum size and never grow beyond that size. They are made
-/// with a particular idiom in mind in which a larger-than-physical-memory mapping is requested for
-/// the `Creek`, only a fraction of which is ever used by the running program (hence, ever backed
-/// by physical page frames).
-#[derive(Debug)]
-pub struct Creek {
-    page_size: usize,
-    /// We use a `clone`-based interface in order to facilitate passing across threads and
-    /// leveraging `Arc` to call `unmap`.
-    map_info: Arc<MapAddr>,
-    base: *mut u8,
-    bump: AtomicPtr<AtomicUsize>,
-}
-
-unsafe impl Send for MapAddr {}
-unsafe impl Sync for MapAddr {}
-unsafe impl Send for Creek {}
-unsafe impl Sync for Creek {}
-
-macro_rules! check_bump {
-    ($slf:expr) => {
-        #[cfg(debug_assertions)]
-        {
-            let bump = $slf.bump.load(Ordering::Relaxed);
-            debug_assert!(!bump.is_null());
-        }
-    };
-}
-
-impl MemoryBlock for Creek {
-    #[inline]
-    fn page_size(&self) -> usize {
-        check_bump!(self);
-        self.page_size
-    }
-
-    fn carve(&self, npages: usize) -> *mut u8 {
-        check_bump!(self);
-        unsafe {
-            let new_bump = self.bump
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .fetch_add(npages, Ordering::Relaxed);
-            debug_assert!((new_bump * (self.page_size + 1)) < self.map_info.1);
-            // assert!((new_bump * self.page_size) < self.map_info.1);
-            self.base.offset((new_bump * self.page_size) as isize)
-        }
-    }
-
-    fn contains(&self, it: *mut u8) -> bool {
-        check_bump!(self);
-        let it_num = it as usize;
-        let base_num = self.base as usize;
-        it_num >= base_num && it_num < base_num + self.map_info.1
-    }
-}
-
-impl Creek {
-    /// Create a new `Creek` with pages of size `page_size` total heap size of `heap_size`,
-    /// optionally backed by huge pages.
-    ///
-    /// Page size and heap size should be powers of two. The allocator may want to reserve some
-    /// pages for itself (or for alignment reasons), as a result it is a good idea to have
-    /// heap_size be much larger than page_size.
-    fn new(page_size: usize, heap_size: usize) -> Self {
-        use self::mmap::map;
-        // lots of stuff breaks if this isn't true
-        assert!(page_size.is_power_of_two());
-        assert!(page_size > mem::size_of::<usize>());
-        assert!(heap_size > page_size * 3);
-        // first, let's grab some memory;
-        let orig_base = map(heap_size);
-        let orig_addr = orig_base as usize;
-        let (slush_addr, real_addr) = {
-            // allocate some `slush` space at the beginning of the creek. This gives us space to
-            // store the `bump` pointer. In the future, we may store more things in this slush
-            // space as well.
-            //
-            // In addition, we must ensure that pages are aligned to their size.
-            let base = if orig_addr == 0 {
-                orig_addr + page_size
-            } else if orig_addr % page_size != 0 {
-                let rem = orig_addr % page_size;
-                orig_addr + (page_size - rem)
-            } else {
-                orig_addr
-            };
-            (base as *mut u8, (base + page_size) as *mut u8)
-        };
-        Creek {
-            page_size: page_size,
-            map_info: Arc::new(MapAddr(orig_base, heap_size)),
-            base: real_addr,
-            bump: AtomicPtr::new(slush_addr as *mut AtomicUsize),
-        }
-    }
-}
-
-impl Clone for Creek {
-    fn clone(&self) -> Self {
-        let bump = self.bump.load(Ordering::Relaxed);
-        debug_assert!(!bump.is_null());
-        Creek {
-            page_size: self.page_size,
-            map_info: self.map_info.clone(),
-            base: self.base,
-            bump: AtomicPtr::new(bump),
-        }
+        self.vals
+            .pop()
+            .or_else(|| self.iter.next())
+            .unwrap_or_else(|| {
+                                let next_iter = self.alloc.refresh();
+                                self.iter = next_iter;
+                                self.iter
+                                    .next()
+                                    .expect("New iterator should have values")
+                            })
     }
 }
 
@@ -1149,82 +1022,81 @@ impl Clone for Creek {
 ///
 /// TODO: implement a threshold for eager uncommit in the `SlagAllocator` and propagate that to
 /// `CoarseAllocator`
-#[derive(Clone)]
-pub struct PageAlloc<C: MemoryBlock> {
-    target_overhead: usize,
-    creek: C,
-    // bagpipes of byte slices of size creek.page_size
-    clean: SlagPipe<u8>,
-    dirty: SlagPipe<u8>,
-}
+// #[derive(Clone)]
+// pub struct PageAlloc<C: MemoryBlock> {
+//     target_overhead: usize,
+//     creek: C,
+//     // bagpipes of byte slices of size creek.page_size
+//     clean: SlagPipe<u8>,
+//     dirty: SlagPipe<u8>,
+// }
+//
+// impl PageAlloc<Creek> {
+//     /// Create a new `PageAlloc`.
+//     ///
+//     /// Most arguments are forwarded to `Creek::new`, with the exception of `target_overhead`,
+//     /// which is used to uncommit dirty pages if there are too many.
+//     pub fn new(page_size: usize, heap_size: usize, target_overhead: usize) -> Self {
+//         let mut res = PageAlloc {
+//             target_overhead: target_overhead,
+//             creek: Creek::new(page_size, heap_size),
+//             clean: SlagPipe::new_size(2),
+//             dirty: SlagPipe::new_size(8),
+//         };
+//         res.refresh_pages();
+//         res
+//     }
+// }
 
-impl PageAlloc<Creek> {
-    /// Create a new `PageAlloc`.
-    ///
-    /// Most arguments are forwarded to `Creek::new`, with the exception of `target_overhead`,
-    /// which is used to uncommit dirty pages if there are too many.
-    pub fn new(page_size: usize, heap_size: usize, target_overhead: usize) -> Self {
-        let mut res = PageAlloc {
-            target_overhead: target_overhead,
-            creek: Creek::new(page_size, heap_size),
-            clean: SlagPipe::new_size(2),
-            dirty: SlagPipe::new_size(8),
-        };
-        res.refresh_pages();
-        res
-    }
-}
-
-impl<C: MemoryBlock> PageAlloc<C> {
-    /// Get more clean pages from the backing memory.
-    fn refresh_pages(&mut self) {
-        let creek = &self.creek;
-        let iter = (0..4).map(|_| creek.carve(1));
-        self.clean.bulk_add(iter);
-    }
-}
-
-impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
-    type Block = C;
-
-    fn backing_memory(&self) -> &C {
-        &self.creek
-    }
-
-    unsafe fn alloc(&mut self) -> *mut u8 {
-        if let Ok(ptr) = self.dirty.try_pop_mut() {
-            return ptr;
-        }
-        loop {
-            if let Ok(ptr) = self.clean.try_pop_mut() {
-                // dirty the page
-                // ptr::write_volatile((ptr as *mut u8).offset(i), 0);
-                return ptr;
-            }
-            self.refresh_pages();
-        }
-    }
-
-    unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
-        const MINOR_PAGE_SIZE: isize = 4096;
-        use self::mmap::uncommit;
-        use std::cmp;
-        if decommit || self.dirty.size_guess() >= self.target_overhead as isize {
-            let uncommit_len = cmp::max(0,
-                                        self.backing_memory().page_size() as isize -
-                                        MINOR_PAGE_SIZE) as usize;
-            if uncommit_len == 0 {
-                self.dirty.push_mut(ptr);
-            } else {
-                uncommit(ptr.offset(MINOR_PAGE_SIZE), uncommit_len);
-                self.dirty.push_mut(ptr);
-            }
-        } else {
-            self.dirty.push_mut(ptr);
-        }
-    }
-}
-
+// impl<C: MemoryBlock> PageAlloc<C> {
+//     /// Get more clean pages from the backing memory.
+//     fn refresh_pages(&mut self) {
+//         let creek = &self.creek;
+//         let iter = (0..4).map(|_| creek.carve(1));
+//         self.clean.bulk_add(iter);
+//     }
+// }
+//
+// impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
+//     type Block = C;
+//
+//     fn backing_memory(&self) -> &C {
+//         &self.creek
+//     }
+//
+//     unsafe fn alloc(&mut self) -> *mut u8 {
+//         if let Ok(ptr) = self.dirty.try_pop_mut() {
+//             return ptr;
+//         }
+//         loop {
+//             if let Ok(ptr) = self.clean.try_pop_mut() {
+//                 // dirty the page
+//                 // ptr::write_volatile((ptr as *mut u8).offset(i), 0);
+//                 return ptr;
+//             }
+//             self.refresh_pages();
+//         }
+//     }
+//
+//     unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
+//         const MINOR_PAGE_SIZE: isize = 4096;
+//         use self::mmap::uncommit;
+//         use std::cmp;
+//         if decommit || self.dirty.size_guess() >= self.target_overhead as isize {
+//             let uncommit_len = cmp::max(0,
+//                                         self.backing_memory().page_size() as isize -
+//                                         MINOR_PAGE_SIZE) as usize;
+//             if uncommit_len == 0 {
+//                 self.dirty.push_mut(ptr);
+//             } else {
+//                 uncommit(ptr.offset(MINOR_PAGE_SIZE), uncommit_len);
+//                 self.dirty.push_mut(ptr);
+//             }
+//         } else {
+//             self.dirty.push_mut(ptr);
+//         }
+//     }
+// }
 /// A thread-local stack data-structure for caching allocations from an owned `Slag`.
 ///
 /// This implementation is specialized in a few ways:
@@ -1274,7 +1146,7 @@ impl PtrStack {
 
 macro_rules! typed_wrapper {
     ($name:ident, $wrapped:tt) => {
-        pub struct $name<T>($wrapped<PageAlloc<Creek>>, PhantomData<T>);
+        pub struct $name<T>($wrapped<PageCache<Creek>>, PhantomData<T>);
         impl<T> Clone for $name<T> {
             fn clone(&self) -> Self {
                 $name(self.0.clone(), PhantomData)
@@ -1289,7 +1161,7 @@ macro_rules! typed_wrapper {
                                   eager_decommit: usize,
                                   max_objects: usize)
                 -> Self {
-                    let pa = PageAlloc::new(page_size, heap_size, target_overhead);
+                    let pa = PageCache::new(Creek::new(page_size, heap_size), target_overhead);
                     let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
                                                   cutoff_factor, eager_decommit, pa);
                     $name($wrapped::new(slag), PhantomData)
@@ -1315,7 +1187,7 @@ typed_wrapper!(MagazineAllocator, MagazineCache);
 ///
 /// This struct forms the "backend" for a particular thread-local cache. It handles the state
 /// transitions of different `Slag`s and also acquires new `Slag`s for iteration over the bitset.
-pub struct SlagAllocator<CA: CoarseAllocator> {
+pub struct SlagAllocator<CA: BarBackedObjectAlloc> {
     m: *mut Metadata,
     /// The current (local) `Slag`.
     slag: *mut Slag,
@@ -1327,7 +1199,7 @@ pub struct SlagAllocator<CA: CoarseAllocator> {
     eager_decommit_threshold: usize,
 }
 
-impl<CA: CoarseAllocator> Drop for SlagAllocator<CA> {
+impl<CA: BarBackedObjectAlloc> Drop for SlagAllocator<CA> {
     fn drop(&mut self) {
         unsafe {
             let slag = self.slag;
@@ -1336,29 +1208,29 @@ impl<CA: CoarseAllocator> Drop for SlagAllocator<CA> {
             if claimed {
                 // we used this slag at some point
                 if was == meta.n_objects {
-                    self.pages.free(slag as *mut u8, false);
+                    self.pages.dealloc(slag as *mut u8); //, false);
                     // self.transition_full(slag, meta)
                 } else if was >= meta.cutoff_objects {
                     self.transition_available(slag)
                 }
             } else {
                 // we never allocated from this slag, so just free it back to the page allocator
-                self.pages.free(slag as *mut u8, false);
+                self.pages.dealloc(slag as *mut u8); //, false);
             }
         }
     }
 }
 
-unsafe impl<C: CoarseAllocator + Send> Send for SlagAllocator<C> {}
-unsafe impl<C: CoarseAllocator + Sync> Sync for SlagAllocator<C> {}
+unsafe impl<C: BarBackedObjectAlloc + Send> Send for SlagAllocator<C> {}
+unsafe impl<C: BarBackedObjectAlloc + Sync> Sync for SlagAllocator<C> {}
 
-impl<CA: CoarseAllocator> SlagAllocator<CA> {
+impl<CA: BarBackedObjectAlloc> SlagAllocator<CA> {
     pub fn partial_new(meta: *mut Metadata,
                        decommit: usize,
                        mut pa: CA,
                        avail: RevocablePipe<Slag>)
                        -> Self {
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pa.alloc().unwrap() } as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().unwrap());
         };
@@ -1380,11 +1252,11 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         // This is a bit wasteful as one metadata object consumes will wind up consuming a page. In
         // the dynamic allocator these are packed more tightly.
         let meta = Box::into_raw(Box::new(compute_metadata(object_size,
-                                                           pa.backing_memory().page_size(),
+                                                           pa.get_backing().layout().size(),
                                                            index,
                                                            cutoff_factor,
                                                            max_objects)));
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pa.alloc().unwrap() } as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().unwrap());
         };
@@ -1445,10 +1317,10 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             let next_slab = self.available
                 .try_pop_mut()
                 .unwrap_or_else(|_| {
-                    let new_raw = self.pages.alloc() as *mut Slag;
-                    Slag::init(new_raw, meta);
-                    new_raw
-                });
+                                    let new_raw = self.pages.alloc().unwrap() as *mut Slag;
+                                    Slag::init(new_raw, meta);
+                                    new_raw
+                                });
             self.slag = next_slab;
             let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
             let claimed = s_ref.rc.claim();
@@ -1465,7 +1337,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     unsafe fn transition_full(&mut self, slag: *mut Slag, meta: &Metadata) {
         let real_size = meta.usable_size;
         if RevocablePipe::revoke(&slag) {
-            self.pages.free(slag as *mut u8, real_size >= self.eager_decommit_threshold)
+            self.pages.dealloc(slag as *mut u8); //, real_size >= self.eager_decommit_threshold)
         }
         // Otherwise caught in a strange race condition (see comments in alloc). We can
         // safely return without further work.
@@ -1519,10 +1391,10 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     }
 }
 
-impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
+impl<CA: BarBackedObjectAlloc> Clone for SlagAllocator<CA> {
     fn clone(&self) -> Self {
         let mut new_page_handle = self.pages.clone();
-        let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
+        let first_slag = unsafe { new_page_handle.alloc().unwrap() as *mut Slag };
         unsafe {
             Slag::init(first_slag, self.m.as_ref().unwrap());
         };
