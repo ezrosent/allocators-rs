@@ -8,6 +8,7 @@
 #[macro_use]
 extern crate lazy_static;
 extern crate bagpipe;
+#[cfg(not(feature = "use_jemalloc"))]
 extern crate bsalloc;
 extern crate alloc;
 

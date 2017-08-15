@@ -90,11 +90,11 @@ use self::alloc::allocator::Layout;
 
 pub use backing::BackingAlloc;
 #[cfg(feature = "std")]
-use backing::heap::HeapBackingAlloc;
+pub use backing::heap::HeapBackingAlloc;
 #[cfg(feature = "os")]
-use backing::mmap::MmapBackingAlloc;
+pub use backing::mmap::MmapBackingAlloc;
 
-use init::NopInitSystem;
+pub use init::NopInitSystem;
 type DefaultInitSystem<T> = init::InitInitSystem<T, init::DefaultInitializer<T>>;
 type FnInitSystem<T, F> = init::InitInitSystem<T, init::FnInitializer<T, F>>;
 type UnsafeFnInitSystem<T, F> = init::InitInitSystem<T, init::UnsafeFnInitializer<T, F>>;
