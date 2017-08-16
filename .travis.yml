@@ -1,0 +1,14 @@
+language: rust
+rust:
+  - nightly
+os:
+  - linux
+  - osx
+script:
+  - set -x; set -e; for script in */travis.sh; do
+        dir=$(dirname "$script");
+        file=$(basename "$script");
+        pushd "$dir";
+        ./$file;
+        popd;
+    done
