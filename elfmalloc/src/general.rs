@@ -3,8 +3,12 @@
 //! This module also includes special handling of large objects.
 use std::ptr;
 use std::mem;
+
+// One of MagazineCache and LocalCache is unused, depending on whether the 'local_cache' feature is
+// enabled.
+#[allow(unused_imports)]
 use super::slag::{CoarseAllocator, MemoryBlock, MagazineCache, PageAlloc, Creek, Slag, Metadata,
-                  compute_metadata, RevocablePipe};
+                  compute_metadata, RevocablePipe, LocalCache};
 use super::utils::{Lazy, TypedArray, mmap};
 
 #[cfg(feature = "nightly")]
@@ -53,11 +57,14 @@ pub mod global {
     use super::likely;
     use std::ptr;
     use std::cell::UnsafeCell;
+    use std::mem;
     #[allow(unused_imports)]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{Sender, channel};
     use std::sync::Mutex;
     use std::thread;
+
+    type Block = Creek;
 
     #[cfg(all(feature = "nightly", target_thread_local))]
     #[thread_local]
@@ -69,8 +76,8 @@ pub mod global {
     #[thread_local]
     /// A "cached" pointer to the thread-local allocator. This is set after initialization and
     /// set to null out prior to destruction.
-    static mut PTR: *mut ElfMalloc<PageAlloc<Creek>,
-                   TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>> = ptr::null_mut();
+    static mut PTR: *mut ElfMalloc<PageAlloc<Block>,
+                   TieredSizeClasses<ObjectAlloc<PageAlloc<Block>>>> = ptr::null_mut();
 
     #[cfg_attr(feature="cargo-clippy", allow(inline_always))]
     #[inline(always)]
@@ -141,7 +148,7 @@ pub mod global {
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
     struct GlobalAllocator {
-        inner: ElfMalloc<PageAlloc<Creek>, TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>,
+        inner: ElfMalloc<PageAlloc<Block>, TieredSizeClasses<ObjectAlloc<PageAlloc<Block>>>>,
     }
 
     unsafe impl Send for GlobalAllocator {}
@@ -160,6 +167,7 @@ pub mod global {
     /// the case of a recursive call to `free`).
     enum Husk<T> {
         Array(TypedArray<T>),
+        Obj(T),
         #[allow(dead_code)]
         Ptr(*mut u8),
     }
@@ -176,6 +184,8 @@ pub mod global {
                         chan.send(Husk::Array(ptr::read(&self.inner.allocs.small_objs.classes)));
                     let _ =
                         chan.send(Husk::Array(ptr::read(&self.inner.allocs.medium_objs.classes)));
+                    let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
+                    let _ = chan.send(sc);
                 }
             }
             #[cfg(feature = "nightly")]
@@ -196,6 +206,8 @@ pub mod global {
                             .allocs
                             .medium_objs
                             .classes)));
+                        let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
+                        let _ = chan.send(sc);
                     })
                     .unwrap_or_else(|_| unsafe {
                         let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
@@ -207,6 +219,8 @@ pub mod global {
                             .allocs
                             .medium_objs
                             .classes)));
+                        let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
+                        let _ = chan.send(sc);
                     })
             }
         }
@@ -214,7 +228,7 @@ pub mod global {
 
     lazy_static! {
         static ref ELF_HEAP: GlobalAllocator = GlobalAllocator::new();
-        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PageAlloc<Creek>>>>> = {
+        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PageAlloc<Block>>>>> = {
             // Background thread code: block on a channel waiting for memory reclamation messages
             // (Husks).
             let (sender, receiver) = channel();
@@ -231,6 +245,7 @@ pub mod global {
                                 tarray.destroy();
                             },
                             Husk::Ptr(p) => local_alloc.inner.free(p),
+                            Husk::Obj(t) => mem::drop(t),
                         }
                         continue
                     }
@@ -248,7 +263,7 @@ pub mod global {
     }
 
     thread_local! {
-        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk<ObjectAlloc<PageAlloc<Creek>>>> =
+        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk<ObjectAlloc<PageAlloc<Block>>>> =
             DESTRUCTOR_CHAN.lock().unwrap().clone();
         static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(ELF_HEAP.clone());
     }
@@ -375,6 +390,7 @@ trait AllocMap<T>
 /// This includes two runs of size classes: the first (smaller) size classes are multiples of 16.
 /// The larger classes are powers of two.
 struct TieredSizeClasses<T> {
+    word_objs: Option<T>,
     small_objs: Multiples<T>,
     medium_objs: PowersOfTwo<T>,
 }
@@ -385,17 +401,21 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
         let n_small_classes = n_classes / 2;
         let n_medium_classes = n_classes - n_small_classes;
         let (f2, small_classes) = Multiples::init_conserve(start, n_small_classes, f);
-        let (f3, medium_classes) =
+        let (mut f3, medium_classes) =
             PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
+        let word_objs = f3(8);
         (f3,
          TieredSizeClasses {
+             word_objs: Some(word_objs),
              small_objs: small_classes,
              medium_objs: medium_classes,
          })
     }
 
     unsafe fn get_raw(&self, n: usize) -> *mut T {
-        if n <= self.small_objs.max_key() {
+        if n <= 8 {
+            self.word_objs.as_ref().unwrap() as *const _ as *mut T
+        } else if n <= self.small_objs.max_key() {
             self.small_objs.get_raw(n)
         } else {
             self.medium_objs.get_raw(n)
@@ -561,10 +581,12 @@ impl DynamicAllocator {
     }
 }
 
-// NOTE: `type ObjectAlloc<CA> = Lazy<LocalCache<CA>>` also type-checks. We currently feel that
-// MagazineCache provides better trade-offs for dynamic allocation. LocalCache may be suitable for
-// object allocator workloads that emphasize locality and memory efficiency.
+// we default to using the `MagazineCache` here, as it performs better in general. There are some
+// settings in which the `LocalCache` frontend is superior. Hence, we feature-gate this.
+#[cfg(not(feature = "local_cache"))]
 type ObjectAlloc<CA> = Lazy<MagazineCache<CA>>;
+#[cfg(feature = "local_cache")]
+type ObjectAlloc<CA> = Lazy<LocalCache<CA>>;
 
 /// A Dynamic memory allocator, parmetrized on a particular `ObjectAlloc`, `CourseAllocator` and
 /// `AllocMap`.
@@ -592,15 +614,15 @@ impl Default for DynamicAllocator {
     }
 }
 
-impl ElfMalloc<PageAlloc<Creek>, TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>> {
+impl<M: MemoryBlock> ElfMalloc<PageAlloc<M>, TieredSizeClasses<ObjectAlloc<PageAlloc<M>>>> {
     fn new() -> Self {
-        let pa = PageAlloc::new(1 << 21, 1 << 37, 1 << 20);
-        Self::new_internal(32 << 10, 0.8, pa, 8, 25)
+        let pa = PageAlloc::new(1 << 21, 1 << 20);
+        Self::new_internal(128 << 10, 0.6, pa, 8, 25)
     }
 }
 
-impl<AM: AllocMap<ObjectAlloc<PageAlloc<Creek>>, Key = usize>> Clone
-    for ElfMalloc<PageAlloc<Creek>, AM> {
+impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> Clone
+    for ElfMalloc<PageAlloc<M>, AM> {
     fn clone(&self) -> Self {
         let new_map = AM::init(self.start_from,
                                self.n_classes,
@@ -615,10 +637,11 @@ impl<AM: AllocMap<ObjectAlloc<PageAlloc<Creek>>, Key = usize>> Clone
     }
 }
 
-impl<AM: AllocMap<ObjectAlloc<PageAlloc<Creek>>, Key = usize>> ElfMalloc<PageAlloc<Creek>, AM> {
+impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> ElfMalloc<PageAlloc<M>,
+                                                                                     AM> {
     fn new_internal(usable_size: usize,
                     cutoff_factor: f64,
-                    pa: PageAlloc<Creek>,
+                    pa: PageAlloc<M>,
                     start_from: usize,
                     n_classes: usize)
                     -> Self {
@@ -643,7 +666,7 @@ impl<AM: AllocMap<ObjectAlloc<PageAlloc<Creek>>, Key = usize>> ElfMalloc<PageAll
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
-            let params = (m_ptr, 128 << 10, pa.clone(), RevocablePipe::new_size(8));
+            let params = (m_ptr, 256 << 10, pa.clone(), RevocablePipe::new_size(8));
             ObjectAlloc::new(params)
         });
         let max_size = am.max_key();
@@ -708,8 +731,8 @@ mod large_alloc {
     //! This module governs "large" allocations that are beyond the size of the largest size class
     //! of a dynamic allocator.
     //!
-    //! Large allocations are handles by mapping a region of memory of the indicated size, with an
-    //! additional page of padding to store the size information.
+    //! Large allocations are implemented by mapping a region of memory of the indicated size, with
+    //! an additional page of padding to store the size information.
     #[cfg(test)]
     use std::collections::HashMap;
     #[cfg(test)]
@@ -722,6 +745,7 @@ mod large_alloc {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
     use super::mmap::{map, unmap};
+    // TODO(ezrosent): sysconf
     const PAGE_SIZE: isize = 4096;
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
@@ -876,6 +900,9 @@ mod tests {
                 let item = global::alloc(size);
                 write_volatile(item, 10);
                 global::free(item);
+                if size + 2 > 1 << 20 {
+                    return;
+                }
             }
         }
     }

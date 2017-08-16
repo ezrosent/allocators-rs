@@ -37,14 +37,14 @@
 //! value. In this state, frees are performed in the same manner as they were in the *owned* state.
 //! The difference here is that modifications to a `Slag`'s reference count matter: If a free
 //! operation increments the reference count above the cutoff, that thread pushes it to a `BagPipe`
-//! containng `Slag`s that can be re-used.
+//! containing `Slag`s that can be re-used.
 //!
 //! `Slag`s in this `BagPipe` are called *available*. From there, they can transition back to the
 //! *owned* state. However, what if we have a large number of `Slag`s that are completely full? If
 //! they go unused, it makes sense to hand them back to the Operating System.
 //!
 //! An available `Slag` can be transitioned to a *full* `Slag` if it is present in the available
-//! `BagPipe` when it becoems completely full (i.e. all objects from this `Slag` have been freed).
+//! `BagPipe` when it becomes completely full (i.e. all objects from this `Slag` have been freed).
 //! If it is present, then it can be *revoked* (i.e. removed in-place) from the `BagPipe` and
 //! placed in a global cache of dirty pages (mentioned above). From there it can be uncommitted or
 //! cached for use by other object sizes.
@@ -78,13 +78,11 @@ unsafe fn unlikely(b: bool) -> bool {
 type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>>;
 pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>>;
 
-// TODO(ezrosent): migrate to joshlf's interfaces; the one wart is getting clean pages from the
-// coarseallocator itself...
-
 /// A generator of chunks of memory providing an `sbrk`-like interface.
 pub trait MemoryBlock
     where Self: Clone
 {
+    fn new(page_size: usize) -> Self;
     /// The smallest unit of memory that can be `carve`d.
     fn page_size(&self) -> usize;
     /// Is `it` a pointer to somewhere in the block of memory.
@@ -96,7 +94,7 @@ pub trait MemoryBlock
     fn carve(&self, npages: usize) -> *mut u8;
 }
 
-/// An allocator that allocates objects at the granualrity of the page size of the underlying
+/// An allocator that allocates objects at the granularity of the page size of the underlying
 /// `MemoryBlock`.
 pub trait CoarseAllocator
     where Self: Clone
@@ -139,8 +137,7 @@ pub struct Metadata {
     bitset_offset: isize,
     /// Offset (in bytes) from the start of the slag to get to the first object.
     objects_offset: isize,
-    /// the mask used to mark an entry of an object in the bit-set. Always 1 right now.
-    /// TODO(ezrosent) remove this field
+    /// The mask used to initialize a `Slag` bit-set.
     object_mask: usize,
     /// The base-2 log of the amount of memory represented by a bit in a bit-set.
     bit_rep_shift: usize,
@@ -261,7 +258,7 @@ mod ref_count {
 /// are more of a *header* that describes the structure of the rest of the `Slag`. A full `Slag`
 /// corresponds to some large power-of-two bytes (e.g. the page size). In addition to the header,
 /// this is used to store a bit-set which contains information about which elements of the `Slag`
-/// are available, and the objects themselves. For a `Slag` `s`, the bitset corresponds to
+/// are available, along with the objects themselves. For a `Slag` `s`, the bitset corresponds to
 /// `s.meta.n_bitset_words` words in memory starting at `s.meta.bitset_offset` bytes from `s`.
 /// Similarly, `s.meta.n_objects` are stored contiguously starting at `s.meta.objects_offset`.
 pub struct Slag {
@@ -280,7 +277,7 @@ impl Revocable for Slag {
 }
 
 /// Compute an optimal layout for objects of size `obj_size` for `Slag`s of size `page_size` with
-/// cutoff at `1/cutoff_denom` of total objects, and a local index `local_index`.
+/// cutoff a `cutoff_factor` fraction of total objects, and a local index `local_index`.
 ///
 /// This function essentially performs an exhaustive search over the possible number of objects and
 /// the possible values of `bit_rep_shift` and picks the one with the lowest ratio of unused space,
@@ -291,8 +288,12 @@ pub fn compute_metadata(obj_size: usize,
                         cutoff_factor: f64,
                         usable_size: usize)
                         -> Metadata {
-    // TODO cleanup, comment
+    // This is by far the ugliest function in this project. It is all plumbing, heuristics, and
+    // other gross things.
+    // We start with a bunch of useful helper functions:
 
+    /// Calculate the number of bytes in the bitset needed to represent `n_objects` objects, using
+    /// `gran` bits per object.
     fn bitset_bytes(n_objects: usize, gran: usize) -> usize {
         let word_size = mem::size_of::<usize>();
         let word_bits = word_size * 8;
@@ -306,6 +307,8 @@ pub fn compute_metadata(obj_size: usize,
         words * word_size
     }
 
+    /// Calculate the padding (in bytes) required to ensure the `Slag` objects are aligned to
+    /// `alignment` bytes, given `n_objects` objects and `gran` bits per object in the bit-set.
     fn align_padding(alignment: usize, n_objects: usize, gran: usize) -> usize {
         debug_assert!(alignment.is_power_of_two());
         let header_size = mem::size_of::<Slag>();
@@ -314,6 +317,9 @@ pub fn compute_metadata(obj_size: usize,
         rounded - h_bitset_size
     }
 
+    /// Compute the total bytes used for `n_objects` objects each of size `size` bytes represented
+    /// by `gran` bits in the bit-set. This function includes the heuristic that all power-of-two
+    /// sizes are aligned to their size, inserting padding accordingly.
     fn total_bytes(size: usize, gran: usize, n_objects: usize) -> usize {
         let header_size = mem::size_of::<Slag>();
         let padding = if size.is_power_of_two() {
@@ -324,8 +330,14 @@ pub fn compute_metadata(obj_size: usize,
         header_size + bitset_bytes(n_objects, gran) + padding + n_objects * size
     }
 
-    // perform an exhaustive search for the lowest-fragmentation layout of objects of a particular
-    // size, and "shadow size" (i.e. 1 << round_up_to_shift).
+    /// Perform an exhaustive search for the lowest-fragmentation layout of objects of a particular
+    /// size, and "shadow size" (i.e. 1 << round_up_to_shift).
+    ///
+    /// `cutoff_factor` and `local_index` are just passing through configuration parameters.
+    /// `usable_size` is used for smaller object sizes in order for them to use a smaller amount of
+    /// memory than the total page size.
+    ///
+    /// TODO(ezrosent): using a builder for Metadata would clean things up considerably.
     fn meta_inner(size: usize,
                   page_size: usize,
                   round_up_to_shift: usize,
@@ -336,12 +348,16 @@ pub fn compute_metadata(obj_size: usize,
         use std::cmp;
         let usable_size = cmp::min(usable_size, page_size);
         let mut mult = 1.0;
+        // we round up to the nearest round_up_to_bytes. As a result, there may be a small amount
+        // of padding per-object in the `Slag`.
         let round_up_to_bytes = 1 << round_up_to_shift;
         let padding_per_object = {
             let rem = size % round_up_to_bytes;
             if rem == 0 { 0 } else { round_up_to_bytes - rem }
         };
         let padded_size = size + padding_per_object;
+        // gran (read "granularity") is the number of bits used to represent a single object in the
+        // slag bit-set.
         let gran = padded_size / round_up_to_bytes;
         debug_assert!(usable_size > 0);
         debug_assert!(round_up_to_bytes > 0);
@@ -354,12 +370,32 @@ pub fn compute_metadata(obj_size: usize,
                 true
             }
         });
+        // == gran
+        // TODO(ezrosent): remove one of these
         let bits_per_object = padded_size >> round_up_to_shift;
         let bits_per_word = mem::size_of::<usize>() * 8;
+        // Let's say we are storing 24-byte objects with round_up_to_shift=3. This results in each
+        // bit in the bit-set representing 8-byte chunks, with each object being 3 bits in the
+        // bitset.
+        //
+        // On 64-bit machines, this means that objects do not fit exactly into a single word: after
+        // 21 objects we will have used 63 bits, meaning the 22nd object uses the last bit but is
+        // using 2 extra bits in the next bitset word. This number '2' is referred to as "slush".
+        //
+        // During initialization we perform a word_bits + slush_size (in this case, 66)-bit
+        // rotation to compute the masks used for full `Slags`. Part of this is holding the extra
+        // "slush" bits in their own mask. This mask is a `usize`, so slush_size cannot exceed
+        // word_bits.
+        //
+        // NB: Having a slush_size greater than the number of bits in a word is a degenerate case,
+        // as it implies that more than word_bits bits are required to represent a single object in
+        // a bitset. This is essentially never a good idea.
         let slush_size = bits_per_object - (bits_per_word % bits_per_object);
         if bits_per_word < slush_size {
+            // give configurations violating this invariant a negative score
             mult = -1.0;
         }
+        // First, find out how many objects we can fit while using a maximum of `usable_size`
         let mut n_objects = 1;
         loop {
             if total_bytes(padded_size, gran, n_objects + 1) > usable_size {
@@ -367,11 +403,16 @@ pub fn compute_metadata(obj_size: usize,
             }
             n_objects += 1;
         }
+        // Get the alignment padding we are using. Note that this is already computed in
+        // `total_bytes`, we are just extracting it here.
         let align_padding = if padded_size.is_power_of_two() {
             align_padding(padded_size, n_objects, gran)
         } else {
             0
         };
+
+        // This is takes all of the space we use in this configuration and subtracts all of
+        // the "cruft" that isn't used to actually store an object.
         let bs = (total_bytes(padded_size, gran, n_objects) - n_objects * padding_per_object -
                   bitset_bytes(n_objects, gran) - mem::size_of::<Slag>() -
                   align_padding) as f64;
@@ -409,6 +450,8 @@ pub fn compute_metadata(obj_size: usize,
         usable_size: 0,
     };
 
+    // now we perform an exhaustive search over these elements.
+
     // unused in release builds
     #[allow(unused)]
     let (frag, _, mut meta) = (1..(obj_size.next_power_of_two().trailing_zeros() as usize + 1))
@@ -426,6 +469,7 @@ pub fn compute_metadata(obj_size: usize,
               } else {
                   o1
               });
+    // Compute the mask used to represent the first bitset word
     let bits = mem::size_of::<usize>() * 8;
     let bits_per_object = meta.object_size >> meta.bit_rep_shift;
     let mut cur_bit = 0;
@@ -537,8 +581,9 @@ impl Iterator for AllocIter {
             unsafe {
                 self.cur_word ^= 1 << next_bit;
                 let object = self.object_base
-                    .offset((self.object_size * (self.cur_word_index * word_size + next_bit)) as
-                            isize);
+                    .offset((self.object_size *
+                             (self.cur_word_index * word_size +
+                              next_bit)) as isize);
                 return Some(object);
             }
         }
@@ -555,20 +600,12 @@ macro_rules! or_slag_word {
         ($slag:expr, $bitset_offset:expr, $word:expr, $mask:expr) => {
             {
                 let word = $word;
-                // We could do this with atomic operations. Currently we just have an Acquire fence
-                // after writing all of the values. Keeping this code here (along with debugging
-                // information) in case a slower/safer implemenetation is needed for debugging.
-                //
-                let _old = (($slag as *mut u8).offset($bitset_offset) as *mut AtomicUsize)
+                (($slag as *mut u8).offset($bitset_offset) as *mut AtomicUsize)
                     // go to the bitset we want
                     .offset(word as isize)
                     .as_ref()
                     .unwrap()
                     .store($mask, Ordering::Relaxed);
-                // dbg_print!("---\nMasked:\n{:064b} to\n{:064b}\n---", old, old | $mask);
-                // let ptr = (($slag as *mut u8).offset($bitset_offset) as *mut usize)
-                //     .offset(word as isize);
-                // (*ptr) |= $mask;
             }
 
         };
@@ -595,7 +632,7 @@ impl Slag {
     /// Initialize the `Slag`.
     ///
     /// This method is called when a new chunk of memory is acquired, *not* when a `Slag` that is
-    /// already initialized has been `claim`ed. As such, this simply amounts ot initializing all of
+    /// already initialized has been `claim`ed. As such, this simply amounts to initializing all of
     /// the `Slag` data-structures. In order to work in complete generality, the bit-set
     /// initialization is a bit subtle.
     unsafe fn init(slag: *mut Self, meta: &Metadata) {
@@ -603,7 +640,9 @@ impl Slag {
         slf.set_metadata(meta as *const _ as *mut Metadata);
         slf.rc.init(meta.n_objects);
         slf.handle.store(0, Ordering::Relaxed);
-        // TODO: either explain how this works, or replace it with simpler code.
+        // This is scaffolding, we perform a slush_size+bits_per_word-bit rotation to compute the
+        // mask for each word in the bitset. See the comment in `compute_metadata` for a more
+        // detailed example.
         let bits_per_object = meta.object_size >> meta.bit_rep_shift;
         let bits_per_word = mem::size_of::<usize>() * 8;
         let slush_size = bits_per_object - (bits_per_word % bits_per_object);
@@ -775,6 +814,7 @@ impl Coalescer {
     }
 
     fn bucket_num(&self, word: usize) -> usize {
+        // we can do a "fast mod" operation because we know len() is a power of two (see `new`)
         word as usize & (self.0.len() - 1)
     }
 
@@ -797,6 +837,7 @@ impl Coalescer {
                 word: word_ptr,
                 mask: 1 << word_ix,
             };
+            // append this to a stack of buckets we know are non-null
             self.1.push(bucket as *const _ as *mut u8);
             return true;
         }
@@ -814,7 +855,7 @@ impl Coalescer {
 /// The advantage `MagazineCache` has over `LocalCache` is that it will unconditionally push to a
 /// local data-structure if there is room (it doesn't have to be a local free). The magazine
 /// structure also allows us to batch together remote frees (by simply composing bit-set masks
-/// ahead of a fetch-or), reducing the number of atomic instructionss that must be issued for most
+/// ahead of a fetch-or), reducing the number of atomic instruction that must be issued for most
 /// remote frees.
 pub struct MagazineCache<CA: CoarseAllocator> {
     stack_size: usize,
@@ -847,6 +888,7 @@ impl<CA: CoarseAllocator> Drop for MagazineCache<CA> {
             let mask = self.iter.cur_word;
             let word = self.iter.next_word.offset(-1);
             let slag = self.alloc.slag;
+            // bulk-free the current AllocIter word. Then free all elements in the magazine.
             self.alloc.bulk_free(mask, word, slag, meta);
             for i in 0..self.s.top {
                 let item = *self.s.data.get(i);
@@ -924,10 +966,11 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     unsafe fn return_memory(&mut self) {
         debug_assert_eq!(self.s.top as usize, self.stack_size);
         let meta = &*self.alloc.m;
+        // iterate over the stack and attempt to add them to the coalescer.
         for i in 0..self.stack_size {
-            // for i in (self.stack_size / 2)..self.stack_size {
             let item = *self.s.data.get(i);
             if !self.coalescer.insert(item, meta) {
+                // there was a "hash collision", so we simply free `item` directly
                 self.alloc.free(item)
             }
         }
@@ -945,6 +988,14 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     }
 }
 
+/// A `LocalCache` provides thread-local data on top of a `SlagAllocator`.
+///
+/// Like a `MagazineCache`, it includes a stack of pointers to cache allocations. Unlike
+/// `MagazineCache`, only pointers local to the current `Slag` are placed in this stack: the rest
+/// are eagerly freed back to their owning `Slag`. Generally speaking, `LocalCache`s are better at
+/// producer-consumer workloads and worse at predominantly thread-local workloads than the
+/// `MagazineCache`. `LocalCache`s also have stronger guarantees when it comes to object locality:
+/// almost all adjacent allocations will come from the same region of memory.
 pub struct LocalCache<CA: CoarseAllocator> {
     alloc: SlagAllocator<CA>,
     vals: PtrStack,
@@ -1071,7 +1122,6 @@ impl MemoryBlock for Creek {
                 .unwrap()
                 .fetch_add(npages, Ordering::Relaxed);
             debug_assert!((new_bump * (self.page_size + 1)) < self.map_info.1);
-            // assert!((new_bump * self.page_size) < self.map_info.1);
             self.base.offset((new_bump * self.page_size) as isize)
         }
     }
@@ -1082,17 +1132,16 @@ impl MemoryBlock for Creek {
         let base_num = self.base as usize;
         it_num >= base_num && it_num < base_num + self.map_info.1
     }
-}
 
-impl Creek {
     /// Create a new `Creek` with pages of size `page_size` total heap size of `heap_size`,
     /// optionally backed by huge pages.
     ///
     /// Page size and heap size should be powers of two. The allocator may want to reserve some
     /// pages for itself (or for alignment reasons), as a result it is a good idea to have
     /// heap_size be much larger than page_size.
-    fn new(page_size: usize, heap_size: usize) -> Self {
+    fn new(page_size: usize) -> Self {
         use self::mmap::map;
+        let heap_size: usize = 1 << 37;
         // lots of stuff breaks if this isn't true
         assert!(page_size.is_power_of_two());
         assert!(page_size > mem::size_of::<usize>());
@@ -1107,6 +1156,9 @@ impl Creek {
             //
             // In addition, we must ensure that pages are aligned to their size.
             let base = if orig_addr == 0 {
+                // this is a real possibility if we are calling `mmap` directly.
+                // However, `MmapAlloc` currently handles `mmap` returning null, so this is
+                // technically a redundant check.
                 orig_addr + page_size
             } else if orig_addr % page_size != 0 {
                 let rem = orig_addr % page_size;
@@ -1158,24 +1210,21 @@ pub struct PageAlloc<C: MemoryBlock> {
     dirty: SlagPipe<u8>,
 }
 
-impl PageAlloc<Creek> {
+impl PageAlloc<Creek> {}
+
+impl<C: MemoryBlock> PageAlloc<C> {
     /// Create a new `PageAlloc`.
-    ///
-    /// Most arguments are forwarded to `Creek::new`, with the exception of `target_overhead`,
-    /// which is used to uncommit dirty pages if there are too many.
-    pub fn new(page_size: usize, heap_size: usize, target_overhead: usize) -> Self {
+    pub fn new(page_size: usize, target_overhead: usize) -> Self {
         let mut res = PageAlloc {
             target_overhead: target_overhead,
-            creek: Creek::new(page_size, heap_size),
+            creek: C::new(page_size),
             clean: SlagPipe::new_size(2),
             dirty: SlagPipe::new_size(8),
         };
         res.refresh_pages();
         res
     }
-}
 
-impl<C: MemoryBlock> PageAlloc<C> {
     /// Get more clean pages from the backing memory.
     fn refresh_pages(&mut self) {
         let creek = &self.creek;
@@ -1197,8 +1246,6 @@ impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
         }
         loop {
             if let Ok(ptr) = self.clean.try_pop_mut() {
-                // dirty the page
-                // ptr::write_volatile((ptr as *mut u8).offset(i), 0);
                 return ptr;
             }
             self.refresh_pages();
@@ -1233,12 +1280,14 @@ impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
 ///   stack in a valid state. This is because the stack is initialized to have sufficient space
 ///   for an entire `Slag` of pointers for this particular size class, and all `push`es only
 ///   happen after the item in question has been confirmed to belong to a particular `Slag`.
+///   Additional checking must be implemented on top of `PtrStack` if these are not the desired
+///   semantics. See the `MagazineCache` implementation for an example of this.
 ///
-/// * The stack is backed by pages straight from the `Creek`. This has a number of advantages.
-///   It reduces reliance on `Vec`-like structures that are tied to the underlying `malloc`
-///   implementation. It also gives us lazy initialization without any extra work. Fresh pages
-///   from the `Creek` will be uncommited: this means that potentially large allocations of
-///   memory for stacks will only consume physical space when they are used.
+/// * The stack is backed by an `OwnedArray`, which manages its own memory through `mmap`. This has
+///   a number of advantages.  It reduces reliance on `Vec`-like structures that are tied to the
+///   underlying `malloc` implementation. It also gives us lazy initialization without any extra
+///   work. Fresh  will be uncommited: this means that potentially large allocations of memory for
+///   stacks will only consume physical space when they are used.
 struct PtrStack {
     data: OwnedArray<*mut u8>,
     top: usize,
@@ -1284,12 +1333,12 @@ macro_rules! typed_wrapper {
         impl<T> $name<T> {
             pub fn new_standalone(cutoff_factor: f64,
                                   page_size: usize,
-                                  heap_size: usize,
+                                  _heap_size: usize,
                                   target_overhead: usize,
                                   eager_decommit: usize,
                                   max_objects: usize)
                 -> Self {
-                    let pa = PageAlloc::new(page_size, heap_size, target_overhead);
+                    let pa = PageAlloc::new(page_size, target_overhead);
                     let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
                                                   cutoff_factor, eager_decommit, pa);
                     $name($wrapped::new(slag), PhantomData)
@@ -1304,7 +1353,6 @@ macro_rules! typed_wrapper {
             }
         }
         unsafe impl<T> Send for $name<T> {}
-        // unsafe impl<T> Sync for $name<T> {}
     };
 }
 
@@ -1323,7 +1371,7 @@ pub struct SlagAllocator<CA: CoarseAllocator> {
     pages: CA,
     /// Available `Slag`s with metadata matching `m`.
     available: RevocablePipe<Slag>,
-    /// Uncommit memory for full `Slag`s whos real memory footprint exceeds this threshold.
+    /// Uncommit memory for full `Slag`s whose real memory footprint exceeds this threshold.
     eager_decommit_threshold: usize,
 }
 
@@ -1350,7 +1398,6 @@ impl<CA: CoarseAllocator> Drop for SlagAllocator<CA> {
 }
 
 unsafe impl<C: CoarseAllocator + Send> Send for SlagAllocator<C> {}
-unsafe impl<C: CoarseAllocator + Sync> Sync for SlagAllocator<C> {}
 
 impl<CA: CoarseAllocator> SlagAllocator<CA> {
     pub fn partial_new(meta: *mut Metadata,
@@ -1509,7 +1556,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         }
     }
 
-    /// Test if `it` is an element of the currnet `Slag`.
+    /// Test if `it` is an element of the current `Slag`.
     fn contains(&self, it: *mut u8) -> bool {
         unsafe {
             let meta = self.m.as_ref().unwrap();

@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [features]
 nightly = ["elfmalloc/nightly"]
+local_cache = ["elfmalloc/local_cache"]
 
 [dependencies]
 elfmalloc = { path = "../elfmalloc" }
