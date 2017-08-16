@@ -48,20 +48,18 @@ pub struct Exhausted;
 pub unsafe trait ObjectAlloc<T> {
     /// Allocates an object of type `T`.
     ///
-    /// The memory pointed to by the returned raw pointer is guaranteed to be a valid, initialized
-    /// instance of `T`. In particular, the returned object will be in one of the following two
-    /// states:
+    /// If this `ObjectAlloc` was obtained using a safe constructor (as opposed to an `unsafe` one,
+    /// then the memory pointed to by the returned raw pointer is guaranteed to be a valid,
+    /// initialized instance of `T`. In particular, the returned object will be in one of the
+    /// following two states:
     ///
     /// * The result of a call to whatever initialization function was used to configure this
     ///   `ObjectAlloc`
     /// * The same state as a `T` which was previously returned via a call to `dealloc`
     ///
-    /// There is one exception to the above rule: It is valid for `ObjectAlloc`s to provide
-    /// `unsafe` constructors which return an `ObjectAlloc` that returns invalid or uninitialized
-    /// memory from calls to `alloc`, or which accept a constructor function (for `T` objects)
-    /// which is itself `unsafe`, and thus not guaranteed to produce valid instances of `T`. Since
-    /// these `ObjectAlloc` constructors must be `unsafe`, it is not possible for safe Rust code to
-    /// use an `ObjectAlloc` to obtain a reference to uninitialized memory.
+    /// On the other hand, if this `ObjectAlloc` was obtained using an `unsafe` constructor, then
+    /// `alloc` may return uninitialized or invalid instances of `T` - the exact behavior should
+    /// be documented in the constructor.
     ///
     /// The memory returned by `alloc` is guaranteed to be aligned according to the requirements of
     /// `T` (that is, according to `core::mem::align_of::<T>()`).
@@ -73,9 +71,11 @@ pub unsafe trait ObjectAlloc<T> {
     /// the behavior of `dealloc` is undefined.
     ///
     /// It is valid for `x` to be cached and used to serve future calls to `alloc`. The only
-    /// guarantee that is made is that `x` will be dropped at some point during the `ObjectAlloc`'s
-    /// lifetime. This may happen during this call to `dealloc`, when the `ObjectAlloc` itself is
-    /// dropped, or some time in between.
+    /// guarantee that is made is that if this `ObjectAlloc` allocates initialized objects (unsafe
+    /// constructors are allowed to produce `ObjectAlloc`s that do not allocate initialized
+    /// objects), then `x` will be dropped at some point during the `ObjectAlloc`'s lifetime. This
+    /// may happen during this call to `dealloc`, when the `ObjectAlloc` itself is dropped, or some
+    /// time in between.
     unsafe fn dealloc(&mut self, x: *mut T);
 
     /// Allocator-specific method for signalling an out-of-memory condition.
