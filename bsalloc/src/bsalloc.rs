@@ -23,7 +23,7 @@ impl GlobalAllocator {
         GlobalAllocator {
             small_objs: large::Cache::new(1 << 10),
             large_objs: small::Cache::new(18 << 10),
-            ma: MapAlloc::new(),
+            ma: MapAlloc::default(),
         }
     }
 
@@ -35,7 +35,8 @@ impl GlobalAllocator {
         if size < self.large_objs.object_size {
             return self.large_objs.alloc(ma);
         }
-        ma.alloc(Layout::from_size_align(size, 1).unwrap()).expect("mmap should not fail")
+        ma.alloc(Layout::from_size_align(size, 1).unwrap())
+            .expect("mmap should not fail")
     }
 
     pub unsafe fn free(&self, item: *mut u8, size: usize) {

@@ -123,11 +123,11 @@ pub mod mmap {
         if layout.size() != *PAGE_SIZE {
             None
         } else {
-            Some(AllocObjectAlloc::new(MapAlloc::new(), layout))
+            Some(AllocObjectAlloc::new(MapAlloc::default(), layout))
         }
     }
 
     pub fn get_large(layout: Layout) -> AllocObjectAlloc<MapAlloc> {
-        AllocObjectAlloc::new(MapAlloc::new(), layout)
+        AllocObjectAlloc::new(MapAlloc::default(), layout)
     }
 }

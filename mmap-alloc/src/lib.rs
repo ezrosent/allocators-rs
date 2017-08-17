@@ -25,17 +25,16 @@ extern crate winapi;
 
 use self::alloc::allocator::{Alloc, Layout, Excess, AllocErr};
 use self::object_alloc::{Exhausted, UntypedObjectAlloc};
-use self::sysconf::pagesize;
 use core::ptr;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use errno::errno;
 
-/// A builder for `MapAlloc` and `HugeMapAlloc`.
+/// A builder for `MapAlloc`.
 ///
-/// `MapAllocBuilder` represents the configuration of a `MapAlloc` or a `HugeMapAlloc`. New
-/// `MapAllocBuilder`s are constructed using `default`, and then various other methods are used
-/// to set various configuration options.
+/// `MapAllocBuilder` represents the configuration of a `MapAlloc`. New `MapAllocBuilder`s are
+/// constructed using `default`, and then various other methods are used to set various
+/// configuration options.
 ///
 /// # Memory Permissions
 ///
@@ -61,39 +60,51 @@ pub struct MapAllocBuilder {
     read: bool,
     write: bool,
     exec: bool,
+    pagesize: usize,
+    huge_pagesize: Option<usize>,
     obj_size: Option<usize>,
 }
 
 impl MapAllocBuilder {
     pub fn build(&self) -> MapAlloc {
-        MapAlloc(self.build_page_size_alloc(BasicPageSize))
-    }
-
-    pub fn build_huge(&self, hugepage_size: usize) -> HugeMapAlloc {
         #[cfg(target_os = "linux")]
-        assert!(sysconf::hugepage::hugepage_supported(hugepage_size),
-                "unsupported hugepage size: {}",
-                hugepage_size);
-        HugeMapAlloc(self.build_page_size_alloc(HugePageSize(hugepage_size)))
+        {
+            if let Some(huge) = self.huge_pagesize {
+                assert!(sysconf::hugepage::hugepage_supported(huge),
+                        "unsupported hugepage size: {}",
+                        huge);
+            }
+        }
+
+        let obj_size = if let Some(obj_size) = self.obj_size {
+            assert_eq!(obj_size % self.pagesize,
+                       0,
+                       "object size ({}) is not a multiple of the page size ({})",
+                       obj_size,
+                       self.pagesize);
+            obj_size
+        } else {
+            self.pagesize
+        };
+        MapAlloc {
+            pagesize: self.pagesize,
+            huge_pagesize: self.huge_pagesize,
+            perms: perms::get_perm(self.read, self.write, self.exec),
+            obj_size: obj_size,
+        }
     }
 
     #[cfg(target_os = "linux")]
-    pub fn build_huge_default(&self) -> Option<HugeMapAlloc> {
-        sysconf::hugepage::default_hugepage().map(|size| self.build_huge(size))
+    pub fn default_huge_pagesize(mut self) -> MapAllocBuilder {
+        let pagesize = sysconf::hugepage::default_hugepage().expect("huge pages not supported");
+        self.pagesize = pagesize;
+        self.huge_pagesize = Some(pagesize);
+        self
     }
 
-    fn build_page_size_alloc<P: PageSize>(&self, pagesize: P) -> PageSizeAlloc<P> {
-        if let Some(obj_size) = self.obj_size {
-            assert!(obj_size % pagesize.pagesize() == 0,
-                    "object size ({}) is not a multiple of the page size ({})",
-                    obj_size,
-                    pagesize.pagesize());
-            PageSizeAlloc::new_obj_size(pagesize,
-                                        perms::get_perm(self.read, self.write, self.exec),
-                                        obj_size)
-        } else {
-            PageSizeAlloc::new(pagesize, perms::get_perm(self.read, self.write, self.exec))
-        }
+    pub fn huge_pagesize(mut self, pagesize: usize) -> MapAllocBuilder {
+        self.huge_pagesize = Some(pagesize);
+        self
     }
 
     /// Enables read permission for allocated memory.
@@ -165,9 +176,9 @@ impl MapAllocBuilder {
 
     /// Sets the object size for the `UntypedObjectAlloc` implementation.
     ///
-    /// `MapAlloc` and `HugeMapAlloc` implement `UntypedObjectAlloc`. `obj_size` sets the object
-    /// size that will be used by those implementations. It defaults to whatever page size is
-    /// configured for the allocator.
+    /// `MapAlloc` implements `UntypedObjectAlloc`. `obj_size` sets the object size that will be
+    /// used by that implementation. It defaults to whatever page size is configured for the
+    /// allocator.
     pub fn obj_size(mut self, obj_size: usize) -> MapAllocBuilder {
         self.obj_size = Some(obj_size);
         self
@@ -180,182 +191,27 @@ impl Default for MapAllocBuilder {
             read: true,
             write: true,
             exec: false,
+            pagesize: sysconf::pagesize(),
+            huge_pagesize: None,
             obj_size: None,
         }
     }
 }
 
-macro_rules! impl_alloc_inner {
-    () => (
-        unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> { self.0.alloc(layout) }
-        unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) { self.0.dealloc(ptr, layout) }
-        unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> { self.0.alloc_zeroed(layout) }
-        unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> { self.0.alloc_excess(layout) }
-    )
-}
-
-macro_rules! impl_obj_alloc_inner {
-    () => (
-        fn layout(&self) -> Layout { self.0.layout() }
-        unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> { self.0.obj_alloc() }
-        unsafe fn dealloc(&mut self, ptr: *mut u8) { self.0.obj_dealloc(ptr); }
-    )
-}
-
-macro_rules! impl_traits {
-    ($type:ty) => (
-        unsafe impl Alloc for $type { impl_alloc_inner!{} }
-        unsafe impl<'a> Alloc for &'a $type { impl_alloc_inner!{} }
-        unsafe impl UntypedObjectAlloc for $type { impl_obj_alloc_inner!{} }
-        unsafe impl<'a> UntypedObjectAlloc for &'a $type { impl_obj_alloc_inner!{} }
-    )
-}
-
-#[derive(Copy, Clone)]
-struct BasicPageSize;
-
-impl PageSize for BasicPageSize {
-    fn pagesize(&self) -> usize {
-        pagesize()
-    }
-    fn huge_pagesize(&self) -> Option<usize> {
-        None
-    }
-}
-
-pub struct MapAlloc(PageSizeAlloc<BasicPageSize>);
-
-impl MapAlloc {
-    pub fn new() -> MapAlloc {
-        MapAllocBuilder::default().build()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub unsafe fn commit(&self, ptr: *mut u8, layout: Layout) {
-        self.0.commit(ptr, layout);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
-        self.0.uncommit(ptr, layout);
-    }
-}
-
-impl_traits!(MapAlloc);
-
-impl Default for MapAlloc {
-    fn default() -> MapAlloc {
-        MapAlloc::new()
-    }
-}
-
-#[derive(Copy, Clone)]
-struct HugePageSize(usize);
-
-impl PageSize for HugePageSize {
-    fn pagesize(&self) -> usize {
-        self.0
-    }
-    fn huge_pagesize(&self) -> Option<usize> {
-        Some(self.0)
-    }
-}
-
-pub struct HugeMapAlloc(PageSizeAlloc<HugePageSize>);
-
-impl HugeMapAlloc {
-    #[cfg(target_os = "linux")]
-    pub fn new() -> Option<HugeMapAlloc> {
-        MapAllocBuilder::default().build_huge_default()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub unsafe fn commit(&self, ptr: *mut u8, layout: Layout) {
-        self.0.commit(ptr, layout);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
-        self.0.uncommit(ptr, layout);
-    }
-}
-
-impl_traits!(HugeMapAlloc);
-
-// A particular normal or huge page size.
-trait PageSize: Copy {
-    // Returns the page size.
-    fn pagesize(&self) -> usize;
-    // If the page size is a huge page size, returns Some(pagesize()). Otherwise, returns None.
-    fn huge_pagesize(&self) -> Option<usize>;
-}
-
-struct PageSizeAlloc<P: PageSize> {
-    pagesize: P,
+pub struct MapAlloc {
+    pagesize: usize,
+    huge_pagesize: Option<usize>,
     perms: perms::Perm,
     obj_size: usize,
 }
 
-impl<P: PageSize> PageSizeAlloc<P> {
-    fn new(pagesize: P, perms: perms::Perm) -> PageSizeAlloc<P> {
-        PageSizeAlloc::new_obj_size(pagesize, perms, pagesize.pagesize())
+impl Default for MapAlloc {
+    fn default() -> MapAlloc {
+        MapAllocBuilder::default().build()
     }
+}
 
-    fn new_obj_size(pagesize: P, perms: perms::Perm, obj_size: usize) -> PageSizeAlloc<P> {
-        PageSizeAlloc {
-            pagesize,
-            perms,
-            obj_size,
-        }
-    }
-
-    fn layout(&self) -> Layout {
-        if cfg!(debug_assertions) {
-            Layout::from_size_align(self.obj_size, self.pagesize.pagesize()).unwrap()
-        } else {
-            unsafe { Layout::from_size_align_unchecked(self.obj_size, self.pagesize.pagesize()) }
-        }
-    }
-
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        self.alloc_excess(layout).map(|Excess(ptr, _)| ptr)
-    }
-
-    fn obj_alloc(&self) -> Result<*mut u8, Exhausted> {
-        // TODO: There's probably a method that does this more cleanly.
-        match self.alloc_excess(self.layout()) {
-            Ok(Excess(ptr, _)) => Ok(ptr),
-            Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
-            Err(AllocErr::Unsupported { .. }) => unreachable!(),
-        }
-    }
-
-    fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        munmap(ptr, layout.size());
-    }
-
-    fn obj_dealloc(&self, ptr: *mut u8) {
-        munmap(ptr, self.obj_size);
-    }
-
-    fn alloc_zeroed(&self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        self.alloc(layout)
-    }
-
-    fn alloc_excess(&self, layout: Layout) -> Result<Excess, AllocErr> {
-        // alignment less than a page is fine because page-aligned objects are also aligned to
-        // any alignment less than a page
-        if layout.align() > self.pagesize.pagesize() {
-            return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
-        }
-
-        let size = next_multiple(layout.size(), self.pagesize.pagesize());
-        match self.alloc_helper(size) {
-            Some(ptr) => Ok(Excess(ptr, size)),
-            None => Err(AllocErr::Exhausted { request: layout }),
-        }
-    }
-
+impl MapAlloc {
     // alloc_helper performs the requested allocation, properly handling the case in which mmap
     // returns null.
     fn alloc_helper(&self, size: usize) -> Option<*mut u8> {
@@ -368,40 +224,42 @@ impl<P: PageSize> PageSizeAlloc<P> {
         // huge page, since we never write to it, it will remain uncommitted and will thus not
         // consume any physical memory.
         let f = |ptr: *mut u8| if ptr.is_null() {
-            let unmap_size = size - self.pagesize.pagesize();
+            let unmap_size = size - self.pagesize;
             if unmap_size > 0 {
-                munmap(self.pagesize.pagesize() as *mut u8, unmap_size);
+                munmap(self.pagesize as *mut u8, unmap_size);
             }
             // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
             // make other bugs easier to detect.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            mark_unused(ptr::null_mut(), self.pagesize.pagesize());
+            mark_unused(ptr::null_mut(), self.pagesize);
             self.alloc_helper(size)
         } else {
             Some(ptr)
         };
-        mmap(size, self.perms, self.pagesize.huge_pagesize()).and_then(f)
+        mmap(size, self.perms, self.huge_pagesize).and_then(f)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn commit(&self, ptr: *mut u8, layout: Layout) {
+    pub fn commit(&self, ptr: *mut u8, layout: Layout) {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit.
-        let step = if let Some(huge) = self.pagesize.huge_pagesize() {
-            debug_assert!(ptr as usize % huge == 0,
-                          "ptr {:?} not aligned to huge page size {}",
-                          ptr,
-                          huge);
+        let step = if let Some(huge) = self.huge_pagesize {
+            debug_assert_eq!(ptr as usize % huge,
+                             0,
+                             "ptr {:?} not aligned to huge page size {}",
+                             ptr,
+                             huge);
             debug_assert!(layout.align() <= huge);
             huge
         } else {
-            debug_assert!(ptr as usize % self.pagesize.pagesize() == 0,
-                          "ptr {:?} not aligned to page size {}",
-                          ptr,
-                          self.pagesize.pagesize());
-            debug_assert!(layout.align() <= self.pagesize.pagesize());
-            self.pagesize.pagesize()
+            debug_assert_eq!(ptr as usize % self.pagesize,
+                             0,
+                             "ptr {:?} not aligned to page size {}",
+                             ptr,
+                             self.pagesize);
+            debug_assert!(layout.align() <= self.pagesize);
+            self.pagesize
         };
         // TODO: More elegant way to do this?
         // TODO: If the size isn't a multiple of the page size, this math might be wrong.
@@ -413,24 +271,109 @@ impl<P: PageSize> PageSizeAlloc<P> {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+    pub fn uncommit(&self, ptr: *mut u8, layout: Layout) {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
-        if let Some(huge) = self.pagesize.huge_pagesize() {
-            debug_assert!(ptr as usize % huge == 0,
-                          "ptr {:?} not aligned to huge page size {}",
-                          ptr,
-                          huge);
+        if let Some(huge) = self.huge_pagesize {
+            debug_assert_eq!(ptr as usize % huge,
+                             0,
+                             "ptr {:?} not aligned to huge page size {}",
+                             ptr,
+                             huge);
             debug_assert!(layout.align() <= huge);
         } else {
-            debug_assert!(ptr as usize % self.pagesize.pagesize() == 0,
-                          "ptr {:?} not aligned to page size {}",
-                          ptr,
-                          self.pagesize.pagesize());
-            debug_assert!(layout.align() <= self.pagesize.pagesize());
+            debug_assert_eq!(ptr as usize % self.pagesize,
+                             0,
+                             "ptr {:?} not aligned to page size {}",
+                             ptr,
+                             self.pagesize);
+            debug_assert!(layout.align() <= self.pagesize);
         }
         uncommit(ptr, layout.size());
+    }
+}
+
+unsafe impl<'a> Alloc for &'a MapAlloc {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        self.alloc_excess(layout).map(|Excess(ptr, _)| ptr)
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        munmap(ptr, layout.size());
+    }
+
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&'a MapAlloc as Alloc>::alloc(self, layout)
+    }
+
+    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
+        // alignment less than a page is fine because page-aligned objects are also aligned to
+        // any alignment less than a page
+        if layout.align() > self.pagesize {
+            return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
+        }
+
+        let size = next_multiple(layout.size(), self.pagesize);
+        match self.alloc_helper(size) {
+            Some(ptr) => Ok(Excess(ptr, size)),
+            None => Err(AllocErr::Exhausted { request: layout }),
+        }
+    }
+}
+
+unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
+    fn layout(&self) -> Layout {
+        if cfg!(debug_assertions) {
+            Layout::from_size_align(self.obj_size, self.pagesize).unwrap()
+        } else {
+            unsafe { Layout::from_size_align_unchecked(self.obj_size, self.pagesize) }
+        }
+    }
+
+    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+        // TODO: There's probably a method that does this more cleanly.
+        match self.alloc_excess(self.layout()) {
+            Ok(Excess(ptr, _)) => Ok(ptr),
+            Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
+            Err(AllocErr::Unsupported { .. }) => unreachable!(),
+        }
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8) {
+        munmap(ptr, self.obj_size);
+    }
+}
+
+unsafe impl Alloc for MapAlloc {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&MapAlloc as Alloc>::alloc(&mut (&*self), layout)
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        <&MapAlloc as Alloc>::dealloc(&mut (&*self), ptr, layout)
+    }
+
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&MapAlloc as Alloc>::alloc_zeroed(&mut (&*self), layout)
+    }
+
+    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
+        <&MapAlloc as Alloc>::alloc_excess(&mut (&*self), layout)
+    }
+}
+
+unsafe impl UntypedObjectAlloc for MapAlloc {
+    fn layout(&self) -> Layout {
+        <&MapAlloc as UntypedObjectAlloc>::layout(&(&*self))
+    }
+
+    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+        <&MapAlloc as UntypedObjectAlloc>::alloc(&mut (&*self))
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8) {
+        <&MapAlloc as UntypedObjectAlloc>::dealloc(&mut (&*self), ptr);
     }
 }
 
@@ -489,7 +432,7 @@ fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8
     };
 
     let ptr = unsafe {
-        libc::mmap(null_mut(),
+        libc::mmap(ptr::null_mut(),
                    size,
                    perms,
                    MAP_ANONYMOUS | MAP_PRIVATE | flags,
@@ -547,7 +490,7 @@ fn mmap(size: usize, perms: u32, huge_pagesize: Option<usize>) -> Option<*mut u8
         // (see https://msdn.microsoft.com/en-us/library/windows/desktop/ms724958(v=vs.85).aspx),
         // VirtualAlloc only cares about allocation granularity for the pointer argument, not the
         // size. Since we're passing null for the pointer, this doesn't affect us.
-        let ptr = VirtualAlloc(null_mut(), size as u64, typ, perms) as *mut u8;
+        let ptr = VirtualAlloc(ptr::null_mut(), size as u64, typ, perms) as *mut u8;
         // NOTE: Windows can return many different error codes in different scenarios that all
         // relate to being out of memory. Instead of trying to list them all, we assume that any
         // error is an out-of-memory condition. This is fine so long as our code doesn't have a bug
@@ -564,7 +507,7 @@ fn munmap(ptr: *mut u8, size: usize) {
     unsafe {
         // NOTE: Don't inline the call to munmap; then errno might be called before munmap.
         let ret = munmap(ptr as *mut c_void, size);
-        assert!(ret == 0, "munmap failed: {}", errno());
+        assert_eq!(ret, 0, "munmap failed: {}", errno());
     }
 }
 
