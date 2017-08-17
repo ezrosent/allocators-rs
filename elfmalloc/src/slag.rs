@@ -64,12 +64,14 @@ use std::ptr;
 use std::intrinsics::{unlikely, likely};
 
 #[cfg(not(feature = "nightly"))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 unsafe fn likely(b: bool) -> bool {
     b
 }
 
 #[cfg(not(feature = "nightly"))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 unsafe fn unlikely(b: bool) -> bool {
     b
@@ -331,7 +333,7 @@ pub fn compute_metadata(obj_size: usize,
     }
 
     /// Perform an exhaustive search for the lowest-fragmentation layout of objects of a particular
-    /// size, and "shadow size" (i.e. 1 << round_up_to_shift).
+    /// size, and "shadow size" (i.e. `1 << round_up_to_shift`).
     ///
     /// `cutoff_factor` and `local_index` are just passing through configuration parameters.
     /// `usable_size` is used for smaller object sizes in order for them to use a smaller amount of
@@ -363,13 +365,14 @@ pub fn compute_metadata(obj_size: usize,
         debug_assert!(round_up_to_bytes > 0);
         debug_assert!(round_up_to_bytes.is_power_of_two());
         debug_assert!(gran > 0);
+        #[cfg_attr(feature = "cargo-clippy", allow(panic_params))]
         debug_assert!({
-            if gran == 1 {
-                padded_size.is_power_of_two()
-            } else {
-                true
-            }
-        });
+                          if gran == 1 {
+                              padded_size.is_power_of_two()
+                          } else {
+                              true
+                          }
+                      });
         // == gran
         // TODO(ezrosent): remove one of these
         let bits_per_object = padded_size >> round_up_to_shift;
@@ -456,13 +459,13 @@ pub fn compute_metadata(obj_size: usize,
     #[allow(unused)]
     let (frag, _, mut meta) = (1..(obj_size.next_power_of_two().trailing_zeros() as usize + 1))
         .map(|shift| {
-            meta_inner(obj_size,
-                       page_size,
-                       shift,
-                       local_index,
-                       cutoff_factor,
-                       usable_size)
-        })
+                 meta_inner(obj_size,
+                            page_size,
+                            shift,
+                            local_index,
+                            cutoff_factor,
+                            usable_size)
+             })
         .fold((-10.0, 1000, test_meta),
               |o1, o2| if o1.0 < o2.0 || (o1.0 - o2.0).abs() < 1e-5 && o1.1 > o2.1 {
                   o2
@@ -528,7 +531,8 @@ impl AllocIter {
            object_size: usize)
            -> AllocIter {
         unsafe {
-            let cur_word = first_bitset_word.as_ref()
+            let cur_word = first_bitset_word
+                .as_ref()
                 .expect("bitset must point to valid memory")
                 .swap(0, Ordering::Acquire);
             (*refcnt).dec_n(cur_word.count_ones() as usize);
@@ -581,9 +585,8 @@ impl Iterator for AllocIter {
             unsafe {
                 self.cur_word ^= 1 << next_bit;
                 let object = self.object_base
-                    .offset((self.object_size *
-                             (self.cur_word_index * word_size +
-                              next_bit)) as isize);
+                    .offset((self.object_size * (self.cur_word_index * word_size + next_bit)) as
+                            isize);
                 return Some(object);
             }
         }
@@ -1045,11 +1048,16 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
     }
 
     pub unsafe fn alloc(&mut self) -> *mut u8 {
-        self.vals.pop().or_else(|| self.iter.next()).unwrap_or_else(|| {
-            let next_iter = self.alloc.refresh();
-            self.iter = next_iter;
-            self.iter.next().expect("New iterator should have values")
-        })
+        self.vals
+            .pop()
+            .or_else(|| self.iter.next())
+            .unwrap_or_else(|| {
+                                let next_iter = self.alloc.refresh();
+                                self.iter = next_iter;
+                                self.iter
+                                    .next()
+                                    .expect("New iterator should have values")
+                            })
     }
 }
 
@@ -1492,10 +1500,10 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             let next_slab = self.available
                 .try_pop_mut()
                 .unwrap_or_else(|_| {
-                    let new_raw = self.pages.alloc() as *mut Slag;
-                    Slag::init(new_raw, meta);
-                    new_raw
-                });
+                                    let new_raw = self.pages.alloc() as *mut Slag;
+                                    Slag::init(new_raw, meta);
+                                    new_raw
+                                });
             self.slag = next_slab;
             let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
             let claimed = s_ref.rc.claim();
@@ -1508,11 +1516,13 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         self.available.push_mut(slag)
     }
 
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn transition_full(&mut self, slag: *mut Slag, meta: &Metadata) {
         let real_size = meta.usable_size;
         if RevocablePipe::revoke(&slag) {
-            self.pages.free(slag as *mut u8, real_size >= self.eager_decommit_threshold)
+            self.pages
+                .free(slag as *mut u8, real_size >= self.eager_decommit_threshold)
         }
         // Otherwise caught in a strange race condition (see comments in alloc). We can
         // safely return without further work.

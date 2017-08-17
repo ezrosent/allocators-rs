@@ -43,6 +43,7 @@ macro_rules! impl_byte_n {
             }
         }
 
+        #[cfg_attr(feature = "cargo-clippy", allow(expl_impl_clone_on_copy))]
         impl Clone for $type {
             fn clone(&self) -> $type {
                 *self

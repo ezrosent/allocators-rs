@@ -37,6 +37,7 @@ pub mod mmap {
 use std::intrinsics::unlikely;
 
 #[cfg(not(feature = "nightly"))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 unsafe fn unlikely(b: bool) -> bool {
     b
@@ -86,6 +87,7 @@ impl<T: LazyInitializable> Lazy<T> {
 impl<T: LazyInitializable> Deref for Lazy<T> {
     type Target = T;
 
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     fn deref(&self) -> &T {
         let state = unsafe { &mut *self.val.get() };
@@ -97,6 +99,7 @@ impl<T: LazyInitializable> Deref for Lazy<T> {
 }
 
 impl<T: LazyInitializable> DerefMut for Lazy<T> {
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
         let state = unsafe { &mut *self.val.get() };

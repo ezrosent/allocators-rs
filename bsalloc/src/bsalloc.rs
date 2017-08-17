@@ -55,7 +55,7 @@ impl GlobalAllocator {
 
 
 fn rng() -> usize {
-    const RAND_A: usize = 16807;
+    const RAND_A: usize = 16_807;
     let seed_ptr: usize = 0;
     let seed = (&seed_ptr) as *const _ as usize;
     seed * RAND_A

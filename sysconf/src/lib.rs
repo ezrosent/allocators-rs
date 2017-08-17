@@ -32,6 +32,7 @@ use errno::errno;
 
 /// Get the system's page size.
 #[cfg(any(unix, windows))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 pub fn pagesize() -> usize {
     *PAGESIZE

@@ -15,6 +15,7 @@ use super::utils::{Lazy, TypedArray, mmap};
 use std::intrinsics::likely;
 
 #[cfg(not(feature = "nightly"))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 fn likely(b: bool) -> bool {
     b
@@ -42,7 +43,7 @@ pub mod global {
     //!
     //! ## Recursive `malloc` calls
     //!
-    //! When used as a standard `malloc` implementation through the `elfc` crate via LD_PRELOAD,
+    //! When used as a standard `malloc` implementation through the `elfc` crate via `LD_PRELOAD`,
     //! all calls to `malloc` and related functions will be routed through this module. The only
     //! problem is that the code that enqueues destructors for pthread TSD calls `calloc`; this
     //! causes all such calls to stack overflow.
@@ -197,7 +198,8 @@ pub mod global {
                         PTR = ptr::null_mut();
                     }
                 }
-                LOCAL_DESTRUCTOR_CHAN.try_with(|chan| unsafe {
+                LOCAL_DESTRUCTOR_CHAN
+                    .try_with(|chan| unsafe {
                         let _ = chan.send(Husk::Array(ptr::read(&self.inner
                             .allocs
                             .small_objs
@@ -258,7 +260,7 @@ pub mod global {
 
     #[allow(dead_code)]
     lazy_static!{
-        // only used on stable nightly or targets where thread-local is not supported 
+        // only used on stable nightly or targets where thread-local is not supported
         static ref INITIALIZING: AtomicUsize = AtomicUsize::new(0);
     }
 
@@ -289,11 +291,12 @@ pub mod global {
     unsafe fn alloc_inner(size: usize) -> *mut u8 {
         #[cfg(feature = "nightly")]
         {
-            LOCAL_ELF_HEAP.try_with(|h| {
-                    let res = (*h.get()).inner.alloc(size);
-                    PTR = &mut (*h.get()).inner as *mut _;
-                    res
-                })
+            LOCAL_ELF_HEAP
+                .try_with(|h| {
+                              let res = (*h.get()).inner.alloc(size);
+                              PTR = &mut (*h.get()).inner as *mut _;
+                              res
+                          })
                 .unwrap_or_else(|_| super::large_alloc::alloc(size))
         }
 
@@ -325,13 +328,14 @@ pub mod global {
                     return (*PTR).free(item);
                 }
             }
-            LOCAL_ELF_HEAP.try_with(|h| (*h.get()).inner.free(item))
+            LOCAL_ELF_HEAP
+                .try_with(|h| (*h.get()).inner.free(item))
                 .unwrap_or_else(|_| if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
-                    super::large_alloc::free(item);
-                } else {
-                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                    let _ = chan.send(Husk::Ptr(item));
-                })
+                                    super::large_alloc::free(item);
+                                } else {
+                                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                                    let _ = chan.send(Husk::Ptr(item));
+                                })
         }
         #[cfg(not(feature = "nightly"))]
         {
@@ -362,12 +366,14 @@ trait AllocMap<T>
     unsafe fn get_raw(&self, k: Self::Key) -> *mut T;
 
     /// Get an unchecked reference to the class corresponding to `k`.
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn get(&self, k: Self::Key) -> &T {
         &*self.get_raw(k)
     }
 
     /// Get an unchecked mutable reference to the class corresponding to `k`.
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn get_mut(&mut self, k: Self::Key) -> &mut T {
         &mut *self.get_raw(k)
@@ -470,11 +476,13 @@ impl<T> AllocMap<T> for Multiples<T> {
         (f, res)
     }
 
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn get_raw(&self, n: usize) -> *mut T {
         let class = round_up(n);
         debug_assert!(class <= self.max_size);
-        self.classes.get((round_up(n) - self.starting_size) / MULTIPLE)
+        self.classes
+            .get((round_up(n) - self.starting_size) / MULTIPLE)
     }
 
     #[inline]
@@ -502,7 +510,9 @@ struct PowersOfTwo<T> {
 
 impl Drop for DynamicAllocator {
     fn drop(&mut self) {
-        self.0.allocs.foreach(|x| unsafe { ptr::drop_in_place(x) });
+        self.0
+            .allocs
+            .foreach(|x| unsafe { ptr::drop_in_place(x) });
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
@@ -538,6 +548,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
         (f, res)
     }
 
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn get_raw(&self, k: usize) -> *mut T {
         debug_assert!(k <= self.max_size);
@@ -565,7 +576,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// parameters.
 #[derive(Clone)]
 pub struct DynamicAllocator(ElfMalloc<PageAlloc<Creek>,
-                                      TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
+                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -720,7 +731,9 @@ impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> ElfMa
     unsafe fn free(&mut self, item: *mut u8) {
         if likely(self.pages.backing_memory().contains(item)) {
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
-            self.allocs.get_mut(slag.get_metadata().object_size).free(item)
+            self.allocs
+                .get_mut(slag.get_metadata().object_size)
+                .free(item)
         } else {
             large_alloc::free(item)
         }
@@ -839,21 +852,21 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = global::alloc(size * 8);
-                            write_volatile(item, 10);
-                            global::free(item);
-                        }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
+                             .name(t.to_string())
+                             .spawn(move || {
+                for size in 1..(1 << 13) {
+                    // ((1 << 9) + 1)..((1 << 18) + 1) {
+                    unsafe {
+                        let item = global::alloc(size * 8);
+                        write_volatile(item, 10);
+                        global::free(item);
                     }
-                })
-                .unwrap());
+                    if size * 8 >= (1 << 20) {
+                        return;
+                    }
+                }
+            })
+                             .unwrap());
         }
 
         for t in threads {
@@ -871,21 +884,21 @@ mod tests {
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
             threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = da.alloc(size * 8);
-                            write_bytes(item, 0xFF, size * 8);
-                            da.free(item);
-                        }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
+                             .name(t.to_string())
+                             .spawn(move || {
+                for size in 1..(1 << 13) {
+                    // ((1 << 9) + 1)..((1 << 18) + 1) {
+                    unsafe {
+                        let item = da.alloc(size * 8);
+                        write_bytes(item, 0xFF, size * 8);
+                        da.free(item);
                     }
-                })
-                .unwrap());
+                    if size * 8 >= (1 << 20) {
+                        return;
+                    }
+                }
+            })
+                             .unwrap());
         }
 
         for t in threads {

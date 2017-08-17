@@ -9,6 +9,7 @@
 #[cfg(unix)]
 #[macro_use]
 extern crate lazy_static;
+#[cfg_attr(feature = "cargo-clippy", allow(useless_attribute))]
 #[allow(plugin_as_library)]
 extern crate interpolate_idents;
 pub use self::interpolate_idents::*;
