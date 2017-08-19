@@ -408,13 +408,8 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
     }
 }
 
-// TODO: Since UntypedObjectAllocs are not required to allocate out initialized objects, do these
-// methods (unsafe_func and no_initialize) really need to be unsafe?
-
 impl<F: Fn(*mut u8)> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
-    pub unsafe fn unsafe_func(layout: Layout,
-                              f: F)
-                              -> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
+    pub fn func(layout: Layout, f: F) -> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
         UntypedSlabAllocBuilder {
             init: UnsafeFnInitSystem::new(UnsafeFnInitializer::new(f)),
             layout: layout,
@@ -423,7 +418,7 @@ impl<F: Fn(*mut u8)> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
 }
 
 impl UntypedSlabAllocBuilder<NopInitSystem> {
-    pub unsafe fn no_initialize(layout: Layout) -> UntypedSlabAllocBuilder<NopInitSystem> {
+    pub fn new(layout: Layout) -> UntypedSlabAllocBuilder<NopInitSystem> {
         UntypedSlabAllocBuilder {
             init: NopInitSystem,
             layout: layout,
