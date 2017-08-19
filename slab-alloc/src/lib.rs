@@ -614,19 +614,16 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
 
 impl<I: InitSystem, S: SlabSystem<I>> Drop for SizedSlabAlloc<I, S> {
     fn drop(&mut self) {
-        use std::thread::panicking;
-        if panicking() {
-            // TODO: What if somebody recovers from that panic? Then we'll have leaked memory.
-            // Maybe just put the assert_eq!(self.refcnt, 0) inside an 'if !panicking()' block but
-            // still free the slabs?
-
-            // At best this function exits cleanly, in which case it didn't help anything. At
-            // worst, it causes another panic, in which case we panic while panicking, which aborts
-            // the program without a stack trace, which is also unhelpful.
-            return;
+        if self.refcnt != 0 {
+            if std::thread::panicking() {
+                // TODO: We shouldn't panic here because then we'd panic while panicking, and just
+                // abort without printing a useful message. We should figure out an alternative
+                // that allows us to properly print a diagnostic.
+            } else {
+                panic!("non-zero refcount when dropping slab allocator");
+            }
         }
 
-        assert_eq!(self.refcnt, 0);
         while self.freelist.size() > 0 {
             let slab = self.freelist.remove_front();
             self.slab_system.dealloc_slab(slab);
