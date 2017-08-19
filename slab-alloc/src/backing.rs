@@ -103,14 +103,15 @@ pub mod heap {
 pub mod mmap {
     extern crate alloc;
     extern crate mmap_alloc;
+    extern crate sysconf;
     use self::alloc::allocator::Layout;
+    #[cfg(target_os = "linux")]
+    use self::mmap_alloc::{MapAlloc, MapAllocBuilder};
+    #[cfg(not(target_os = "linux"))]
     use self::mmap_alloc::MapAlloc;
     use super::alloc::AllocObjectAlloc;
     use super::BackingAlloc;
     use PAGE_SIZE;
-
-    // TODO: Support huge pages through dynamic dispatch to global static instances or by
-    // dynamically constructing a HugeMapAlloc on each request.
 
     pub struct MmapBackingAlloc;
 
@@ -120,7 +121,20 @@ pub mod mmap {
     }
 
     pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<MapAlloc>> {
+        debug_assert_eq!(layout.size(), layout.align());
         if layout.size() != *PAGE_SIZE {
+            #[cfg(target_os = "linux")]
+            {
+                if self::sysconf::hugepage::hugepage_supported(layout.size()) {
+                    let map = MapAllocBuilder::default()
+                        .huge_pagesize(layout.size())
+                        .build();
+                    Some(AllocObjectAlloc::new(map, layout))
+                } else {
+                    None
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
             None
         } else {
             Some(AllocObjectAlloc::new(MapAlloc::default(), layout))
@@ -128,6 +142,7 @@ pub mod mmap {
     }
 
     pub fn get_large(layout: Layout) -> AllocObjectAlloc<MapAlloc> {
+        debug_assert!(layout.align() <= *PAGE_SIZE);
         AllocObjectAlloc::new(MapAlloc::default(), layout)
     }
 }
