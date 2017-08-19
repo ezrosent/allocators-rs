@@ -1,6 +1,11 @@
 extern crate alloc;
 use self::alloc::heap::{Alloc, AllocErr, Heap, Layout};
 
+/// An allocator that only frees memory when it is dropped.
+///
+/// `LeakyAlloc` is an allocator whose `dealloc` method doesn't actually free memory, but simply
+/// retains any dealloc'd memory until the `LeakyAlloc` itself is dropped. It is useful for
+/// testing.
 #[derive(Default)]
 pub struct LeakyAlloc {
     allocs: Vec<Ptr>,
@@ -20,6 +25,7 @@ impl Drop for Ptr {
 }
 
 impl LeakyAlloc {
+    /// Creates a new `LeakyAlloc`.
     pub fn new() -> LeakyAlloc {
         LeakyAlloc { allocs: Vec::new() }
     }

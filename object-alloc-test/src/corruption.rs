@@ -527,6 +527,12 @@ impl<T, O: ObjectAlloc<T>, F: Fn() -> O> TestBuilder<T, O, F> {
     /// the same. The only difference is that an allocator of `CorruptionTesterUnsafe` objects
     /// can be tested for a slightly larger set of corruption errors, and so it should be preferred
     /// if possible.
+    ///
+    /// # `LeakyAlloc`
+    ///
+    /// If possible, the returned `ObjectAlloc` should use a `LeakyAlloc` to supply its backing
+    /// memory. This will make it so that freed backing memory still remains accessible, which
+    /// provides this testing framework with a better chance of catching certain types of bugs.
     pub fn new(new: F) -> TestBuilder<T, O, F> {
         TestBuilder {
             new,
