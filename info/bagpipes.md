@@ -130,7 +130,7 @@ Threads interacting with a `Bagpipe` traverse random permutations of this array,
 calling `try_pop` and `try_push` on each individual "pipe" they encounter. The
 semantics of the *try* methods from the `SharedWeakBag` trait are such that
 threads only stop pushing to or popping from queues that are under load. This
-allow for some light-weight load-balancing of the queues without any additional
+allows for some light-weight load-balancing of the queues without any additional
 coordination required.
 
 This structure also allows threads to bail out early if they are preempted too
@@ -152,7 +152,7 @@ memory usage. While they are currently configured for the more memory-cautious
 environment of an allocator, we plan to make them configurable to optimize for
 throughput, either via feature flags or type parameters. Anecdotally, I believe
 I got the Yang Crummey-backed `Bagpipe` to get 200Mops/s, but that required
-64KiB segments, increasing steady-state memory consumption by several orders of
+64KiB segments, increasing steady-state memory consumption by an order of
 magnitude.
 
 The benchmark code is in the `bagpipe/src/bin/bench_bag.rs` directory.
