@@ -42,7 +42,7 @@ pub trait SharedWeakBag {
     /// The default implementation of `push` simply calls `try_push`
     /// in a loop. until it succeeds. Depending on the underlying
     /// data-structure this may loop infinitely under some
-    /// circumstancecs.
+    /// circumstances.
     ///
     /// `push` also creates a `Guard` for the duration of the function
     /// to avoid excessive checking in the hot loop.
@@ -150,9 +150,7 @@ pub trait Revocable {
 }
 
 
-// remember when I said this was low-level? ;)
-//
-// But in all honesty, this is a code smell. The reason why it is here is to allow for custom
+// This is a code smell. The reason why it is here is to allow for custom
 // revocable types to be revocable even when they are stored as raw pointers in one of the "low
 // level" bags.
 
@@ -173,7 +171,9 @@ pub trait RevocableWeakBag: SharedWeakBag
     unsafe fn revoke(it: &Self::Item) -> bool;
 }
 
-// implement WeakBag for the stack and queues in crossbeam
+// implement WeakBag for the stack and queues in crossbeam. Note that these don't have the full
+// "try" semantics that we want, as they never fail. As a result, they should not be used in a
+// `BagPipe`: everything will work, but 
 
 impl<T> SharedWeakBag for TreiberStack<T> {
     type Item = T;
