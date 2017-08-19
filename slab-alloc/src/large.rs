@@ -170,11 +170,11 @@ mod tests {
                 alloc.dealloc(p);
             }
 
-            println_stderr!("Size: {}", size);
+            eprintln!("Size: {}", size);
             for (i, b) in buckets.iter().enumerate() {
-                println_stderr!("{:>3}: {:?}", i, b);
+                eprintln!("{:>3}: {:?}", i, b);
             }
-            println_stderr!("");
+            eprintln!("");
         }
     }
 

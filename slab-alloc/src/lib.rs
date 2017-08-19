@@ -49,14 +49,6 @@
 
 #![plugin(interpolate_idents)]
 
-/// `println_stderr!` is identical to `println!`, except it writes to stderr.
-#[cfg_attr(not(test), allow(unused))]
-macro_rules! println_stderr {
-    () => ({use std; use std::io::Write; let _ = writeln!(&mut std::io::stderr());});
-    ($fmt:expr) => ({use std; use std::io::Write; let _ = writeln!(&mut std::io::stderr(), $fmt);});
-    ($fmt:expr, $($arg:tt)*) => ({use std; use std::io::Write; let _ = writeln!(&mut std::io::stderr(), $fmt, $($arg)*);});
-}
-
 mod aligned;
 mod backing;
 mod init;
