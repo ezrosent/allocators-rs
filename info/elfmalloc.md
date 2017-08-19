@@ -1,9 +1,13 @@
 # `elfmalloc` Design
 
-This document provides a brief overview of the design of `elfmalloc`. We
-currently do not yet have a full related-work section here, as `malloc` has a long
-history. Until then, we briefly mention that this design is indebted to various
-other memory allocators:
+This document provides a brief overview of the design of `elfmalloc`. It
+currently leaves out a lot of the gory details. While that may change in the
+future, the current best source of information on those is the code itself and
+the documentation that accompanies it. The intent is that this summary will
+equip the reader with enough context that the code's documentation will be more
+accessible. We currently do not yet have a full related-work section here, as
+`malloc` has a long history. Until then, we briefly mention that this design is
+indebted to various other memory allocators:
 
 * Solaris slab allocators, in their initial and magazine-based forms.
 * "Caching allocators" like TCMalloc, Hoard, and jemalloc.
@@ -209,6 +213,11 @@ frees first attempt to push onto this stack. If the stack is full, all of its
 contents are freed remotely. This structure allows us to coalesce these remote
 free operations (composing masks ahead of the `fetch-or`), reducing the number
 of atomic operations required for a particular remote free operation.
+
+The code is structured to support multiple different front-ends. We have an
+experimental alternative that only caches local allocations in a local stack,
+eagerly performing remote free operations. See `elfmalloc-performance.md` for
+more information on the performance trade-offs of these two approaches.
 
 ## General Allocation
 

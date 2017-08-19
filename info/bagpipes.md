@@ -1,4 +1,4 @@
-# Bagpipes: Scalable Concurrent Bags.
+# Bagpipes: Scalable Concurrent Bags
 
 Bagpipes are a simple data-structure that relies on common structure present in
 non-blocking queues to provide a more scalable queue-like data-structure with
@@ -9,7 +9,7 @@ approach here bares some resemblance to [`scalloc`'s](https://arxiv.org/pdf/1503
 *span pool* data-structure, itself inspired by the [Distributed Queues](https://www.semanticscholar.org/paper/Distributed-queues-in-shared-memory-multicore-perf-Haas-Lippautz/3c1e0e9c5b774f8d1b7522e7b7ea90634b1e252a)
 of Haas et al.
 
-The primary difference between our approaches and theirs is:
+The primary difference between our approach and theirs is:
 
 * We leverage more scalable fetch-add based queues as the basis of the
   data-structure.
