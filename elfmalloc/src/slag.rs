@@ -1210,8 +1210,6 @@ pub struct PageAlloc<C: MemoryBlock> {
     dirty: SlagPipe<u8>,
 }
 
-impl PageAlloc<Creek> {}
-
 impl<C: MemoryBlock> PageAlloc<C> {
     /// Create a new `PageAlloc`.
     pub fn new(page_size: usize, target_overhead: usize) -> Self {
