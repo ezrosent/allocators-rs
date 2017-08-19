@@ -1,3 +1,4 @@
+extern crate alloc;
 extern crate object_alloc;
 extern crate object_alloc_test;
 extern crate rand;
@@ -5,14 +6,37 @@ extern crate sysconf;
 extern crate test;
 
 use SlabAllocBuilder;
+use self::alloc::allocator::Layout;
 use self::object_alloc::{Exhausted, ObjectAlloc};
 use self::test::Bencher;
-use core::default::Default;
+use self::object_alloc_test::leaky_alloc::LeakyAlloc;
+use backing::alloc::AllocObjectAlloc;
+use backing::BackingAlloc;
+use SlabAlloc;
 
 fn infer_allocator_type<T>(alloc: &mut ObjectAlloc<T>) {
     if false {
         let _: Result<*mut T, Exhausted> = unsafe { alloc.alloc() };
     }
+}
+
+struct LeakyBackingAlloc;
+
+impl BackingAlloc for LeakyBackingAlloc {
+    type Aligned = AllocObjectAlloc<LeakyAlloc>;
+    type Large = AllocObjectAlloc<LeakyAlloc>;
+}
+
+fn leaky_get_aligned(layout: Layout) -> Option<AllocObjectAlloc<LeakyAlloc>> {
+    if layout.align() == self::sysconf::pagesize() {
+        Some(AllocObjectAlloc::new(LeakyAlloc::new(), layout))
+    } else {
+        None
+    }
+}
+
+fn leaky_get_large(layout: Layout) -> AllocObjectAlloc<LeakyAlloc> {
+    AllocObjectAlloc::new(LeakyAlloc::new(), layout)
 }
 
 fn test_memory_corruption<T: Copy + Send + 'static>() {
@@ -25,7 +49,12 @@ fn test_memory_corruption<T: Copy + Send + 'static>() {
         Err(_) => default,
     };
     let f = |align| {
-        let new = move || SlabAllocBuilder::default().align(align).build();
+        let new = move || {
+            SlabAllocBuilder::default()
+                .align(align)
+                .build_backing(leaky_get_aligned, leaky_get_large) as
+            SlabAlloc<_, _, LeakyBackingAlloc>
+        };
         infer_allocator_type::<CorruptionTesterDefault<T>>(&mut new());
         TestBuilder::new(new).test_iters(iters).test();
     };
@@ -42,7 +71,12 @@ fn test_quickcheck_memory_corruption<T: Copy + Send + 'static>() {
         Err(_) => default,
     };
     let f = |align| {
-        let new = move || SlabAllocBuilder::default().align(align).build();
+        let new = move || {
+            SlabAllocBuilder::default()
+                .align(align)
+                .build_backing(leaky_get_aligned, leaky_get_large) as
+            SlabAlloc<_, _, LeakyBackingAlloc>
+        };
         infer_allocator_type::<CorruptionTesterDefault<T>>(&mut new());
         TestBuilder::new(new)
             .quickcheck_tests(tests)
