@@ -6,9 +6,9 @@ extern crate sysconf;
 extern crate test;
 
 use SlabAllocBuilder;
-use self::alloc::allocator::Layout;
+use self::alloc::heap::{Alloc, Heap, Layout};
 use self::object_alloc::{Exhausted, ObjectAlloc};
-use self::test::Bencher;
+use self::test::{Bencher, black_box};
 use self::object_alloc_test::leaky_alloc::LeakyAlloc;
 use backing::alloc::AllocObjectAlloc;
 use backing::BackingAlloc;
@@ -134,24 +134,30 @@ call_for_all_types_prefix!(make_test_quickcheck_memory_corruption,
 fn bench_alloc_no_free<T: Default>(b: &mut Bencher) {
     let mut alloc = SlabAllocBuilder::default().build();
     infer_allocator_type::<T>(&mut alloc);
-    // test::black_box isn't necessary here; alloc.alloc won't be optimized away.
-    // However, we keep it in order to be fair to bench_alloc_no_free_system, which
-    // has to use it in order to avoid the call to Box::new being optimized away.
-    b.iter(|| test::black_box(unsafe { alloc.alloc() }));
+    b.iter(|| unsafe { black_box(alloc.alloc().unwrap()) });
     // since we didn't free anything, dropping alloc would result in a refcnt check failing
     use std::mem;
     mem::forget(alloc);
 }
 
 #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
-fn bench_alloc_no_free_system<T: Default>(b: &mut Bencher) {
+fn bench_alloc_no_free_no_init<T: Default>(b: &mut Bencher) {
+    let mut alloc = unsafe { SlabAllocBuilder::no_initialize().build() };
+    infer_allocator_type::<T>(&mut alloc);
+    b.iter(|| unsafe { black_box(alloc.alloc().unwrap()) });
+    // since we didn't free anything, dropping alloc would result in a refcnt check failing
     use std::mem;
-    // use test::black_box so that StdBox::new isn't optimized away
-    b.iter(|| mem::forget(test::black_box(Box::new(T::default()))));
+    mem::forget(alloc);
 }
 
 #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
-fn bench_alloc_free<T: Default>(b: &mut Bencher) {
+fn bench_alloc_no_free_heap<T: Default>(b: &mut Bencher) {
+    let layout = Layout::new::<T>();
+    b.iter(|| unsafe { black_box(Heap.alloc(layout.clone()).unwrap()) });
+}
+
+#[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
+fn bench_alloc_free_pairs<T: Default>(b: &mut Bencher) {
     let mut alloc = SlabAllocBuilder::default().build();
     infer_allocator_type::<T>(&mut alloc);
     // keep one allocated at all times so the slab will never be freed;
@@ -159,6 +165,7 @@ fn bench_alloc_free<T: Default>(b: &mut Bencher) {
     let t = unsafe { alloc.alloc().unwrap() };
     b.iter(|| unsafe {
                let t = alloc.alloc().unwrap();
+               black_box(t);
                alloc.dealloc(t);
            });
     unsafe {
@@ -167,21 +174,30 @@ fn bench_alloc_free<T: Default>(b: &mut Bencher) {
 }
 
 #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
-fn bench_alloc_free_box<T: Default>(b: &mut Bencher) {
-    let mut alloc = SlabAllocBuilder::default().build();
+fn bench_alloc_free_pairs_no_init<T: Default>(b: &mut Bencher) {
+    let mut alloc = unsafe { SlabAllocBuilder::no_initialize().build() };
     infer_allocator_type::<T>(&mut alloc);
     // keep one allocated at all times so the slab will never be freed;
     // we're trying to bench the best-case performance, not the slab gc policy
     let t = unsafe { alloc.alloc().unwrap() };
-    b.iter(|| Box::new(&alloc));
+    b.iter(|| unsafe {
+               let t = alloc.alloc().unwrap();
+               black_box(t);
+               alloc.dealloc(t);
+           });
     unsafe {
         alloc.dealloc(t);
     }
 }
 
 #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
-fn bench_alloc_free_system<T: Default>(b: &mut Bencher) {
-    b.iter(|| Box::new(T::default()));
+fn bench_alloc_free_pairs_heap<T: Default>(b: &mut Bencher) {
+    let layout = Layout::new::<T>();
+    b.iter(|| unsafe {
+               let t = Heap.alloc(layout.clone()).unwrap();
+               black_box(t);
+               Heap.dealloc(t, layout.clone());
+           });
 }
 
 macro_rules! make_bench_alloc_no_free {
@@ -193,45 +209,58 @@ macro_rules! make_bench_alloc_no_free {
         fn $name(b: &mut Bencher) { bench_alloc_no_free::<$typ>(b); }
     );
 }
-macro_rules! make_bench_alloc_no_free_system {
+macro_rules! make_bench_alloc_no_free_no_init {
     ($name:ident, $typ:ty) => (
         #[bench]
         #[cfg(feature = "build-ignored-tests")]
         #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
         #[ignore]
-        fn $name(b: &mut Bencher) { bench_alloc_no_free_system::<$typ>(b); }
+        fn $name(b: &mut Bencher) { bench_alloc_no_free_no_init::<$typ>(b); }
     );
 }
-macro_rules! make_bench_alloc_free {
+macro_rules! make_bench_alloc_no_free_heap {
     ($name:ident, $typ:ty) => (
         #[bench]
         #[cfg(feature = "build-ignored-tests")]
         #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
         #[ignore]
-        fn $name(b: &mut Bencher) { bench_alloc_free::<$typ>(b); }
+        fn $name(b: &mut Bencher) { bench_alloc_no_free_heap::<$typ>(b); }
     );
 }
-macro_rules! make_bench_alloc_free_box {
+macro_rules! make_bench_alloc_free_pairs {
     ($name:ident, $typ:ty) => (
         #[bench]
         #[cfg(feature = "build-ignored-tests")]
         #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
         #[ignore]
-        fn $name(b: &mut Bencher) { bench_alloc_free_box::<$typ>(b); }
+        fn $name(b: &mut Bencher) { bench_alloc_free_pairs::<$typ>(b); }
     );
 }
-macro_rules! make_bench_alloc_free_system {
+macro_rules! make_bench_alloc_free_pairs_no_init {
     ($name:ident, $typ:ty) => (
         #[bench]
         #[cfg(feature = "build-ignored-tests")]
         #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
         #[ignore]
-        fn $name(b: &mut Bencher) { bench_alloc_free_system::<$typ>(b); }
+        fn $name(b: &mut Bencher) { bench_alloc_free_pairs_no_init::<$typ>(b); }
+    );
+}
+macro_rules! make_bench_alloc_free_pairs_heap {
+    ($name:ident, $typ:ty) => (
+        #[bench]
+        #[cfg(feature = "build-ignored-tests")]
+        #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
+        #[ignore]
+        fn $name(b: &mut Bencher) { bench_alloc_free_pairs_heap::<$typ>(b); }
     );
 }
 
 call_for_all_types_prefix!(make_bench_alloc_no_free, bench_alloc_no_free);
-call_for_all_types_prefix!(make_bench_alloc_no_free_system, bench_alloc_no_free_system);
-call_for_all_types_prefix!(make_bench_alloc_free, bench_alloc_free);
-call_for_all_types_prefix!(make_bench_alloc_free_box, bench_alloc_free_box);
-call_for_all_types_prefix!(make_bench_alloc_free_system, bench_alloc_free_system);
+call_for_all_types_prefix!(make_bench_alloc_no_free_no_init,
+                           bench_alloc_no_free_no_init);
+call_for_all_types_prefix!(make_bench_alloc_no_free_heap, bench_alloc_no_free_heap);
+call_for_all_types_prefix!(make_bench_alloc_free_pairs, bench_alloc_free_pairs);
+call_for_all_types_prefix!(make_bench_alloc_free_pairs_no_init,
+                           bench_alloc_free_pairs_no_init);
+call_for_all_types_prefix!(make_bench_alloc_free_pairs_heap,
+                           bench_alloc_free_pairs_heap);

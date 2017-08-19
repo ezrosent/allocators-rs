@@ -29,7 +29,7 @@ pub trait BackingAlloc {
 }
 
 /// An `UntypedObjectAlloc` that uses arbitrary allocators.
-mod alloc {
+pub mod alloc {
     extern crate alloc;
     extern crate object_alloc;
     use self::alloc::allocator::{Alloc, AllocErr, Layout};
