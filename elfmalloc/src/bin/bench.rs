@@ -17,7 +17,7 @@ use std::thread;
 use std::time;
 use std::ptr::write_volatile;
 
-use elfmalloc::slag::{LocalAllocator, MagazineAllocator};
+use elfmalloc::slag::{LocalAllocator, MagazineAllocator, AllocBuilder};
 use elfmalloc::general::global;
 use elfmalloc::general::DynamicAllocator;
 use std::sync::{Arc, Barrier};
@@ -27,7 +27,6 @@ type BenchItem = [usize; 2];
 
 const PAGE_SIZE: usize = 32 << 10;
 const EAGER_DECOMMIT: usize = 30 << 10;
-const USABLE_SIZE: usize = 32 << 10;
 
 
 trait AllocLike
@@ -43,12 +42,11 @@ trait AllocLike
 impl<T: 'static> AllocLike for MagazineAllocator<T> {
     type Item = T;
     fn create() -> Self {
-        Self::new_standalone(0.8,
-                             PAGE_SIZE,
-                             4 << 30,
-                             1 << 40,
-                             EAGER_DECOMMIT,
-                             USABLE_SIZE)
+        AllocBuilder::default()
+            .cutoff_factor(0.8)
+            .page_size(PAGE_SIZE)
+            .eager_decommit_threshold(EAGER_DECOMMIT)
+            .build_magazine()
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
@@ -114,13 +112,11 @@ impl<T: 'static> AllocLike for ElfClone<T> {
 impl<T: 'static> AllocLike for LocalAllocator<T> {
     type Item = T;
     fn create() -> Self {
-        // TODO working set algorithm
-        Self::new_standalone(0.8,
-                             PAGE_SIZE,
-                             4 << 30,
-                             1 << 40,
-                             EAGER_DECOMMIT,
-                             USABLE_SIZE)
+        AllocBuilder::default()
+            .cutoff_factor(0.8)
+            .page_size(PAGE_SIZE)
+            .eager_decommit_threshold(EAGER_DECOMMIT)
+            .build_local()
     }
 
     unsafe fn allocate(&mut self) -> *mut T {

@@ -65,6 +65,7 @@ use super::bagpipe::queue::{RevocableFAAQueue, FAAQueueLowLevel};
 use super::utils::{LazyInitializable, OwnedArray, mmap};
 use std::marker::PhantomData;
 use std::ptr;
+use std::cmp;
 
 #[cfg(feature = "nightly")]
 use std::intrinsics::{unlikely, likely};
@@ -1390,6 +1391,78 @@ impl PtrStack {
     }
 }
 
+/// A builder-pattern-style builder for `MagazineAllocator`s and `LocalAllocator`s.
+///
+/// ```rust,ignore
+/// // A usize-specific allocator using the `LocalCache` frontend, customized to use 32K pages.
+/// let la: LocalAllocator<usize> = AllocBuilder::default().page_size(32 << 10).build_local();
+/// ```
+///
+/// Modifying other builder parameters past the default is not recommended. The overall API is
+/// unstable.
+pub struct AllocBuilder<T> {
+    cutoff_factor: f64,
+    page_size: usize,
+    target_overhead: usize,
+    eager_decommit_threshold: usize,
+    max_objects: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Default for AllocBuilder<T> {
+    fn default() -> Self {
+        AllocBuilder {
+            cutoff_factor: 0.6,
+            page_size: cmp::max(32 << 10, mem::size_of::<T>() * 4),
+            target_overhead: 1 << 20,
+            eager_decommit_threshold: 128 << 10,
+            max_objects: 1 << 30,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> AllocBuilder<T> {
+    pub fn cutoff_factor(&mut self, cutoff_factor: f64) -> &mut Self {
+        self.cutoff_factor = cutoff_factor;
+        self
+    }
+    pub fn page_size(&mut self, page_size: usize) -> &mut Self {
+        self.page_size = page_size;
+        self
+    }
+    pub fn target_overhead(&mut self, target_overhead: usize) -> &mut Self {
+        self.target_overhead = target_overhead;
+        self
+    }
+    pub fn eager_decommit_threshold(&mut self, eager_decommit_threshold: usize) -> &mut Self {
+        self.eager_decommit_threshold = eager_decommit_threshold;
+        self
+    }
+    pub fn max_objects(&mut self, max_objects: usize) -> &mut Self {
+        self.max_objects = max_objects;
+        self
+    }
+
+    /// Build a `LocalAllocator<T>` from the current configuration.
+    pub fn build_local(&self) -> LocalAllocator<T> {
+        LocalAllocator::new_standalone(self.cutoff_factor,
+                                       self.page_size,
+                                       self.target_overhead,
+                                       self.eager_decommit_threshold,
+                                       self.max_objects)
+    }
+
+    /// Build a `MagazineAllocator<T>` from the current configuration.
+    pub fn build_magazine(&self) -> MagazineAllocator<T> {
+        MagazineAllocator::new_standalone(self.cutoff_factor,
+                                          self.page_size,
+                                          self.target_overhead,
+                                          self.eager_decommit_threshold,
+                                          self.max_objects)
+    }
+}
+
 macro_rules! typed_wrapper {
     ($name:ident, $wrapped:tt) => {
         pub struct $name<T>($wrapped<PageAlloc<Creek>>, PhantomData<T>);
@@ -1402,7 +1475,6 @@ macro_rules! typed_wrapper {
         impl<T> $name<T> {
             pub fn new_standalone(cutoff_factor: f64,
                                   page_size: usize,
-                                  _heap_size: usize,
                                   target_overhead: usize,
                                   eager_decommit: usize,
                                   max_objects: usize)
@@ -1690,8 +1762,7 @@ mod tests {
     #[test]
     fn obj_alloc_basic() {
         let _ = env_logger::init();
-        let mut oa =
-            LocalAllocator::<usize>::new_standalone(0.8, 4096, 1 << 28, 4, 32 << 10, 32 << 10);
+        let mut oa = AllocBuilder::<usize>::default().page_size(4096).build_local();
         unsafe {
             let item = oa.alloc();
             write_volatile(item, 10);
@@ -1717,7 +1788,7 @@ mod tests {
     fn obj_alloc_many_pages_single_threaded<T: 'static>() {
         let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
-        let mut oa = LocalAllocator::<T>::new_standalone(0.8, 4096, 1 << 28, 4, 32 << 10, 32 << 10);
+        let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local();
         assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         // stay in a local cache
         for _ in 0..N_ITEMS {
@@ -1768,7 +1839,7 @@ mod tests {
         const N_ITEMS: usize = 4096 * 4;
         const N_THREADS: usize = 40;
         // TODO make macros for these tests and test both MagazineAllocator and LocalAllocator
-        let oa = MagazineAllocator::<T>::new_standalone(0.8, 4096, 1 << 28, 4, 32 << 10, 32 << 10);
+        let oa = AllocBuilder::<T>::default().page_size(4096).build_magazine();
         // stay in a local cache
         assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         let mut threads = Vec::new();

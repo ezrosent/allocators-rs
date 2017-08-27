@@ -20,6 +20,7 @@ pub struct AllocStats {
     pub grabbed_clean: Num,
 }
 
+#[allow(dead_code)]
 pub struct StatsHandle(pub RefCell<AllocStats>);
 
 thread_local! {

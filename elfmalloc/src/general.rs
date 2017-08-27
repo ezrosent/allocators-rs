@@ -4,9 +4,43 @@
 // Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
 // may not be copied, modified, or distributed except according to those terms.
 
-//! Implementation of general allocator routines based off of the `Slag` allocator design.
+//! Implementation of general allocator routines based off of the `Slag`
+//! allocator design.
 //!
-//! This module also includes special handling of large objects.
+//! The primary use of this module is to provide the rudaments of a `malloc`-compatible global
+//! allocator that can be used from C/C++ and Rust programs alike. The `elfc` crate that wraps
+//! this one exposes such an interface. It is currently possible to use this module as a Rust
+//! library, though we do not recommend it.
+//!
+//! # Using this Allocator from Rust
+//!
+//! We currently rely on some global allocator (bsalloc) to be running to service normal heap
+//! allocations. As a result, this allocator cannot be used as a global allocator via the
+//! `#[global_allocator]` attribute. Currently the only way around this is to use the `System`
+//! allocator along with `libelfc` from the `elfc` crate loaded with `LD_PRELOAD`.
+//!
+//! It is also possible to use this allocator using a `Clone`-based API. As alluded to elsewhere,
+//! the allocator is thread-safe and any handle on the allocator can be used to free a pointer from
+//! any other handle in any other thread. If you `free` a pointer `alloc`-ed by another
+//! `DynamicAllocator`, bad things will happen.
+//!
+//! ```rust,ignore
+//! // all calls to `alloc` and `free` are unsafe
+//! let mut elf = DynamicAllocator::new();
+//! let ptr = elf.alloc(16) as *mut [u8; 16];
+//! let mut elf_clone = elf.clone();
+//! let res = thread::spawn(move || {
+//!     elf_clone.alloc(24) as *mut [u8; 24]
+//! }).join().unwrap();
+//! elf.free(res);
+//! elf.free(ptr);
+//! ```
+//!
+//! This is probably a more limited use-case until custom allocators have better support in the
+//! Rust ecosystem. Even then, we suspect most programmers using a non-global allocator will
+//! instead want something more specialized, such as the `LocalAllocator` and `MagazineAllocator`
+//! object-specific allocators.
+
 use std::ptr;
 use std::mem;
 
@@ -89,10 +123,10 @@ pub mod global {
     #[derive(Clone)]
     struct BackgroundDirty;
     impl DirtyFn for BackgroundDirty {
-        fn dirty(mem: *mut u8) {
+        fn dirty(_mem: *mut u8) {
             #[cfg(feature = "nightly")]
             {
-                let _ = LOCAL_DESTRUCTOR_CHAN.try_with(|h| h.send(Husk::Slag(mem)));
+                let _ = LOCAL_DESTRUCTOR_CHAN.try_with(|h| h.send(Husk::Slag(_mem)));
             }
         }
     }
@@ -200,6 +234,7 @@ pub mod global {
         Obj(T),
         #[allow(dead_code)]
         Ptr(*mut u8),
+        #[allow(dead_code)]
         Slag(*mut u8),
     }
 
