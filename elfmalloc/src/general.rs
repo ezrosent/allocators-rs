@@ -14,7 +14,7 @@ use std::mem;
 // enabled.
 #[allow(unused_imports)]
 use super::slag::{CoarseAllocator, MemoryBlock, MagazineCache, PageAlloc, Creek, Slag, Metadata,
-                  compute_metadata, RevocablePipe, LocalCache};
+                  compute_metadata, RevocablePipe, LocalCache, DirtyFn};
 use super::utils::{Lazy, TypedArray, mmap};
 
 #[cfg(feature = "nightly")]
@@ -26,6 +26,8 @@ use std::intrinsics::likely;
 fn likely(b: bool) -> bool {
     b
 }
+
+
 
 pub mod global {
     //! A global malloc-style interface to interact with a `DynamicAllocator`. All of these
@@ -59,7 +61,7 @@ pub mod global {
     //! slower fallback algorithm is used.
     #[allow(unused_imports)]
     use super::{PageAlloc, Creek, TieredSizeClasses, ObjectAlloc, ElfMalloc, TypedArray,
-                CoarseAllocator, MemoryBlock};
+                CoarseAllocator, MemoryBlock, DirtyFn};
     #[cfg(feature = "nightly")]
     use super::likely;
     use std::ptr;
@@ -72,6 +74,30 @@ pub mod global {
     use std::thread;
 
     type Block = Creek;
+    type PA = PageAlloc<Block, ()>;
+    // type PA = PageAlloc<Block, BackgroundDirty>;
+
+    unsafe fn dirty_slag(mem: *mut u8) {
+        dbg_print!("dirtying {:?}", mem);
+        let usable_size = 32 << 10;
+        let base_page = 4096;
+        let mut cur_addr = mem.offset(base_page);
+        while cur_addr < mem.offset(usable_size) {
+            cur_addr = cur_addr.offset(base_page);
+            (*(cur_addr as *mut AtomicUsize)).compare_and_swap(0, 1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Clone)]
+    struct BackgroundDirty;
+    impl DirtyFn for BackgroundDirty {
+        fn dirty(mem: *mut u8) {
+            #[cfg(feature = "nightly")]
+            {
+                let _ = LOCAL_DESTRUCTOR_CHAN.try_with(|h| h.send(Husk::Slag(mem)));
+            }
+        }
+    }
 
     #[cfg(all(feature = "nightly", target_thread_local))]
     #[thread_local]
@@ -83,8 +109,7 @@ pub mod global {
     #[thread_local]
     /// A "cached" pointer to the thread-local allocator. This is set after initialization and
     /// set to null out prior to destruction.
-    static mut PTR: *mut ElfMalloc<PageAlloc<Block>,
-                   TieredSizeClasses<ObjectAlloc<PageAlloc<Block>>>> = ptr::null_mut();
+    static mut PTR: *mut ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>> = ptr::null_mut();
 
     #[cfg_attr(feature="cargo-clippy", allow(inline_always))]
     #[inline(always)]
@@ -155,7 +180,7 @@ pub mod global {
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
     struct GlobalAllocator {
-        inner: ElfMalloc<PageAlloc<Block>, TieredSizeClasses<ObjectAlloc<PageAlloc<Block>>>>,
+        inner: ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>,
     }
 
     unsafe impl Send for GlobalAllocator {}
@@ -177,6 +202,7 @@ pub mod global {
         Obj(T),
         #[allow(dead_code)]
         Ptr(*mut u8),
+        Slag(*mut u8),
     }
 
     unsafe impl<T> Send for Husk<T> {}
@@ -204,8 +230,7 @@ pub mod global {
                         PTR = ptr::null_mut();
                     }
                 }
-                LOCAL_DESTRUCTOR_CHAN
-                    .try_with(|chan| unsafe {
+                LOCAL_DESTRUCTOR_CHAN.try_with(|chan| unsafe {
                         let _ = chan.send(Husk::Array(ptr::read(&self.inner
                             .allocs
                             .small_objs
@@ -236,7 +261,7 @@ pub mod global {
 
     lazy_static! {
         static ref ELF_HEAP: GlobalAllocator = GlobalAllocator::new();
-        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PageAlloc<Block>>>>> = {
+        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PA>>>> = {
             // Background thread code: block on a channel waiting for memory reclamation messages
             // (Husks).
             let (sender, receiver) = channel();
@@ -253,6 +278,7 @@ pub mod global {
                                 tarray.destroy();
                             },
                             Husk::Ptr(p) => local_alloc.inner.free(p),
+                            Husk::Slag(s) => dirty_slag(s),
                             Husk::Obj(t) => mem::drop(t),
                         }
                         continue
@@ -271,7 +297,7 @@ pub mod global {
     }
 
     thread_local! {
-        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk<ObjectAlloc<PageAlloc<Block>>>> =
+        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk<ObjectAlloc<PA>>> =
             DESTRUCTOR_CHAN.lock().unwrap().clone();
         static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(ELF_HEAP.clone());
     }
@@ -297,12 +323,11 @@ pub mod global {
     unsafe fn alloc_inner(size: usize) -> *mut u8 {
         #[cfg(feature = "nightly")]
         {
-            LOCAL_ELF_HEAP
-                .try_with(|h| {
-                              let res = (*h.get()).inner.alloc(size);
-                              PTR = &mut (*h.get()).inner as *mut _;
-                              res
-                          })
+            LOCAL_ELF_HEAP.try_with(|h| {
+                    let res = (*h.get()).inner.alloc(size);
+                    PTR = &mut (*h.get()).inner as *mut _;
+                    res
+                })
                 .unwrap_or_else(|_| super::large_alloc::alloc(size))
         }
 
@@ -334,14 +359,13 @@ pub mod global {
                     return (*PTR).free(item);
                 }
             }
-            LOCAL_ELF_HEAP
-                .try_with(|h| (*h.get()).inner.free(item))
+            LOCAL_ELF_HEAP.try_with(|h| (*h.get()).inner.free(item))
                 .unwrap_or_else(|_| if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
-                                    super::large_alloc::free(item);
-                                } else {
-                                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                                    let _ = chan.send(Husk::Ptr(item));
-                                })
+                    super::large_alloc::free(item);
+                } else {
+                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                    let _ = chan.send(Husk::Ptr(item));
+                })
         }
         #[cfg(not(feature = "nightly"))]
         {
@@ -582,7 +606,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// parameters.
 #[derive(Clone)]
 pub struct DynamicAllocator(ElfMalloc<PageAlloc<Creek>,
-                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
+                                      TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -624,22 +648,22 @@ struct ElfMalloc<CA: CoarseAllocator, AM: AllocMap<ObjectAlloc<CA>>> {
     n_classes: usize,
 }
 
-
 impl Default for DynamicAllocator {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: MemoryBlock> ElfMalloc<PageAlloc<M>, TieredSizeClasses<ObjectAlloc<PageAlloc<M>>>> {
+impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
+                                           TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
         let pa = PageAlloc::new(1 << 21, 1 << 20);
-        Self::new_internal(128 << 10, 0.6, pa, 8, 25)
+        Self::new_internal(64 << 10, 0.8, pa, 8, 25)
     }
 }
 
-impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> Clone
-    for ElfMalloc<PageAlloc<M>, AM> {
+impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> Clone
+    for ElfMalloc<PageAlloc<M, D>, AM> {
     fn clone(&self) -> Self {
         let new_map = AM::init(self.start_from,
                                self.n_classes,
@@ -654,11 +678,12 @@ impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> Clone
     }
 }
 
-impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> ElfMalloc<PageAlloc<M>,
-                                                                                     AM> {
+impl<M: MemoryBlock,
+     D: DirtyFn,
+     AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> ElfMalloc<PageAlloc<M, D>, AM> {
     fn new_internal(usable_size: usize,
                     cutoff_factor: f64,
-                    pa: PageAlloc<M>,
+                    pa: PageAlloc<M, D>,
                     start_from: usize,
                     n_classes: usize)
                     -> Self {
@@ -680,9 +705,11 @@ impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> ElfMa
                                             cutoff_factor,
                                             u_size));
             }
-            // TODO(ezrosent); new_size(8) is a good default, but a better one would take
-            // num_cpus::get() into account when picking this size, as in principle this will run
-            // into scaling limits at some point.
+
+// TODO(ezrosent); new_size(8) is a good default, but a better one would take
+// num_cpus::get() into account when picking this size, as in principle this will run
+// into scaling limits at some point.
+
             let params = (m_ptr, 256 << 10, pa.clone(), RevocablePipe::new_size(8));
             ObjectAlloc::new(params)
         });
@@ -715,7 +742,7 @@ impl<M: MemoryBlock, AM: AllocMap<ObjectAlloc<PageAlloc<M>>, Key = usize>> ElfMa
         if likely(self.pages.backing_memory().contains(item)) {
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
             let meta = slag.get_metadata();
-            // TODO(ezrosent): support shrinking
+// TODO(ezrosent): support shrinking
             if meta.object_size >= new_size {
                 return item;
             }
@@ -858,21 +885,48 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
+                .name(t.to_string())
+                .spawn(move || {
+                    for size in 1..(1 << 13) {
+                        // ((1 << 9) + 1)..((1 << 18) + 1) {
+                        unsafe {
+                            let item = global::alloc(size * 8);
+                            write_volatile(item, 10);
+                            global::free(item);
+                        }
+                        if size * 8 >= (1 << 20) {
+                            return;
+                        }
+                    }
+                })
+                .unwrap());
+        }
+
+        for t in threads {
+            t.join().expect("threads should exit successfully")
+        }
+    }
+
+    #[test]
+    fn general_alloc_large_ws_global_many_threads() {
+        use std::thread;
+
+        const N_THREADS: usize = 32;
+        let mut threads = Vec::with_capacity(N_THREADS);
+        for t in 0..N_THREADS {
+            threads.push(thread::Builder::new()
+                .name(t.to_string())
+                .spawn(move || {
                     unsafe {
-                        let item = global::alloc(size * 8);
-                        write_volatile(item, 10);
-                        global::free(item);
+                        for _ in 0..2 {
+                            let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                            for p in ptrs {
+                                global::free(p);
+                            }
+                        }
                     }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+                })
+                .unwrap());
         }
 
         for t in threads {
@@ -890,21 +944,21 @@ mod tests {
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
             threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
-                    unsafe {
-                        let item = da.alloc(size * 8);
-                        write_bytes(item, 0xFF, size * 8);
-                        da.free(item);
+                .name(t.to_string())
+                .spawn(move || {
+                    for size in 1..(1 << 13) {
+                        // ((1 << 9) + 1)..((1 << 18) + 1) {
+                        unsafe {
+                            let item = da.alloc(size * 8);
+                            write_bytes(item, 0xFF, size * 8);
+                            da.free(item);
+                        }
+                        if size * 8 >= (1 << 20) {
+                            return;
+                        }
                     }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+                })
+                .unwrap());
         }
 
         for t in threads {

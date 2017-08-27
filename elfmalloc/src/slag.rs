@@ -166,6 +166,31 @@ pub struct Metadata {
     usable_size: usize,
 }
 
+use self::bitset::Word;
+mod bitset {
+    use std::sync::atomic::AtomicUsize;
+    use std::mem;
+    use std::ops::Deref;
+    pub struct Word {
+        inner: AtomicUsize, // _padding: [usize; 3],
+    }
+
+    impl Word {
+        #[inline]
+        pub fn bits() -> usize {
+            mem::size_of::<usize>() * 8
+        }
+    }
+
+
+    impl Deref for Word {
+        type Target = AtomicUsize;
+        fn deref(&self) -> &AtomicUsize {
+            &self.inner
+        }
+    }
+}
+
 use self::ref_count::RefCount;
 mod ref_count {
     //! Implementation of the `Slag` reference count. This is a
@@ -276,6 +301,7 @@ pub struct Slag {
     rc: RefCount,
     // for BagPipe revocation.
     handle: AtomicUsize,
+    _padding: [usize; 5],
 }
 
 impl Revocable for Slag {
@@ -303,8 +329,8 @@ pub fn compute_metadata(obj_size: usize,
     /// Calculate the number of bytes in the bitset needed to represent `n_objects` objects, using
     /// `gran` bits per object.
     fn bitset_bytes(n_objects: usize, gran: usize) -> usize {
-        let word_size = mem::size_of::<usize>();
-        let word_bits = word_size * 8;
+        let word_size = mem::size_of::<Word>();
+        let word_bits = Word::bits();
 
         let bits = n_objects * gran;
         let words = if bits % word_bits == 0 {
@@ -373,16 +399,16 @@ pub fn compute_metadata(obj_size: usize,
         debug_assert!(gran > 0);
         #[cfg_attr(feature = "cargo-clippy", allow(panic_params))]
         debug_assert!({
-                          if gran == 1 {
-                              padded_size.is_power_of_two()
-                          } else {
-                              true
-                          }
-                      });
+            if gran == 1 {
+                padded_size.is_power_of_two()
+            } else {
+                true
+            }
+        });
         // == gran
         // TODO(ezrosent): remove one of these
         let bits_per_object = padded_size >> round_up_to_shift;
-        let bits_per_word = mem::size_of::<usize>() * 8;
+        let bits_per_word = Word::bits();
         // Let's say we are storing 24-byte objects with round_up_to_shift=3. This results in each
         // bit in the bit-set representing 8-byte chunks, with each object being 3 bits in the
         // bitset.
@@ -427,7 +453,7 @@ pub fn compute_metadata(obj_size: usize,
                   align_padding) as f64;
         let score = if bs > usable_size as f64 { -1.0 } else { 1.0 } * bs / (usable_size as f64);
         let header_offset = mem::size_of::<Slag>() as isize;
-        let n_words = bitset_bytes(n_objects, gran) / mem::size_of::<usize>();
+        let n_words = bitset_bytes(n_objects, gran) / mem::size_of::<Word>();
         (score * mult,
          n_words,
          Metadata {
@@ -465,13 +491,13 @@ pub fn compute_metadata(obj_size: usize,
     #[allow(unused)]
     let (frag, _, mut meta) = (1..(obj_size.next_power_of_two().trailing_zeros() as usize + 1))
         .map(|shift| {
-                 meta_inner(obj_size,
-                            page_size,
-                            shift,
-                            local_index,
-                            cutoff_factor,
-                            usable_size)
-             })
+            meta_inner(obj_size,
+                       page_size,
+                       shift,
+                       local_index,
+                       cutoff_factor,
+                       usable_size)
+        })
         .fold((-10.0, 1000, test_meta),
               |o1, o2| if o1.0 < o2.0 || (o1.0 - o2.0).abs() < 1e-5 && o1.1 > o2.1 {
                   o2
@@ -479,7 +505,7 @@ pub fn compute_metadata(obj_size: usize,
                   o1
               });
     // Compute the mask used to represent the first bitset word
-    let bits = mem::size_of::<usize>() * 8;
+    let bits = Word::bits();
     let bits_per_object = meta.object_size >> meta.bit_rep_shift;
     let mut cur_bit = 0;
     let mut mask = 0;
@@ -515,7 +541,7 @@ struct AllocIter {
     /// The current word of the bitset being allocated from.
     cur_word: usize,
     /// A pointer to the next word that will be consumed, or one-past-the-end of the final word.
-    next_word: *mut AtomicUsize,
+    next_word: *mut Word,
     /// A pointer to the corresponding `Slag`'s `RefCount`. This allows the iterator to decrement
     /// the `RefCount` when it consumes a new word.
     refcnt: *const RefCount,
@@ -530,15 +556,14 @@ struct AllocIter {
 }
 
 impl AllocIter {
-    fn new(first_bitset_word: *mut AtomicUsize,
+    fn new(first_bitset_word: *mut Word,
            bitset_words: usize,
            refcnt: *const RefCount,
            object_base: *mut u8,
            object_size: usize)
            -> AllocIter {
         unsafe {
-            let cur_word = first_bitset_word
-                .as_ref()
+            let cur_word = first_bitset_word.as_ref()
                 .expect("bitset must point to valid memory")
                 .swap(0, Ordering::Acquire);
             (*refcnt).dec_n(cur_word.count_ones() as usize);
@@ -578,7 +603,7 @@ impl Iterator for AllocIter {
     type Item = *mut u8;
 
     fn next(&mut self) -> Option<*mut u8> {
-        let word_size = mem::size_of::<usize>() * 8;
+        let word_size = Word::bits();
         loop {
             let next_bit = self.cur_word.trailing_zeros() as usize;
             if unsafe { unlikely(next_bit == word_size) } {
@@ -591,8 +616,9 @@ impl Iterator for AllocIter {
             unsafe {
                 self.cur_word ^= 1 << next_bit;
                 let object = self.object_base
-                    .offset((self.object_size * (self.cur_word_index * word_size + next_bit)) as
-                            isize);
+                    .offset((self.object_size *
+                             (self.cur_word_index * word_size +
+                              next_bit)) as isize);
                 return Some(object);
             }
         }
@@ -609,7 +635,7 @@ macro_rules! or_slag_word {
         ($slag:expr, $bitset_offset:expr, $word:expr, $mask:expr) => {
             {
                 let word = $word;
-                (($slag as *mut u8).offset($bitset_offset) as *mut AtomicUsize)
+                (($slag as *mut u8).offset($bitset_offset) as *mut Word)
                     // go to the bitset we want
                     .offset(word as isize)
                     .as_ref()
@@ -653,7 +679,7 @@ impl Slag {
         // mask for each word in the bitset. See the comment in `compute_metadata` for a more
         // detailed example.
         let bits_per_object = meta.object_size >> meta.bit_rep_shift;
-        let bits_per_word = mem::size_of::<usize>() * 8;
+        let bits_per_word = Word::bits();
         let slush_size = bits_per_object - (bits_per_word % bits_per_object);
         // this is enforced in compute_metadata
         debug_assert!(bits_per_word >= slush_size,
@@ -753,7 +779,7 @@ impl Slag {
         let (claimed, was) = self.rc.inc_n(1);
         unsafe {
             // get the start of the bitset
-            ((self.as_raw() as *mut u8).offset(m.bitset_offset) as *mut AtomicUsize)
+            ((self.as_raw() as *mut u8).offset(m.bitset_offset) as *mut Word)
                 // go to the bitset we want
                 .offset(word)
                 .as_ref()
@@ -777,8 +803,7 @@ impl Slag {
     fn refresh(&self, meta: &Metadata) -> AllocIter {
         // offset calls are valid because size_of(u8) is 1
         unsafe {
-            AllocIter::new((self.as_raw() as *mut u8).offset(meta.bitset_offset) as
-                           *mut AtomicUsize,
+            AllocIter::new((self.as_raw() as *mut u8).offset(meta.bitset_offset) as *mut Word,
                            meta.n_bitset_words,
                            &self.rc,
                            (self.as_raw() as *mut u8).offset(meta.objects_offset),
@@ -801,7 +826,7 @@ struct RemoteFreeCell {
     /// The reference count to be updated in accordance for the accumulated `mask`.
     rc: *mut RefCount,
     /// The specific bitset word to be or-ed with `mask`.
-    word: *mut AtomicUsize,
+    word: *mut Word,
     /// The accumulated mask to update `word`.
     mask: usize,
 }
@@ -834,7 +859,7 @@ impl Coalescer {
         let s = &*Slag::find(item, meta.total_bytes);
         let rc_ptr = &s.rc as *const _ as *mut RefCount;
         let (word, word_ix) = Slag::get_word(s.as_raw(), item, meta);
-        let word_ptr = ((s.as_raw() as *mut u8).offset(meta.bitset_offset) as *mut AtomicUsize)
+        let word_ptr = ((s.as_raw() as *mut u8).offset(meta.bitset_offset) as *mut Word)
             .offset(word);
         let bucket_ind = self.bucket_num(word_ptr as usize >> 3);
         let bucket = &mut *self.0.get(bucket_ind);
@@ -872,6 +897,7 @@ pub struct MagazineCache<CA: CoarseAllocator> {
     iter: AllocIter,
     alloc: SlagAllocator<CA>,
     coalescer: Coalescer,
+    flag: usize,
 }
 
 impl<CA: CoarseAllocator> LazyInitializable for MagazineCache<CA> {
@@ -925,13 +951,14 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
             iter: iter,
             alloc: alloc,
             coalescer: buckets,
+            flag: 0,
         }
     }
 
     pub fn new(alloc: SlagAllocator<CA>) -> Self {
         use std::cmp;
         unsafe {
-            const DEFAULT_MAGAZINE_BYTES: usize = 512 << 10;
+            const DEFAULT_MAGAZINE_BYTES: usize = 512 << 10; // 1 << 20;
             let sz = DEFAULT_MAGAZINE_BYTES / (*alloc.m).object_size;
             Self::new_sized(alloc, cmp::max(1, sz))
         }
@@ -955,21 +982,29 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
 
     pub unsafe fn alloc(&mut self) -> *mut u8 {
         if let Some(ptr) = self.s.pop() {
+            trace_event!(cache_alloc);
             ptr
         } else {
+            trace_event!(slag_alloc);
             self.slag_alloc()
         }
     }
 
     pub unsafe fn free(&mut self, item: *mut u8) {
-        if likely(self.s.top < self.stack_size) {
-            self.s.push(item);
-            return;
+        self.flag += 1;
+        self.flag &= 31;
+        if likely(self.flag > 0) {
+          trace_event!(local_free);
+          if self.s.top < self.stack_size {
+              self.s.push(item);
+              return;
+          }
+          self.return_memory();
+          self.s.push(item);
+        } else {
+            self.alloc.free(item)
         }
-        self.return_memory();
-        self.s.push(item);
     }
-
 
     /// Perform the bulk-level frees for the `Coalescer`.
     unsafe fn return_memory(&mut self) {
@@ -1058,12 +1093,12 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
             .pop()
             .or_else(|| self.iter.next())
             .unwrap_or_else(|| {
-                                let next_iter = self.alloc.refresh();
-                                self.iter = next_iter;
-                                self.iter
-                                    .next()
-                                    .expect("New iterator should have values")
-                            })
+                let next_iter = self.alloc.refresh();
+                self.iter = next_iter;
+                self.iter
+                    .next()
+                    .expect("New iterator should have values")
+            })
     }
 }
 
@@ -1204,6 +1239,15 @@ impl Clone for Creek {
     }
 }
 
+pub trait DirtyFn: Clone {
+    fn dirty(mem: *mut u8);
+}
+
+impl DirtyFn for () {
+    #[inline(always)]
+    fn dirty(_mem: *mut u8) {}
+}
+
 /// An allocator for large, fixed-sized objects.
 ///
 /// A `PageAlloc` is essentially a cache of pages sitting in front of a `Creek`. It keeps track of
@@ -1216,15 +1260,18 @@ impl Clone for Creek {
 /// TODO: implement a threshold for eager uncommit in the `SlagAllocator` and propagate that to
 /// `CoarseAllocator`
 #[derive(Clone)]
-pub struct PageAlloc<C: MemoryBlock> {
+pub struct PageAlloc<C: MemoryBlock, D = ()>
+    where D: DirtyFn
+{
     target_overhead: usize,
     creek: C,
     // bagpipes of byte slices of size creek.page_size
     clean: SlagPipe<u8>,
     dirty: SlagPipe<u8>,
+    _marker: PhantomData<D>,
 }
 
-impl<C: MemoryBlock> PageAlloc<C> {
+impl<C: MemoryBlock, D: DirtyFn> PageAlloc<C, D> {
     /// Create a new `PageAlloc`.
     pub fn new(page_size: usize, target_overhead: usize) -> Self {
         let mut res = PageAlloc {
@@ -1232,6 +1279,7 @@ impl<C: MemoryBlock> PageAlloc<C> {
             creek: C::new(page_size),
             clean: SlagPipe::new_size(2),
             dirty: SlagPipe::new_size(8),
+            _marker: PhantomData,
         };
         res.refresh_pages();
         res
@@ -1245,7 +1293,7 @@ impl<C: MemoryBlock> PageAlloc<C> {
     }
 }
 
-impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
+impl<C: MemoryBlock, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
     type Block = C;
 
     fn backing_memory(&self) -> &C {
@@ -1254,10 +1302,13 @@ impl<C: MemoryBlock> CoarseAllocator for PageAlloc<C> {
 
     unsafe fn alloc(&mut self) -> *mut u8 {
         if let Ok(ptr) = self.dirty.try_pop_mut() {
+            trace_event!(grabbed_dirty);
             return ptr;
         }
         loop {
             if let Ok(ptr) = self.clean.try_pop_mut() {
+                trace_event!(grabbed_clean);
+                D::dirty(ptr);
                 return ptr;
             }
             self.refresh_pages();
@@ -1397,6 +1448,7 @@ impl<CA: CoarseAllocator> Drop for SlagAllocator<CA> {
                 // we used this slag at some point
                 if was == meta.n_objects {
                     self.pages.free(slag as *mut u8, false);
+                    trace_event!(transition_full);
                     // self.transition_full(slag, meta)
                 } else if was >= meta.cutoff_objects {
                     self.transition_available(slag)
@@ -1458,9 +1510,6 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
 
     /// Re-initialize a non-empty `AllocIter`; potentially getting a new `Slag` to do so.
     unsafe fn refresh(&mut self) -> AllocIter {
-        // TODO(ezrosent) there's a segfault somewhere here. insert expects everywhere to figure
-        // out where.
-        // transition to unavailable state
         let s_ref = &*self.slag;
         let meta = &*self.m;
         let (_claimed, was) = s_ref.rc.unclaim();
@@ -1501,13 +1550,19 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             // first we try and get a slag from the available slagpipe. If it is empty, then we get
             // a fresh page from PageAlloc and initialize it with the current object class's
             // metadata.
-            let next_slab = self.available
-                .try_pop_mut()
-                .unwrap_or_else(|_| {
-                                    let new_raw = self.pages.alloc() as *mut Slag;
-                                    Slag::init(new_raw, meta);
-                                    new_raw
-                                });
+            let next_slab = match self.available.try_pop_mut() {
+                Ok(slab) => {
+                    trace_event!(grabbed_available);
+                    slab
+                },
+                Err(_) => {
+                    let new_raw = self.pages.alloc() as *mut Slag;
+                    if (*new_raw).meta.load(Ordering::Relaxed) != self.m { 
+                        Slag::init(new_raw, meta);
+                    }
+                    new_raw
+                }
+            };
             self.slag = next_slab;
             let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
             let claimed = s_ref.rc.claim();
@@ -1517,6 +1572,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     }
 
     fn transition_available(&mut self, slag: *mut Slag) {
+        trace_event!(transition_available);
         self.available.push_mut(slag)
     }
 
@@ -1525,6 +1581,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     unsafe fn transition_full(&mut self, slag: *mut Slag, meta: &Metadata) {
         let real_size = meta.usable_size;
         if RevocablePipe::revoke(&slag) {
+            trace_event!(transition_full);
             self.pages
                 .free(slag as *mut u8, real_size >= self.eager_decommit_threshold)
         }
@@ -1534,13 +1591,14 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
 
     unsafe fn bulk_free(&mut self,
                         mask: usize,
-                        word: *mut AtomicUsize,
+                        word: *mut Word,
                         slag: *mut Slag,
                         meta: &Metadata) {
         let n_ones = mask.count_ones() as usize;
         if n_ones == 0 {
             return;
         }
+        trace_event!(bulk_remote_free);
         let s_ref = &*slag;
         let (claimed, was) = s_ref.rc.inc_n(n_ones);
         let before = (*word).fetch_or(mask, Ordering::Release);
@@ -1561,6 +1619,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
 
     /// Perform a "remote" free to the `Slag` containing `item`.
     unsafe fn free(&mut self, item: *mut u8) {
+        trace_event!(remote_free);
         let meta = &*self.m;
         let it_slag = Slag::find(item, meta.total_bytes);
         match it_slag.as_ref().unwrap().free(item) {

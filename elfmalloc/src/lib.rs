@@ -20,5 +20,7 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 mod utils;
+#[macro_use]
+mod stats;
 pub mod slag;
 pub mod general;
