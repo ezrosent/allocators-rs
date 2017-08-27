@@ -47,9 +47,9 @@ use std::mem;
 // One of MagazineCache and LocalCache is unused, depending on whether the 'local_cache' feature is
 // enabled.
 #[allow(unused_imports)]
-use super::slag::{CoarseAllocator, MemoryBlock, MagazineCache, PageAlloc, Creek, Slag, Metadata,
-                  compute_metadata, RevocablePipe, LocalCache, DirtyFn};
-use super::utils::{Lazy, TypedArray, mmap};
+use super::slag::{compute_metadata, CoarseAllocator, Creek, DirtyFn, LocalCache, MagazineCache,
+                  MemoryBlock, Metadata, PageAlloc, RevocablePipe, Slag};
+use super::utils::{mmap, Lazy, TypedArray};
 
 #[cfg(feature = "nightly")]
 use std::intrinsics::likely;
@@ -92,8 +92,8 @@ pub mod global {
     //! indicates if the current thread's value has been initialized. If this value is false, a
     //! slower fallback algorithm is used.
     #[allow(unused_imports)]
-    use super::{PageAlloc, Creek, TieredSizeClasses, ObjectAlloc, ElfMalloc, TypedArray,
-                CoarseAllocator, MemoryBlock, DirtyFn};
+    use super::{CoarseAllocator, Creek, DirtyFn, ElfMalloc, MemoryBlock, ObjectAlloc, PageAlloc,
+                TieredSizeClasses, TypedArray};
     #[cfg(feature = "nightly")]
     use super::likely;
     use std::ptr;
@@ -101,7 +101,7 @@ pub mod global {
     use std::mem;
     #[allow(unused_imports)]
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc::{Sender, channel};
+    use std::sync::mpsc::{channel, Sender};
     use std::sync::Mutex;
     use std::thread;
 
@@ -143,7 +143,7 @@ pub mod global {
     /// set to null out prior to destruction.
     static mut PTR: *mut ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>> = ptr::null_mut();
 
-    #[cfg_attr(feature="cargo-clippy", allow(inline_always))]
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     /// Signal that initialization has begun. Note the use of a fall-back/stable method uses an
     /// atomic integer. This is painfully slow.
@@ -165,7 +165,7 @@ pub mod global {
         }
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(inline_always))]
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     /// The inverse of `init_begin`.
     fn init_end() {
@@ -186,7 +186,7 @@ pub mod global {
         }
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(inline_always))]
+    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     /// Check if we are in a recursive call to an allocation function.
     fn is_initializing() -> bool {
@@ -222,7 +222,9 @@ pub mod global {
     unsafe impl Sync for GlobalAllocator {}
     impl GlobalAllocator {
         fn new() -> GlobalAllocator {
-            GlobalAllocator { inner: ElfMalloc::new() }
+            GlobalAllocator {
+                inner: ElfMalloc::new(),
+            }
         }
     }
 
@@ -232,10 +234,8 @@ pub mod global {
     enum Husk<T> {
         Array(TypedArray<T>),
         Obj(T),
-        #[allow(dead_code)]
-        Ptr(*mut u8),
-        #[allow(dead_code)]
-        Slag(*mut u8),
+        #[allow(dead_code)] Ptr(*mut u8),
+        #[allow(dead_code)] Slag(*mut u8),
     }
 
     unsafe impl<T> Send for Husk<T> {}
@@ -246,10 +246,12 @@ pub mod global {
             {
                 let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
                 unsafe {
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.small_objs.classes)));
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.medium_objs.classes)));
+                    let _ = chan.send(Husk::Array(
+                        ptr::read(&self.inner.allocs.small_objs.classes),
+                    ));
+                    let _ = chan.send(Husk::Array(
+                        ptr::read(&self.inner.allocs.medium_objs.classes),
+                    ));
                     let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                     let _ = chan.send(sc);
                 }
@@ -263,28 +265,25 @@ pub mod global {
                         PTR = ptr::null_mut();
                     }
                 }
-                LOCAL_DESTRUCTOR_CHAN.try_with(|chan| unsafe {
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .small_objs
-                            .classes)));
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .medium_objs
-                            .classes)));
+                LOCAL_DESTRUCTOR_CHAN
+                    .try_with(|chan| unsafe {
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.small_objs.classes),
+                        ));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.medium_objs.classes),
+                        ));
                         let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                         let _ = chan.send(sc);
                     })
                     .unwrap_or_else(|_| unsafe {
                         let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .small_objs
-                            .classes)));
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .medium_objs
-                            .classes)));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.small_objs.classes),
+                        ));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.medium_objs.classes),
+                        ));
                         let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                         let _ = chan.send(sc);
                     })
@@ -356,7 +355,8 @@ pub mod global {
     unsafe fn alloc_inner(size: usize) -> *mut u8 {
         #[cfg(feature = "nightly")]
         {
-            LOCAL_ELF_HEAP.try_with(|h| {
+            LOCAL_ELF_HEAP
+                .try_with(|h| {
                     let res = (*h.get()).inner.alloc(size);
                     PTR = &mut (*h.get()).inner as *mut _;
                     res
@@ -392,12 +392,15 @@ pub mod global {
                     return (*PTR).free(item);
                 }
             }
-            LOCAL_ELF_HEAP.try_with(|h| (*h.get()).inner.free(item))
-                .unwrap_or_else(|_| if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
-                    super::large_alloc::free(item);
-                } else {
-                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                    let _ = chan.send(Husk::Ptr(item));
+            LOCAL_ELF_HEAP
+                .try_with(|h| (*h.get()).inner.free(item))
+                .unwrap_or_else(|_| {
+                    if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
+                        super::large_alloc::free(item);
+                    } else {
+                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                        let _ = chan.send(Husk::Ptr(item));
+                    }
                 })
         }
         #[cfg(not(feature = "nightly"))]
@@ -409,7 +412,8 @@ pub mod global {
 
 /// A trait encapsulating the notion of an array of size classes for an allocator.
 trait AllocMap<T>
-    where Self: Sized
+where
+    Self: Sized,
 {
     /// The type used to index size classes.
     type Key;
@@ -420,10 +424,11 @@ trait AllocMap<T>
     }
 
     /// Create and initialize the map, handing back ownership of the constructor.
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: Self::Key,
-                                               n_classes: usize,
-                                               f: F)
-                                               -> (F, Self);
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: Self::Key,
+        n_classes: usize,
+        f: F,
+    ) -> (F, Self);
 
     /// Get an unchecked raw pointer to the class corresponding to `k`.
     unsafe fn get_raw(&self, k: Self::Key) -> *mut T;
@@ -473,12 +478,14 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
         let (mut f3, medium_classes) =
             PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
         let word_objs = f3(8);
-        (f3,
-         TieredSizeClasses {
-             word_objs: Some(word_objs),
-             small_objs: small_classes,
-             medium_objs: medium_classes,
-         })
+        (
+            f3,
+            TieredSizeClasses {
+                word_objs: Some(word_objs),
+                small_objs: small_classes,
+                medium_objs: medium_classes,
+            },
+        )
     }
 
     unsafe fn get_raw(&self, n: usize) -> *mut T {
@@ -573,9 +580,7 @@ struct PowersOfTwo<T> {
 
 impl Drop for DynamicAllocator {
     fn drop(&mut self) {
-        self.0
-            .allocs
-            .foreach(|x| unsafe { ptr::drop_in_place(x) });
+        self.0.allocs.foreach(|x| unsafe { ptr::drop_in_place(x) });
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
@@ -595,10 +600,11 @@ impl<T> PowersOfTwo<T> {
 
 impl<T> AllocMap<T> for PowersOfTwo<T> {
     type Key = usize;
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: usize,
-                                               n_classes: usize,
-                                               mut f: F)
-                                               -> (F, Self) {
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: usize,
+        n_classes: usize,
+        mut f: F,
+    ) -> (F, Self) {
         let mut res = Self::new(start, n_classes);
         let mut cur_size = res.starting_size;
         unsafe {
@@ -615,12 +621,14 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
     #[inline(always)]
     unsafe fn get_raw(&self, k: usize) -> *mut T {
         debug_assert!(k <= self.max_size);
-        let log = (k.next_power_of_two().trailing_zeros() -
-                   self.starting_size.trailing_zeros()) as usize;
-        debug_assert!(log < self.classes.len(),
-                      "log={} len={}",
-                      log,
-                      self.classes.len());
+        let log =
+            (k.next_power_of_two().trailing_zeros() - self.starting_size.trailing_zeros()) as usize;
+        debug_assert!(
+            log < self.classes.len(),
+            "log={} len={}",
+            log,
+            self.classes.len()
+        );
         self.classes.get(log)
     }
 
@@ -638,8 +646,9 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// A Dynamic memory allocator, instantiated with sane defaults for various `ElfMalloc` type
 /// parameters.
 #[derive(Clone)]
-pub struct DynamicAllocator(ElfMalloc<PageAlloc<Creek>,
-                                      TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
+pub struct DynamicAllocator(
+    ElfMalloc<PageAlloc<Creek>, TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>,
+);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -687,8 +696,8 @@ impl Default for DynamicAllocator {
     }
 }
 
-impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
-                                           TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
+impl<M: MemoryBlock, D: DirtyFn>
+    ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
         let pa = PageAlloc::new(1 << 21, 1 << 20);
         Self::new_internal(128 << 10, 0.6, pa, 8, 25)
@@ -698,9 +707,9 @@ impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
 impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> Clone
     for ElfMalloc<PageAlloc<M, D>, AM> {
     fn clone(&self) -> Self {
-        let new_map = AM::init(self.start_from,
-                               self.n_classes,
-                               |size: usize| unsafe { self.allocs.get(size).clone() });
+        let new_map = AM::init(self.start_from, self.n_classes, |size: usize| unsafe {
+            self.allocs.get(size).clone()
+        });
         ElfMalloc {
             pages: self.pages.clone(),
             allocs: new_map,
@@ -713,12 +722,13 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
 
 impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
     ElfMalloc<PageAlloc<M, D>, AM> {
-    fn new_internal(usable_size: usize,
-                    cutoff_factor: f64,
-                    pa: PageAlloc<M, D>,
-                    start_from: usize,
-                    n_classes: usize)
-                    -> Self {
+    fn new_internal(
+        usable_size: usize,
+        cutoff_factor: f64,
+        pa: PageAlloc<M, D>,
+        start_from: usize,
+        n_classes: usize,
+    ) -> Self {
         use self::mmap::map;
         let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes) as *mut Metadata;
         let am = AM::init(start_from, n_classes, |size: usize| {
@@ -730,12 +740,16 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
             let m_ptr = meta_pointer;
             unsafe {
                 meta_pointer = meta_pointer.offset(1);
-                ptr::write(m_ptr,
-                           compute_metadata(size,
-                                            pa.backing_memory().page_size(),
-                                            0,
-                                            cutoff_factor,
-                                            u_size));
+                ptr::write(
+                    m_ptr,
+                    compute_metadata(
+                        size,
+                        pa.backing_memory().page_size(),
+                        0,
+                        cutoff_factor,
+                        u_size,
+                    ),
+                );
             }
 
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
@@ -883,7 +897,7 @@ mod large_alloc {
 mod tests {
     extern crate env_logger;
     use super::*;
-    use std::ptr::{write_volatile, write_bytes};
+    use std::ptr::{write_bytes, write_volatile};
 
     #[test]
     fn general_alloc_basic_global_single_threaded() {
@@ -919,22 +933,24 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = global::alloc(size * 8);
-                            write_volatile(item, 10);
-                            global::free(item);
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = global::alloc(size * 8);
+                                write_volatile(item, 10);
+                                global::free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
                         }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
-                    }
-                })
-                .unwrap());
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -950,17 +966,20 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || unsafe {
-                    for _ in 0..2 {
-                        let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
-                        for p in ptrs {
-                            global::free(p);
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || unsafe {
+                        for _ in 0..2 {
+                            let ptrs: Vec<*mut u8> =
+                                (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                            for p in ptrs {
+                                global::free(p);
+                            }
                         }
-                    }
-                })
-                .unwrap());
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -978,22 +997,24 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
-            threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = da.alloc(size * 8);
-                            write_bytes(item, 0xFF, size * 8);
-                            da.free(item);
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = da.alloc(size * 8);
+                                write_bytes(item, 0xFF, size * 8);
+                                da.free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
                         }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
-                    }
-                })
-                .unwrap());
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1015,5 +1036,4 @@ mod tests {
             }
         }
     }
-
 }

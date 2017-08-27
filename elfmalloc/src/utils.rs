@@ -23,7 +23,8 @@ pub mod mmap {
             if let Ok(s) = MapAllocBuilder::default()
                 .exec()
                 .build()
-                .alloc(Layout::from_size_align(size, 1).unwrap()) {
+                .alloc(Layout::from_size_align(size, 1).unwrap())
+            {
                 Some(s)
             } else {
                 None
@@ -78,7 +79,8 @@ pub struct Lazy<T: LazyInitializable> {
 }
 
 impl<T: LazyInitializable> Clone for Lazy<T>
-    where T::Params: Clone
+where
+    T::Params: Clone,
 {
     fn clone(&self) -> Self {
         Lazy {
