@@ -1,10 +1,6 @@
 //! This module includes some lightweight utilities for tracing different allocation events.
-//!
-//! It is currently very rough. Despite being entirely safe Rust, `trace` mode will sometimes cause
-//! binaries to segfault when stats are enabled. This may have to do with calling printing-related
-//! routines so early in tls initialization.
-//!
-//! Like all global abstractions in use here, some hacks are required to get this to exit cleanly.
+//! Like all global abstractions in use here, some hacks are required to get this to work correctly
+//! when this library is linked as part of a `malloc`.
 //!
 //! ## `THREAD_CTR`
 //!
