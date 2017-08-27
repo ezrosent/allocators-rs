@@ -1,8 +1,5 @@
 //! This module includes some lightweight utilities for tracing different allocation events.
 use std::cell::RefCell;
-use std::sync::mpsc::{Sender, channel};
-use std::sync::Mutex;
-use std::thread;
 
 type Num = i64;
 
@@ -23,27 +20,7 @@ pub struct AllocStats {
     pub grabbed_clean: Num,
 }
 
-lazy_static! {
-    static ref STATS_CHAN: Mutex<Sender<AllocStats>> = {
-        let (sender, receiver) = channel();
-        thread::spawn(move || {
-            loop {
-                if let Ok(msg) = receiver.recv() {
-                    println!("{:?}", msg);
-                }
-            }
-        });
-        Mutex::new(sender)
-    };
-}
-
 pub struct StatsHandle(pub RefCell<AllocStats>);
-
-impl Drop for StatsHandle {
-    fn drop(&mut self) {
-        let _ = STATS_CHAN.lock().unwrap().send(*self.0.borrow());
-    }
-}
 
 thread_local! {
     pub static LOCAL_STATS: StatsHandle = StatsHandle(RefCell::new(AllocStats::default()));
@@ -51,6 +28,17 @@ thread_local! {
 
 macro_rules! trace_event {
     ($fld:tt) => {
-        super::stats::LOCAL_STATS.with(|sh| { (sh.0.borrow_mut()).$fld += 1; });
+        #[cfg(feature = "print_stats")]
+        {
+            let _ = super::stats::LOCAL_STATS.try_with(|sh| {
+                use std::thread;
+                let mut _f_ref = sh.0.borrow_mut();
+                _f_ref.$fld += 1;
+                let allocs = _f_ref.slag_alloc + _f_ref.cache_alloc;
+                if (allocs+1 % (1 << 20)) == 0 {
+                    trace!("thread {:?} - {:?}", thread::current().id(), *_f_ref);
+                }
+            });
+        }
     };
 }

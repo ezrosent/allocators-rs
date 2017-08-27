@@ -16,6 +16,7 @@ huge_segments = ["bagpipe/huge_segments"]
 no_lazy_region = []
 nightly = []
 local_cache = []
+print_stats = ["nightly"]
 
 [dependencies]
 bagpipe = { path = "../bagpipe" }
@@ -23,3 +24,7 @@ bsalloc = { path = "../bsalloc" }
 lazy_static = "0.2"
 mmap-alloc = { path = "../mmap-alloc" }
 num_cpus = "1.5"
+log = "0.3.8"
+
+[dev-dependencies]
+env_logger = "0.4.3"

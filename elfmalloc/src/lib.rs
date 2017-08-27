@@ -16,9 +16,9 @@ extern crate lazy_static;
 extern crate bagpipe;
 extern crate bsalloc;
 extern crate alloc;
-
 #[macro_use]
-mod macros;
+extern crate log;
+
 mod utils;
 #[macro_use]
 mod stats;

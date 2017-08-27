@@ -276,7 +276,7 @@ fn bench_prod_cons<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, pe
         threads.push(thread::spawn(move || {
             let (me, them) = (t, (t + 1) % nthreads);
             unsafe {
-                let mut my_v = io_vec[me].load(Ordering::Acquire).as_mut().unwrap();
+                let my_v = io_vec[me].load(Ordering::Acquire).as_mut().unwrap();
                 for i in 0..per_thread {
                     let ptr = alloc.allocate();
                     write_volatile(ptr as *mut usize, i);

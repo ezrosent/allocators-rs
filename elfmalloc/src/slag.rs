@@ -182,7 +182,6 @@ mod bitset {
         }
     }
 
-
     impl Deref for Word {
         type Target = AtomicUsize;
         fn deref(&self) -> &AtomicUsize {
@@ -277,7 +276,6 @@ mod ref_count {
             (claimed, was & !MASK)
         }
     }
-
 }
 
 /// A collection of objects allocated on the heap.
@@ -514,7 +512,7 @@ pub fn compute_metadata(obj_size: usize,
         cur_bit += bits_per_object;
     }
     meta.object_mask = mask;
-    dbg_print!("Metadata {:?} fragmentation: {:?}", meta, frag);
+    trace!("created {:?} fragmentation: {:?}", meta, frag);
     meta
 }
 
@@ -616,9 +614,8 @@ impl Iterator for AllocIter {
             unsafe {
                 self.cur_word ^= 1 << next_bit;
                 let object = self.object_base
-                    .offset((self.object_size *
-                             (self.cur_word_index * word_size +
-                              next_bit)) as isize);
+                    .offset((self.object_size * (self.cur_word_index * word_size + next_bit)) as
+                            isize);
                 return Some(object);
             }
         }
@@ -994,13 +991,13 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
         self.flag += 1;
         self.flag &= 31;
         if likely(self.flag > 0) {
-          trace_event!(local_free);
-          if self.s.top < self.stack_size {
-              self.s.push(item);
-              return;
-          }
-          self.return_memory();
-          self.s.push(item);
+            trace_event!(local_free);
+            if self.s.top < self.stack_size {
+                self.s.push(item);
+                return;
+            }
+            self.return_memory();
+            self.s.push(item);
         } else {
             self.alloc.free(item)
         }
@@ -1189,14 +1186,23 @@ impl MemoryBlock for Creek {
     /// pages for itself (or for alignment reasons), as a result it is a good idea to have
     /// heap_size be much larger than page_size.
     fn new(page_size: usize) -> Self {
-        use self::mmap::map;
-        let heap_size: usize = 1 << 37;
+        use self::mmap::fallible_map;
+        let get_heap = || {
+            let mut heap_size: usize = 2 << 40;
+            while heap_size > (1 << 30) {
+                if let Some(heap) = fallible_map(heap_size) {
+                    return (heap, heap_size);
+                }
+                heap_size /= 2;
+            }
+            panic!("unable to map heap")
+        };
         // lots of stuff breaks if this isn't true
         assert!(page_size.is_power_of_two());
         assert!(page_size > mem::size_of::<usize>());
-        assert!(heap_size > page_size * 3);
         // first, let's grab some memory;
-        let orig_base = map(heap_size);
+        let (orig_base, heap_size) = get_heap();
+        info!("created heap of size {}", heap_size);
         let orig_addr = orig_base as usize;
         let (slush_addr, real_addr) = {
             // allocate some `slush` space at the beginning of the creek. This gives us space to
@@ -1554,10 +1560,10 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
                 Ok(slab) => {
                     trace_event!(grabbed_available);
                     slab
-                },
+                }
                 Err(_) => {
                     let new_raw = self.pages.alloc() as *mut Slag;
-                    if (*new_raw).meta.load(Ordering::Relaxed) != self.m { 
+                    if (*new_raw).meta.load(Ordering::Relaxed) != self.m {
                         Slag::init(new_raw, meta);
                     }
                     new_raw
@@ -1660,6 +1666,7 @@ impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
 
 #[cfg(test)]
 mod tests {
+    extern crate env_logger;
     use super::*;
     use std::thread;
     use std::ptr::write_volatile;
@@ -1667,6 +1674,7 @@ mod tests {
 
     #[test]
     fn metadata_basic() {
+        let _ = env_logger::init();
         compute_metadata(8, 4096, 0, 0.8, 4);
         compute_metadata(16, 4096, 0, 0.8, 1024);
         compute_metadata(24, 4096, 0, 0.8, 1024);
@@ -1681,6 +1689,7 @@ mod tests {
 
     #[test]
     fn obj_alloc_basic() {
+        let _ = env_logger::init();
         let mut oa =
             LocalAllocator::<usize>::new_standalone(0.8, 4096, 1 << 28, 4, 32 << 10, 32 << 10);
         unsafe {
@@ -1706,6 +1715,7 @@ mod tests {
     }
 
     fn obj_alloc_many_pages_single_threaded<T: 'static>() {
+        let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
         let mut oa = LocalAllocator::<T>::new_standalone(0.8, 4096, 1 << 28, 4, 32 << 10, 32 << 10);
         assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
@@ -1753,6 +1763,7 @@ mod tests {
     }
 
     fn obj_alloc_many_pages_many_threads<T: 'static>() {
+        let _ = env_logger::init();
         use std::mem;
         const N_ITEMS: usize = 4096 * 4;
         const N_THREADS: usize = 40;

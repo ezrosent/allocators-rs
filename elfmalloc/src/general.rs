@@ -27,8 +27,6 @@ fn likely(b: bool) -> bool {
     b
 }
 
-
-
 pub mod global {
     //! A global malloc-style interface to interact with a `DynamicAllocator`. All of these
     //! structures are lazily initailized.
@@ -78,7 +76,7 @@ pub mod global {
     // type PA = PageAlloc<Block, BackgroundDirty>;
 
     unsafe fn dirty_slag(mem: *mut u8) {
-        dbg_print!("dirtying {:?}", mem);
+        trace!("dirtying {:?}", mem);
         let usable_size = 32 << 10;
         let base_page = 4096;
         let mut cur_addr = mem.offset(base_page);
@@ -658,7 +656,7 @@ impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
                                            TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
         let pa = PageAlloc::new(1 << 21, 1 << 20);
-        Self::new_internal(64 << 10, 0.8, pa, 8, 25)
+        Self::new_internal(128 << 10, 0.6, pa, 8, 25)
     }
 }
 
@@ -678,9 +676,8 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
     }
 }
 
-impl<M: MemoryBlock,
-     D: DirtyFn,
-     AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> ElfMalloc<PageAlloc<M, D>, AM> {
+impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
+    ElfMalloc<PageAlloc<M, D>, AM> {
     fn new_internal(usable_size: usize,
                     cutoff_factor: f64,
                     pa: PageAlloc<M, D>,
@@ -706,10 +703,9 @@ impl<M: MemoryBlock,
                                             u_size));
             }
 
-// TODO(ezrosent); new_size(8) is a good default, but a better one would take
-// num_cpus::get() into account when picking this size, as in principle this will run
-// into scaling limits at some point.
-
+            // TODO(ezrosent); new_size(8) is a good default, but a better one would take
+            // num_cpus::get() into account when picking this size, as in principle this will run
+            // into scaling limits at some point.
             let params = (m_ptr, 256 << 10, pa.clone(), RevocablePipe::new_size(8));
             ObjectAlloc::new(params)
         });
@@ -742,7 +738,7 @@ impl<M: MemoryBlock,
         if likely(self.pages.backing_memory().contains(item)) {
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
             let meta = slag.get_metadata();
-// TODO(ezrosent): support shrinking
+            // TODO(ezrosent): support shrinking
             if meta.object_size >= new_size {
                 return item;
             }
@@ -850,11 +846,13 @@ mod large_alloc {
 
 #[cfg(test)]
 mod tests {
+    extern crate env_logger;
     use super::*;
     use std::ptr::{write_volatile, write_bytes};
 
     #[test]
     fn general_alloc_basic_global_single_threaded() {
+        let _ = env_logger::init();
         for size in ((1 << 13) - 8)..((1 << 13) + 1) {
             unsafe {
                 let item = global::alloc(size * 8);
@@ -866,6 +864,7 @@ mod tests {
 
     #[test]
     fn general_alloc_basic_clone_single_threaded() {
+        let _ = env_logger::init();
         let da_c = DynamicAllocator::new();
         let mut da = da_c.clone();
         for size in ((1 << 13) - 8)..((1 << 13) + 1) {
@@ -879,6 +878,7 @@ mod tests {
 
     #[test]
     fn general_alloc_basic_global_many_threads() {
+        let _ = env_logger::init();
         use std::thread;
 
         const N_THREADS: usize = 32;
@@ -909,6 +909,7 @@ mod tests {
 
     #[test]
     fn general_alloc_large_ws_global_many_threads() {
+        let _ = env_logger::init();
         use std::thread;
 
         const N_THREADS: usize = 32;
@@ -916,13 +917,11 @@ mod tests {
         for t in 0..N_THREADS {
             threads.push(thread::Builder::new()
                 .name(t.to_string())
-                .spawn(move || {
-                    unsafe {
-                        for _ in 0..2 {
-                            let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
-                            for p in ptrs {
-                                global::free(p);
-                            }
+                .spawn(move || unsafe {
+                    for _ in 0..2 {
+                        let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                        for p in ptrs {
+                            global::free(p);
                         }
                     }
                 })
@@ -936,6 +935,7 @@ mod tests {
 
     #[test]
     fn general_alloc_basic_clone_many_threads() {
+        let _ = env_logger::init();
         use std::thread;
 
         const N_THREADS: usize = 32;
@@ -968,6 +968,7 @@ mod tests {
 
     #[test]
     fn all_sizes_one_thread() {
+        let _ = env_logger::init();
         for size in 1..((1 << 21) + 1) {
             unsafe {
                 let item = global::alloc(size);

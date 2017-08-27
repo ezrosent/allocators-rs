@@ -8,6 +8,7 @@ extern crate elfmalloc;
 extern crate errno;
 extern crate libc;
 extern crate sysconf;
+extern crate env_logger;
 use errno::{Errno, set_errno};
 use libc::{c_void, size_t, c_int};
 use elfmalloc::general::global;
@@ -26,6 +27,10 @@ pub extern "C" fn realloc(ptr: *mut c_void, bytes: size_t) -> *mut c_void {
 
 #[no_mangle]
 pub extern "C" fn calloc(nmemb: size_t, size: size_t) -> *mut c_void {
+    #[cfg(feature = "logging")]
+    {
+        let _ = env_logger::init();
+    }
     // TODO check for overflow, etc.
     let bytes = nmemb * size;
     let res = malloc(bytes);
