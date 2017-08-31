@@ -125,7 +125,7 @@ pub mod mmap {
         if layout.size() != *PAGE_SIZE {
             #[cfg(target_os = "linux")]
             {
-                if self::sysconf::hugepage::hugepage_supported(layout.size()) {
+                if self::sysconf::page::hugepage_supported(layout.size()) {
                     let map = MapAllocBuilder::default()
                         .huge_pagesize(layout.size())
                         .build();

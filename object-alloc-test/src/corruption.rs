@@ -6,7 +6,6 @@ extern crate core;
 extern crate libc;
 extern crate object_alloc;
 extern crate rand;
-extern crate sysconf;
 extern crate test;
 extern crate twox_hash;
 

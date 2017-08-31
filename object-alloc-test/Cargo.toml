@@ -10,6 +10,5 @@ libc = "0.2"
 object-alloc = { path = "../object-alloc" }
 quickcheck = "0.4"
 rand = "0.3"
-sysconf = { path = "../sysconf" }
 twox-hash = "1.1"
 winapi = "0.2"

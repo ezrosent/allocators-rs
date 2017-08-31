@@ -15,4 +15,4 @@ local_cache = ["elfmalloc/local_cache"]
 elfmalloc = { path = "../elfmalloc" }
 errno = "0.2"
 libc = "0.2"
-sysconf = { path = "../sysconf" }
+sysconf = "0.3.0"

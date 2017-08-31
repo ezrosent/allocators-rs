@@ -6,7 +6,7 @@ use errno::{Errno, set_errno};
 use libc::{c_void, size_t, c_int};
 use elfmalloc::general::global;
 use std::ptr;
-use sysconf::pagesize;
+use sysconf::page::pagesize;
 
 #[no_mangle]
 pub extern "C" fn malloc(bytes: size_t) -> *mut c_void {
