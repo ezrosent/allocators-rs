@@ -50,7 +50,7 @@ found in each top-level directory's readme.
   in the `crossbeam` framework, it also exposes a new data-structure: the
   `Bagpipe`. `Bagpipes` are like queues, but they trade consistency for
   scalability. This is normally a dubious exchange to make, but for
-  `elfmalloc`, `Bagpipes` are used as "free lists" where ordering on the
+  `elfmalloc`, `Bagpipe`s are used as "free lists" where ordering on the
   insertion and removal of elements is not required.
 
 * `object-alloc` includes a number of traits currently used to define
@@ -61,10 +61,11 @@ found in each top-level directory's readme.
   an arbitrary object allocator (i.e. an allocator implementing one of the
   traits in `object-alloc`).
 
-* `sysconf` provides platform-specific constants and configuration
-  information.
-
 * `malloc-bind` is a crate that provides macros to transform any general
   allocator that can store its own size and alignment-related metadata into a
   full `malloc` implementation. The intent is to replace `elfc` with this more
   generic solution in the future.
+
+## Contributing
+
+Interested in contributing? We'd love to have you! Check out [CONTRIBUTING.md](https://github.com/ezrosent/allocators-rs/blob/master/CONTRIBUTING.md)
