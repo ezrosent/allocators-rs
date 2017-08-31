@@ -150,7 +150,7 @@ mod tests {
     fn test_hash_table_bucket_distribution<T: Default>() {
         for i in 0..4 {
             use backing::heap;
-            use sysconf::pagesize;
+            use sysconf::page::pagesize;
 
             let layout = Layout::new::<T>();
             let backing_layout = Layout::from_size_align(pagesize(), pagesize()).unwrap();

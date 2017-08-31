@@ -174,7 +174,7 @@ impl<A, L: LayoutFinder> Malloc<A, L>
             return ptr::null_mut();
         }
 
-        let layout = Layout::from_size_align(size as usize, sysconf::pagesize()).unwrap();
+        let layout = Layout::from_size_align(size as usize, sysconf::page::pagesize()).unwrap();
         match (&self.alloc).alloc_zeroed(layout.clone()) {
             Ok(ptr) => {
                 self.layout_finder.insert_layout(ptr, layout);
@@ -196,7 +196,7 @@ impl<A, L: LayoutFinder> Malloc<A, L>
 
         // TODO: round size up to the next multiple of the page size.
 
-        let layout = Layout::from_size_align(size as usize, sysconf::pagesize()).unwrap();
+        let layout = Layout::from_size_align(size as usize, sysconf::page::pagesize()).unwrap();
         match (&self.alloc).alloc_zeroed(layout.clone()) {
             Ok(ptr) => {
                 self.layout_finder.insert_layout(ptr, layout);

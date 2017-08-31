@@ -28,7 +28,7 @@ impl BackingAlloc for LeakyBackingAlloc {
 }
 
 fn leaky_get_aligned(layout: Layout) -> Option<AllocObjectAlloc<LeakyAlloc>> {
-    if layout.align() == self::sysconf::pagesize() {
+    if layout.align() == self::sysconf::page::pagesize() {
         Some(AllocObjectAlloc::new(LeakyAlloc::new(), layout))
     } else {
         None
@@ -58,7 +58,7 @@ fn test_memory_corruption<T: Copy + Send + 'static>() {
         infer_allocator_type::<CorruptionTesterDefault<T>>(&mut new());
         TestBuilder::new(new).test_iters(iters).test();
     };
-    foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::pagesize());
+    foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::page::pagesize());
 }
 
 fn test_quickcheck_memory_corruption<T: Copy + Send + 'static>() {
@@ -82,7 +82,7 @@ fn test_quickcheck_memory_corruption<T: Copy + Send + 'static>() {
             .quickcheck_tests(tests)
             .quickcheck();
     };
-    foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::pagesize());
+    foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::page::pagesize());
 }
 
 macro_rules! make_test_memory_corruption {

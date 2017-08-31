@@ -92,7 +92,7 @@ type FnInitSystem<T, F> = init::InitInitSystem<T, init::FnInitializer<T, F>>;
 type UnsafeFnInitSystem<T, F> = init::InitInitSystem<T, init::UnsafeFnInitializer<T, F>>;
 
 lazy_static!{
-    static ref PAGE_SIZE: usize = self::sysconf::pagesize();
+    static ref PAGE_SIZE: usize = self::sysconf::page::pagesize();
     static ref PAGE_ALIGN_MASK: usize = !(*PAGE_SIZE - 1);
 }
 

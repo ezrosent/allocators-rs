@@ -7,4 +7,4 @@ authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 errno = "0.2"
 lazy_static = "0.2"
 libc = "0.2"
-sysconf = { path = "../sysconf" }
+sysconf = "0.3.0"

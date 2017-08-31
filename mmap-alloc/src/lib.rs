@@ -70,7 +70,7 @@ impl MapAllocBuilder {
         #[cfg(target_os = "linux")]
         {
             if let Some(huge) = self.huge_pagesize {
-                assert!(sysconf::hugepage::hugepage_supported(huge),
+                assert!(sysconf::page::hugepage_supported(huge),
                         "unsupported hugepage size: {}",
                         huge);
             }
@@ -96,7 +96,7 @@ impl MapAllocBuilder {
 
     #[cfg(target_os = "linux")]
     pub fn default_huge_pagesize(mut self) -> MapAllocBuilder {
-        let pagesize = sysconf::hugepage::default_hugepage().expect("huge pages not supported");
+        let pagesize = sysconf::page::default_hugepage().expect("huge pages not supported");
         self.pagesize = pagesize;
         self.huge_pagesize = Some(pagesize);
         self
@@ -191,7 +191,7 @@ impl Default for MapAllocBuilder {
             read: true,
             write: true,
             exec: false,
-            pagesize: sysconf::pagesize(),
+            pagesize: sysconf::page::pagesize(),
             huge_pagesize: None,
             obj_size: None,
         }
@@ -606,7 +606,7 @@ mod perms {
 #[cfg(test)]
 mod tests {
     extern crate sysconf;
-    use sysconf::pagesize;
+    use sysconf::page::pagesize;
     use super::*;
     use super::perms::*;
 
