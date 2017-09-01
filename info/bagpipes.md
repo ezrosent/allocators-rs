@@ -1,3 +1,7 @@
+<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the README.md file at the top-level directory of this repository.
+
+Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
+
 # Bagpipes: Scalable Concurrent Bags
 
 Bagpipes are a simple data-structure that relies on common structure present in
@@ -25,7 +29,7 @@ practice. The only other structure that we rely on is some notion of *transient
 failure* that can be attributed to contention among different threads
 interacting with the data-structure. One common example is a CAS failure in a
 non-blocking queue, or a failed call to `try_lock` in a blocking setting. This
-structure is encoded in the `SharedWeakBag` trait. 
+structure is encoded in the `SharedWeakBag` trait.
 
 ```rust
 pub enum PopStatus {
@@ -100,7 +104,7 @@ It is normally a dubious move to throw away linearizability. Indeed, there is a
 reasonable case to be made that a concurrent queue that is not linearizable is
 not really a correct (FIFO) queue at all. However, we do not not require FIFO
 semantics from our queues, we simply require that they do not lose their
-contents. 
+contents.
 
 ## Revocation
 

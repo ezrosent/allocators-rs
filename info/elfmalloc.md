@@ -1,3 +1,7 @@
+<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the README.md file at the top-level directory of this repository.
+
+Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
+
 # `elfmalloc` Design
 
 This document provides a brief overview of the design of `elfmalloc`. It
@@ -18,7 +22,7 @@ indebted to various other memory allocators:
 Elfmalloc is built out of a few key abstractions. We begin with the
 lower-level aspects of memory management.
 
-### Creek 
+### Creek
 Elfmalloc starts off by mapping a large (i.e. many terabytes) region of memory.
 It is divided into fixed-size pages. In `elfmalloc` these pages are 2 megabytes
 by default, though smaller object classes only use a small fraction of this.
@@ -47,7 +51,7 @@ are `mmap`-ed directly. For the `Creek`, this is just a membership check using
 the base and maximum address of the `Creek`.
 
 *Room for Growth* One thing to explore is alternative implementations of
-`MemoryBlock` that are suitable for 32-bit machines. 
+`MemoryBlock` that are suitable for 32-bit machines.
 
 ### The `PageAlloc`
 
