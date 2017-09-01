@@ -1,3 +1,7 @@
+<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the README.md file at the top-level directory of this repository.
+
+Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
+
 This stubs out the dynamic allocators in this repo for use as a Linux-like
 `malloc` implementation via `LD_PRELOAD`. Make sure to compile with
 `--features=nightly`, performance suffers drastically without this feature
