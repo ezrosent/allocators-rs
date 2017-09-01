@@ -5,11 +5,12 @@
 // may not be copied, modified, or distributed except according to those terms.
 
 extern crate elfmalloc;
+extern crate env_logger;
 extern crate errno;
 extern crate libc;
 extern crate sysconf;
-use errno::{Errno, set_errno};
-use libc::{c_void, size_t, c_int};
+use errno::{set_errno, Errno};
+use libc::{c_int, c_void, size_t};
 use elfmalloc::general::global;
 use std::ptr;
 use sysconf::page::pagesize;
@@ -26,6 +27,10 @@ pub extern "C" fn realloc(ptr: *mut c_void, bytes: size_t) -> *mut c_void {
 
 #[no_mangle]
 pub extern "C" fn calloc(nmemb: size_t, size: size_t) -> *mut c_void {
+    #[cfg(feature = "logging")]
+    {
+        let _ = env_logger::init();
+    }
     // TODO check for overflow, etc.
     let bytes = nmemb * size;
     let res = malloc(bytes);
@@ -63,7 +68,7 @@ pub extern "C" fn aligned_alloc(alignment: size_t, size: size_t) -> *mut c_void 
     memalign(alignment, size)
 }
 
-#[cfg_attr(feature="cargo-clippy", allow(not_unsafe_ptr_arg_deref))]
+#[cfg_attr(feature = "cargo-clippy", allow(not_unsafe_ptr_arg_deref))]
 #[no_mangle]
 pub extern "C" fn posix_memalign(p: *mut *mut c_void, align: size_t, size: size_t) -> c_int {
     unsafe {

@@ -8,13 +8,13 @@
 #![feature(allocator_api)]
 #![feature(alloc)]
 #![feature(global_allocator)]
+extern crate alloc;
 #[macro_use]
 extern crate lazy_static;
-extern crate alloc;
 extern crate mmap_alloc;
 mod bsalloc;
 use bsalloc::{BsAlloc, ALLOC};
-use self::alloc::allocator::{Alloc, Layout, AllocErr};
+use self::alloc::allocator::{Alloc, AllocErr, Layout};
 use core::cmp;
 use core::ptr;
 
@@ -37,18 +37,21 @@ unsafe impl<'a> Alloc for &'a BsAlloc {
         (*ALLOC).free(item, l.size())
     }
 
-    unsafe fn realloc(&mut self,
-                      ptr: *mut u8,
-                      old_l: Layout,
-                      new_l: Layout)
-                      -> Result<*mut u8, AllocErr> {
+    unsafe fn realloc(
+        &mut self,
+        ptr: *mut u8,
+        old_l: Layout,
+        new_l: Layout,
+    ) -> Result<*mut u8, AllocErr> {
         let old_size = old_l.size();
         let new_size = new_l.size();
         let new_memory = self.alloc(new_l).expect("alloc failed");
         #[cfg(debug_assertions)]
         {
-            assert_nonoverlapping((ptr as usize, ptr as usize + old_size),
-                                  (new_memory as usize, new_memory as usize + new_size));
+            assert_nonoverlapping(
+                (ptr as usize, ptr as usize + old_size),
+                (new_memory as usize, new_memory as usize + new_size),
+            );
         }
         ptr::copy_nonoverlapping(ptr, new_memory, cmp::min(old_size, new_size));
         self.dealloc(ptr, old_l);

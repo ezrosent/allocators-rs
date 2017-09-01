@@ -13,13 +13,22 @@ pub mod mmap {
     extern crate mmap_alloc;
     use self::mmap_alloc::MapAllocBuilder;
     use super::super::alloc::allocator::{Alloc, Layout};
+
     pub fn map(size: usize) -> *mut u8 {
+        fallible_map(size).expect("mmap should not fail")
+    }
+
+    pub fn fallible_map(size: usize) -> Option<*mut u8> {
         unsafe {
-            MapAllocBuilder::default()
+            if let Ok(s) = MapAllocBuilder::default()
                 .exec()
                 .build()
                 .alloc(Layout::from_size_align(size, 1).unwrap())
-                .expect("mmap should not fail")
+            {
+                Some(s)
+            } else {
+                None
+            }
         }
     }
 
@@ -70,7 +79,8 @@ pub struct Lazy<T: LazyInitializable> {
 }
 
 impl<T: LazyInitializable> Clone for Lazy<T>
-    where T::Params: Clone
+where
+    T::Params: Clone,
 {
     fn clone(&self) -> Self {
         Lazy {

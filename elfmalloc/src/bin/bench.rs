@@ -6,9 +6,9 @@
 
 #![feature(alloc)]
 #![feature(allocator_api)]
-extern crate elfmalloc;
-extern crate bagpipe;
 extern crate alloc;
+extern crate bagpipe;
+extern crate elfmalloc;
 extern crate num_cpus;
 use std::marker;
 use alloc::heap;
@@ -17,7 +17,7 @@ use std::thread;
 use std::time;
 use std::ptr::write_volatile;
 
-use elfmalloc::slag::{LocalAllocator, MagazineAllocator};
+use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
 use elfmalloc::general::global;
 use elfmalloc::general::DynamicAllocator;
 use std::sync::{Arc, Barrier};
@@ -27,11 +27,11 @@ type BenchItem = [usize; 2];
 
 const PAGE_SIZE: usize = 32 << 10;
 const EAGER_DECOMMIT: usize = 30 << 10;
-const USABLE_SIZE: usize = 32 << 10;
 
 
 trait AllocLike
-    where Self: Clone + Send
+where
+    Self: Clone + Send,
 {
     type Item;
     fn create() -> Self;
@@ -43,12 +43,11 @@ trait AllocLike
 impl<T: 'static> AllocLike for MagazineAllocator<T> {
     type Item = T;
     fn create() -> Self {
-        Self::new_standalone(0.8,
-                             PAGE_SIZE,
-                             4 << 30,
-                             1 << 40,
-                             EAGER_DECOMMIT,
-                             USABLE_SIZE)
+        AllocBuilder::default()
+            .cutoff_factor(0.8)
+            .page_size(PAGE_SIZE)
+            .eager_decommit_threshold(EAGER_DECOMMIT)
+            .build_magazine()
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
@@ -114,13 +113,11 @@ impl<T: 'static> AllocLike for ElfClone<T> {
 impl<T: 'static> AllocLike for LocalAllocator<T> {
     type Item = T;
     fn create() -> Self {
-        // TODO working set algorithm
-        Self::new_standalone(0.8,
-                             PAGE_SIZE,
-                             4 << 30,
-                             1 << 40,
-                             EAGER_DECOMMIT,
-                             USABLE_SIZE)
+        AllocBuilder::default()
+            .cutoff_factor(0.8)
+            .page_size(PAGE_SIZE)
+            .eager_decommit_threshold(EAGER_DECOMMIT)
+            .build_local()
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
@@ -157,8 +154,10 @@ impl<T> AllocLike for DefaultMalloc<T> {
 
     unsafe fn deallocate(&mut self, item: *mut T) {
         use heap::{Alloc, Layout};
-        heap::Heap.dealloc(item as *mut u8,
-                           Layout::from_size_align(mem::size_of::<T>(), 8).unwrap());
+        heap::Heap.dealloc(
+            item as *mut u8,
+            Layout::from_size_align(mem::size_of::<T>(), 8).unwrap(),
+        );
     }
 }
 
@@ -187,8 +186,10 @@ macro_rules! time_block_once {
     }
 }
 
-fn bench_alloc_free_pairs<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize,
-                                                                    per_thread: usize) {
+fn bench_alloc_free_pairs<A: AllocLike<Item = BenchItem> + 'static>(
+    nthreads: usize,
+    per_thread: usize,
+) {
     let mut a = A::create();
     let b = Arc::new(Barrier::new(nthreads + 1));
     let mut threads = Vec::new();
@@ -215,13 +216,17 @@ fn bench_alloc_free_pairs<A: AllocLike<Item = BenchItem> + 'static>(nthreads: us
 
     // why nthreads * nthreads? Total is actually n_threads * mean time, so we need an extra
     // nthreads factor to not over-count the time it takes to perform the workload.
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64)
+    );
     a.kill();
 }
 
-fn bench_alloc_free_pairs_buffered<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize,
-                                                                             per_thread: usize) {
+fn bench_alloc_free_pairs_buffered<A: AllocLike<Item = BenchItem> + 'static>(
+    nthreads: usize,
+    per_thread: usize,
+) {
     let mut a = A::create();
     let b = Arc::new(Barrier::new(nthreads + 1));
     let mut threads = Vec::new();
@@ -255,8 +260,10 @@ fn bench_alloc_free_pairs_buffered<A: AllocLike<Item = BenchItem> + 'static>(nth
 
     // why nthreads * nthreads? Total is actually n_threads * mean time, so we need an extra
     // nthreads factor to not over-count the time it takes to perform the workload.
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64)
+    );
     a.kill();
 }
 
@@ -265,7 +272,9 @@ fn bench_prod_cons<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, pe
     let b = Arc::new(Barrier::new(nthreads + 1));
     let mut v_base = Vec::new();
     for _ in 0..nthreads {
-        v_base.push(AtomicPtr::new(Box::into_raw(Box::new(Vec::with_capacity(per_thread)))));
+        v_base.push(AtomicPtr::new(
+            Box::into_raw(Box::new(Vec::with_capacity(per_thread))),
+        ));
     }
     let v = Arc::new(v_base);
     let mut threads = Vec::new();
@@ -276,7 +285,7 @@ fn bench_prod_cons<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, pe
         threads.push(thread::spawn(move || {
             let (me, them) = (t, (t + 1) % nthreads);
             unsafe {
-                let mut my_v = io_vec[me].load(Ordering::Acquire).as_mut().unwrap();
+                let my_v = io_vec[me].load(Ordering::Acquire).as_mut().unwrap();
                 for i in 0..per_thread {
                     let ptr = alloc.allocate();
                     write_volatile(ptr as *mut usize, i);
@@ -299,10 +308,11 @@ fn bench_prod_cons<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, pe
     for i in threads {
         total += i.join().unwrap();
     }
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64)
+    );
     a.kill();
-
 }
 
 fn bench_alloc_free<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, per_thread: usize) {
@@ -333,8 +343,10 @@ fn bench_alloc_free<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, p
     for i in threads {
         total += i.join().unwrap();
     }
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 2 * 1_000) as f64) / (total as f64)
+    );
     a.kill()
 }
 
@@ -367,8 +379,10 @@ fn bench_alloc<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, per_th
     for i in threads {
         total += i.join().unwrap();
     }
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64)
+    );
     a.kill()
 }
 
@@ -402,8 +416,10 @@ fn bench_free<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, per_thr
     for i in threads {
         total += i.join().unwrap();
     }
-    println!("{} Mops/s",
-             ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64));
+    println!(
+        "{} Mops/s",
+        ((nthreads * nthreads * per_thread * 1_000) as f64) / (total as f64)
+    );
     a.kill()
 }
 
@@ -439,8 +455,10 @@ macro_rules! run_bench {
 fn main() {
     const ITERS: usize = 1_000_000;
     let nthreads = num_cpus::get();
-    println!("allocating {} bytes per thread",
-             ITERS * mem::size_of::<BenchItem>());
+    println!(
+        "allocating {} bytes per thread",
+        ITERS * mem::size_of::<BenchItem>()
+    );
 
     run_bench!(both "alloc/free pairs", bench_alloc_free_pairs, nthreads, ITERS);
     run_bench!(both "buffered alloc/free pairs", bench_alloc_free_pairs_buffered, nthreads, ITERS);

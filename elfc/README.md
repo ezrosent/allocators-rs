@@ -10,4 +10,8 @@ enabled due to some thread-local storage issues. Once compiled, the resulting
 `elfmalloc`. Note that OSX and Windows are currently unsupported, though we
 plan to add these in the future.
 
+NB: `elfmalloc` requires a large virtual memory-mapped region (ideally over 1
+TB); enabling overcommit in Linux may be required for things to function
+properly.
+
 This will be replaced with `malloc_bind` soon.
