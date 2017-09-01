@@ -9,8 +9,8 @@
 set -x
 set -e
 
-cargo build --verbose --all
-RUST_BACKTRACE=1 cargo test --verbose --all -- --ignored
+travis-cargo --only nightly build
+RUST_BACKTRACE=1 travis-cargo --only nightly test
 for feature in nightly; do
-  RUST_BACKTRACE=1 cargo test --verbose --all --features "$feature" -- --ignored
+  RUST_BACKTRACE=1 travis-cargo --only nightly test -- --features "$feature"
 done

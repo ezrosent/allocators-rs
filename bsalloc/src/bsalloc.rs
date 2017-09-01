@@ -140,9 +140,9 @@ mod tests {
         for size in 1..((1 << 18) + 1) {
             let layout = Layout::from_size_align(size * 8, 8).unwrap();
             unsafe {
-                let item = BsAlloc.alloc(layout.clone()).unwrap();
+                let item = (&BsAlloc).alloc(layout.clone()).unwrap();
                 write_volatile(item, 10);
-                BsAlloc.dealloc(item, layout);
+                (&BsAlloc).dealloc(item, layout);
             }
         }
     }
