@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 // So clippy doesn't complain that SunOS isn't in tick marks
 #![cfg_attr(feature = "cargo-clippy", allow(doc_markdown))]
 //! An `ObjectAlloc` which allocates objects in contiguous slabs and caches constructed objects.

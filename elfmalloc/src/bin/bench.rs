@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 #![feature(alloc)]
 #![feature(allocator_api)]
 extern crate elfmalloc;
@@ -144,7 +150,8 @@ impl<T> AllocLike for DefaultMalloc<T> {
     }
     unsafe fn allocate(&mut self) -> *mut T {
         use heap::{Alloc, Layout};
-        heap::Heap.alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
+        heap::Heap
+            .alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
             .unwrap() as *mut T
     }
 
@@ -192,12 +199,12 @@ fn bench_alloc_free_pairs<A: AllocLike<Item = BenchItem> + 'static>(nthreads: us
             barrier.wait();
             // warmup
             time_block!(unsafe {
-                for i in 0..per_thread {
-                    let ptr = alloc.allocate();
-                    write_volatile(ptr as *mut usize, i);
-                    alloc.deallocate(ptr);
-                }
-            })
+                            for i in 0..per_thread {
+                                let ptr = alloc.allocate();
+                                write_volatile(ptr as *mut usize, i);
+                                alloc.deallocate(ptr);
+                            }
+                        })
         }));
     }
     b.wait();
@@ -230,14 +237,14 @@ fn bench_alloc_free_pairs_buffered<A: AllocLike<Item = BenchItem> + 'static>(nth
             barrier.wait();
             // warmup
             time_block!(unsafe {
-                for i in 0..per_thread {
-                    let idx = i % ptrs.len();
-                    let ptr = ptrs.get_unchecked_mut(idx);
-                    alloc.deallocate(*ptr);
-                    *ptr = alloc.allocate();
-                    write_volatile(*ptr as *mut u8, i as u8);
-                }
-            })
+                            for i in 0..per_thread {
+                                let idx = i % ptrs.len();
+                                let ptr = ptrs.get_unchecked_mut(idx);
+                                alloc.deallocate(*ptr);
+                                *ptr = alloc.allocate();
+                                write_volatile(*ptr as *mut u8, i as u8);
+                            }
+                        })
         }));
     }
     b.wait();
@@ -278,12 +285,13 @@ fn bench_prod_cons<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, pe
             }
             barrier.wait();
             time_block_once!(unsafe {
-                for i in 0..per_thread {
-                    let ptr = io_vec[them].load(Ordering::Acquire).as_ref().unwrap()[i]
-                        .load(Ordering::Relaxed);
-                    alloc.deallocate(ptr);
-                }
-            })
+                                 for i in 0..per_thread {
+                                     let ptr =
+                                         io_vec[them].load(Ordering::Acquire).as_ref().unwrap()[i]
+                                             .load(Ordering::Relaxed);
+                                     alloc.deallocate(ptr);
+                                 }
+                             })
         }));
     }
     b.wait();
@@ -309,15 +317,15 @@ fn bench_alloc_free<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, p
             // warmup
             let mut ptrs = Vec::with_capacity(2 * per_thread);
             time_block_once!(unsafe {
-                for i in 0..per_thread {
-                    let ptr = alloc.allocate();
-                    write_volatile(ptr as *mut usize, i);
-                    ptrs.push(ptr);
-                }
-                for ptr in ptrs {
-                    alloc.deallocate(ptr);
-                }
-            })
+                                 for i in 0..per_thread {
+                                     let ptr = alloc.allocate();
+                                     write_volatile(ptr as *mut usize, i);
+                                     ptrs.push(ptr);
+                                 }
+                                 for ptr in ptrs {
+                                     alloc.deallocate(ptr);
+                                 }
+                             })
         }));
     }
     b.wait();
@@ -342,12 +350,12 @@ fn bench_alloc<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, per_th
             // warmup
             let mut ptrs = Vec::with_capacity(per_thread);
             let t = time_block_once!(unsafe {
-                for i in 0..per_thread {
-                    let ptr = alloc.allocate();
-                    write_volatile(ptr as *mut usize, i);
-                    ptrs.push(ptr);
-                }
-            });
+                                         for i in 0..per_thread {
+                                             let ptr = alloc.allocate();
+                                             write_volatile(ptr as *mut usize, i);
+                                             ptrs.push(ptr);
+                                         }
+                                     });
             for ptr in ptrs {
                 unsafe { alloc.deallocate(ptr) };
             }
@@ -383,10 +391,10 @@ fn bench_free<A: AllocLike<Item = BenchItem> + 'static>(nthreads: usize, per_thr
                 }
             }
             time_block_once!(unsafe {
-                for ptr in ptrs {
-                    alloc.deallocate(ptr);
-                }
-            })
+                                 for ptr in ptrs {
+                                     alloc.deallocate(ptr);
+                                 }
+                             })
         }));
     }
     b.wait();

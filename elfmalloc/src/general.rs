@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 //! Implementation of general allocator routines based off of the `Slag` allocator design.
 //!
 //! This module also includes special handling of large objects.

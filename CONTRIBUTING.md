@@ -1,3 +1,7 @@
+<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the README.md file at the top-level directory of this repository.
+
+Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
+
 Contributing
 ============
 
@@ -42,6 +46,19 @@ All public-facing APIs should have documentation which abides by [RFC 505](https
 
 ### Commit messages
 Commit messages should be of the form `<component>: <description>`, where the description is written in the third person singular present imperative form. What a mouthful! Basically, this means a description like "Do the thing." For example, `slab-alloc: Add documentation comments`.
+
+### Copyright comment
+Every new file should bear the following copyright comment at the top, preceding any other text:
+
+```rust
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+```
+
+Modified files should have the copyright dates updated. For example, if a file's comment reads `Copyright 2017`, but it is modified in 2018, then the comment should be updated to read `Copyright 2017-2018`.
 
 ### Rebasing
 All changes should be rebased onto the master branch so that we maintain a linear history. If you're not sure how to do that, just ask! For a good introduction to rebasing and why it's helpful, see [here](https://git-scm.com/book/en/v2/Git-Branching-Rebasing).

@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 //! Specification of best-effort bags and implementation for `crossbeam`
 //! data-structures.
 use super::crossbeam::sync::{TreiberStack, SegQueue, MsQueue};
@@ -61,10 +67,10 @@ pub trait SharedWeakBag {
         let _g = epoch::pin();
         loop {
             return match self.try_pop() {
-                Ok(it) => Some(it),
-                Err(PopStatus::Empty) => None,
-                Err(PopStatus::TransientFailure) => continue,
-            };
+                       Ok(it) => Some(it),
+                       Err(PopStatus::Empty) => None,
+                       Err(PopStatus::TransientFailure) => continue,
+                   };
         }
     }
 
@@ -95,10 +101,10 @@ pub trait WeakBag: Clone {
         let _g = epoch::pin();
         loop {
             return match self.try_pop_mut() {
-                Ok(it) => Some(it),
-                Err(PopStatus::Empty) => None,
-                Err(PopStatus::TransientFailure) => continue,
-            };
+                       Ok(it) => Some(it),
+                       Err(PopStatus::Empty) => None,
+                       Err(PopStatus::TransientFailure) => continue,
+                   };
         }
     }
 
@@ -156,7 +162,11 @@ pub trait Revocable {
 
 impl<T: Revocable> Revocable for *mut T {
     fn handle(&self) -> &AtomicUsize {
-        unsafe { self.as_ref().expect("revocable impl dereferences raw pointers").handle() }
+        unsafe {
+            self.as_ref()
+                .expect("revocable impl dereferences raw pointers")
+                .handle()
+        }
     }
 }
 
@@ -173,7 +183,7 @@ pub trait RevocableWeakBag: SharedWeakBag
 
 // implement WeakBag for the stack and queues in crossbeam. Note that these don't have the full
 // "try" semantics that we want, as they never fail. As a result, they should not be used in a
-// `BagPipe`: everything will work, but 
+// `BagPipe`: everything will work, but
 
 impl<T> SharedWeakBag for TreiberStack<T> {
     type Item = T;

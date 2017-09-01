@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 extern crate bagpipe;
 extern crate crossbeam;
 extern crate num_cpus;
@@ -280,7 +286,8 @@ fn enqueue_dequeue_usize<W>(npairs: usize,
             let start = time::Instant::now();
             for _ in 0..ops_per_thread {
                 match bag.try_pop_mut() {
-                    Ok(_) | Err(PopStatus::Empty) => {}
+                    Ok(_) |
+                    Err(PopStatus::Empty) => {}
                     Err(PopStatus::TransientFailure) => failures += 1,
                 }
             }

@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 //! Implementation of two non-blocking queues.
 //!
 //! - `GeneralYC`, a fast, best-effort queue that will fail
@@ -273,7 +279,8 @@ impl<T: Node> YangCrummeyQueue<T> {
                                    seg: &Atomic<Segment<T>>,
                                    g: &'a Guard)
                                    -> (usize, &'a AtomicUsize) {
-        let data = seg.load(Ordering::Relaxed, g).expect("initial pointer should never be null");
+        let data = seg.load(Ordering::Relaxed, g)
+            .expect("initial pointer should never be null");
         let cur_id = data.id.load(Ordering::Relaxed);
         // the load of data must happen before the fetch-add of ix,
         // otherwise we are in danger of the pointer being advanced
@@ -315,8 +322,9 @@ impl<T: Node> SharedWeakBag for YangCrummeyQueue<T> {
             head_data: CachePadded::new(Atomic::new(Segment::new(0))),
             tail_data: CachePadded::new(Atomic::null()),
         };
-        res.tail_data.store_shared(res.head_data.load(Ordering::SeqCst, &guard),
-                                   Ordering::Release);
+        res.tail_data
+            .store_shared(res.head_data.load(Ordering::SeqCst, &guard),
+                          Ordering::Release);
         res
     }
 
@@ -427,8 +435,9 @@ impl<T: Node> Segment<T> {
                 None => {
                     let new_seg = Owned::new(Segment::new(cur_id + 1));
                     // TODO(ezr) don't waste the allocation?
-                    if let Ok(shared) = cur_seg.next
-                        .cas_and_ref(None, new_seg, Ordering::Relaxed, guard) {
+                    if let Ok(shared) = cur_seg
+                           .next
+                           .cas_and_ref(None, new_seg, Ordering::Relaxed, guard) {
                         cur_seg = *shared;
                     }
                 }
@@ -523,7 +532,8 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
             _marker: PhantomData,
         };
         let guard = epoch::pin();
-        res.tail.store_shared(res.head.load(Ordering::Relaxed, &guard), Ordering::Relaxed);
+        res.tail
+            .store_shared(res.head.load(Ordering::Relaxed, &guard), Ordering::Relaxed);
         res
     }
 
@@ -531,8 +541,9 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
         let guard = epoch::pin();
         let it = item.as_usize();
         loop {
-            let tail =
-                self.tail.load(Ordering::Relaxed, &guard).expect("tail pointer should not be null");
+            let tail = self.tail
+                .load(Ordering::Relaxed, &guard)
+                .expect("tail pointer should not be null");
             let ix = tail.tail_index.fetch_add(1, Ordering::Relaxed);
             if ix >= SMALL_SEG_SIZE {
                 // We need to enqueue in a cell further in the linked list.
@@ -546,7 +557,8 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
                         // There is an item after the current tail, we try and assign it to the
                         // value of the tail. Regardless of the success of the CAS, there will be
                         // something new in the value of the tail, so we reload.
-                        self.tail.cas_shared(Some(tail), Some(next), Ordering::Relaxed);
+                        self.tail
+                            .cas_shared(Some(tail), Some(next), Ordering::Relaxed);
                         continue;
                     }
 
@@ -554,11 +566,13 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
                         // There is nothing in the tail value, so we attempt to allocate a new node
                         // beginning with our item.
                         let new_node = Owned::new(FAANode::new(Node::from_usize(it)));
-                        if let Ok(shared) = tail.next
-                            .cas_and_ref(None, new_node, Ordering::Relaxed, &guard) {
+                        if let Ok(shared) =
+                            tail.next
+                                .cas_and_ref(None, new_node, Ordering::Relaxed, &guard) {
                             // We succeeded. We try to CAS tail to our new segment but either way
                             // we can return success.
-                            self.tail.cas_shared(Some(tail), Some(shared), Ordering::Relaxed);
+                            self.tail
+                                .cas_shared(Some(tail), Some(shared), Ordering::Relaxed);
                             return Ok(());
                         }
                         // We failed, but that means another node is there, so we retry.
@@ -572,23 +586,24 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
             F::store(&item, cell_ref as *const _ as *mut T as usize);
             let res = cell_ref.compare_and_swap(0, it, Ordering::Relaxed);
             return if res == 0 {
-                Ok(())
-            } else {
+                       Ok(())
+                   } else {
                 #[cfg(debug_assertion)]
-                {
-                    // re-set this to zero on debug builds, to clarify the state transition.
-                    F::store(&item, 0);
-                }
-                Err(item)
-            };
+                       {
+                           // re-set this to zero on debug builds, to clarify the state transition.
+                           F::store(&item, 0);
+                       }
+                       Err(item)
+                   };
         }
     }
 
     fn try_pop(&self) -> PopResult<T> {
         let guard = epoch::pin();
         loop {
-            let head =
-                self.head.load(Ordering::Relaxed, &guard).expect("head pointer should not be null");
+            let head = self.head
+                .load(Ordering::Relaxed, &guard)
+                .expect("head pointer should not be null");
             // First we check if the queue is empty. To do this we load the head and then the tail.
             // This is because both values can only increase, but if tail_ix is less than what
             // head_ix was in the past, the queue is still empty regardless (because no concurrent
@@ -613,7 +628,8 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
                         // already, or have an active guard.
                         //
                         // TODO(ezrosent): confirm this reasoning.
-                        if self.head.cas_shared(Some(head), Some(shared), Ordering::Relaxed) {
+                        if self.head
+                               .cas_shared(Some(head), Some(shared), Ordering::Relaxed) {
                             unsafe { guard.unlinked(head) };
                         }
                         continue;
@@ -626,15 +642,15 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
             // Now we try and swap sentinel into our chosen location.
             let res = unsafe { head.get(my_ix).swap(SENTINEL, Ordering::Relaxed) };
             return if res == 0 || res == SENTINEL {
-                // revocations can put SENTINEL in any cell
-                Err(PopStatus::TransientFailure)
-            } else {
-                let res_t = Node::from_usize(res);
-                // erase the stamp; N.B: this may not be necessary for the allocator material, but
-                // it is very unlikely to be a bottleneck.
-                F::store(&res_t, 0);
-                Ok(res_t)
-            };
+                       // revocations can put SENTINEL in any cell
+                       Err(PopStatus::TransientFailure)
+                   } else {
+                       let res_t = Node::from_usize(res);
+                       // erase the stamp; N.B: this may not be necessary for the allocator material, but
+                       // it is very unlikely to be a bottleneck.
+                       F::store(&res_t, 0);
+                       Ok(res_t)
+                   };
         }
     }
 }
@@ -665,8 +681,8 @@ impl<T: Node> FAANode<T> {
     fn new(item: T) -> Self {
         let res = Self::new_empty();
         res.tail_index.store(1, Ordering::Relaxed);
-        node_to_atomic_ref!(unsafe { res.data.get_unchecked(0) })
-            .store(item.as_usize(), Ordering::Relaxed);
+        node_to_atomic_ref!(unsafe { res.data.get_unchecked(0) }).store(item.as_usize(),
+                                                                        Ordering::Relaxed);
         res
     }
 
@@ -791,11 +807,11 @@ mod tests {
         let yq = Arc::new(W::new());
         let (yq1, bar1) = (yq.clone(), bar.clone());
         let j1 = thread::spawn(move || {
-            bar1.wait();
-            for i in 0..size {
-                while yq1.try_push(i).is_err() {}
-            }
-        });
+                                   bar1.wait();
+                                   for i in 0..size {
+                                       while yq1.try_push(i).is_err() {}
+                                   }
+                               });
         let (yq2, bar2) = (yq.clone(), bar.clone());
         let j2 = thread::spawn(move || {
             bar2.wait();
@@ -863,11 +879,11 @@ mod tests {
         for tnum in 0..nthreads {
             let (yqt, bart) = (yq.clone(), bar.clone());
             threads.push(thread::spawn(move || {
-                bart.wait();
-                for i in 0..size {
-                    while yqt.try_push(tnum * size + i).is_err() {}
-                }
-            }));
+                                           bart.wait();
+                                           for i in 0..size {
+                                               while yqt.try_push(tnum * size + i).is_err() {}
+                                           }
+                                       }));
         }
 
 
@@ -881,9 +897,7 @@ mod tests {
                     match yqt.try_pop() {
                         Err(PopStatus::Empty) => break,
                         Err(PopStatus::TransientFailure) => {}
-                        Ok(item) => {
-                            mychan.send(item).expect("channel send should succeed")
-                        }
+                        Ok(item) => mychan.send(item).expect("channel send should succeed"),
                     }
                 }
             }));

@@ -1,3 +1,7 @@
+<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the README.md file at the top-level directory of this repository.
+
+Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
+
 # Allocators, general and specific
 
 This repo includes a number of custom dynamic memory allocators written in Rust,
@@ -69,3 +73,9 @@ found in each top-level directory's readme.
 ## Contributing
 
 Interested in contributing? We'd love to have you! Check out [CONTRIBUTING.md](https://github.com/ezrosent/allocators-rs/blob/master/CONTRIBUTING.md)
+
+## Copyright and license
+
+Copyrights in this project are retained by their contributors. No copyright assignment is required to contribute to this project. For a list of authors, see this repository's version control history.
+
+This project is licensed under the [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0) license, a copy of which can be found in the `LICENSE` file.

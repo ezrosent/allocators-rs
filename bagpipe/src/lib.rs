@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 //! Implements the `BagPipe` data structure, along with its core components.
 //!
 //! A `BagPipe` is a concurrent pool data-structure optimized for
@@ -203,7 +209,11 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
 
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
         match self.pipes
-            .try_push_internal(it, self.offset, self.stride, self.push_failures + 1, false) {
+                  .try_push_internal(it,
+                                     self.offset,
+                                     self.stride,
+                                     self.push_failures + 1,
+                                     false) {
             Ok(_) => {
                 self.push_failures >>= 1;
                 self.propagate_diff(1);
@@ -241,7 +251,11 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
     fn push_mut(&mut self, it: Self::Item) {
         if let Err(it) = self.try_push_mut(it) {
             match self.pipes
-                .try_push_internal(it, self.offset, self.stride, self.push_failures + 1, true) {
+                      .try_push_internal(it,
+                                         self.offset,
+                                         self.stride,
+                                         self.push_failures + 1,
+                                         true) {
                 Ok(true) => {
                     self.push_failures >>= 1;
                 }
