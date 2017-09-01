@@ -873,19 +873,25 @@ impl Coalescer {
 
     fn bucket_num(&self, word: usize) -> usize {
         // we can do a "fast mod" operation because we know len() is a power of two (see `new`)
-        word as usize & (self.0.len() - 1)
+        word & (self.0.len() - 1)
     }
 
     /// Try to insert `item`.
     ///
     /// The return value indicates if the value was successfully inserted.
     unsafe fn insert(&mut self, item: *mut u8, meta: &Metadata) -> bool {
+        fn hash_ptr(p: *mut Word) -> usize {
+            let p_num = p as usize;
+            let words = p_num >> 3;
+            let pages = words >> 18;
+            pages * words
+        }
         let s = &*Slag::find(item, meta.total_bytes);
         let rc_ptr = &s.rc as *const _ as *mut RefCount;
         let (word, word_ix) = Slag::get_word(s.as_raw(), item, meta);
         let word_ptr =
             ((s.as_raw() as *mut u8).offset(meta.bitset_offset) as *mut Word).offset(word);
-        let bucket_ind = self.bucket_num(word_ptr as usize >> 3);
+        let bucket_ind = self.bucket_num(hash_ptr(word_ptr));
         let bucket = &mut *self.0.get(bucket_ind);
         // XXX: using the property of the creek implementation that it fills newly-dirtied pages
         // with zeros.
@@ -899,7 +905,6 @@ impl Coalescer {
             self.1.push(bucket as *const _ as *mut u8);
             return true;
         }
-
         if bucket.word == word_ptr {
             bucket.mask |= 1 << word_ix;
             return true;
@@ -967,7 +972,7 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
         assert!(magazine_size > 0);
         let s = PtrStack::new(magazine_size);
         let iter = unsafe { alloc.refresh() };
-        let buckets = Coalescer::new(magazine_size * 4);
+        let buckets = Coalescer::new(magazine_size * 2);
         MagazineCache {
             stack_size: magazine_size,
             s: s,
@@ -980,7 +985,7 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     pub fn new(alloc: SlagAllocator<CA>) -> Self {
         use std::cmp;
         unsafe {
-            const DEFAULT_MAGAZINE_BYTES: usize = 512 << 10; // 1 << 20;
+            const DEFAULT_MAGAZINE_BYTES: usize = 512 << 10;
             let sz = DEFAULT_MAGAZINE_BYTES / (*alloc.m).object_size;
             Self::new_sized(alloc, cmp::max(1, sz))
         }
@@ -1027,16 +1032,17 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     /// Perform the bulk-level frees for the `Coalescer`.
     unsafe fn return_memory(&mut self) {
         debug_assert_eq!(self.s.top as usize, self.stack_size);
+        let new_top = self.stack_size / 2;
         let meta = &*self.alloc.m;
         // iterate over the stack and attempt to add them to the coalescer.
-        for i in 0..self.stack_size {
+        for i in new_top..self.stack_size {
             let item = *self.s.data.get(i);
             if !self.coalescer.insert(item, meta) {
                 // there was a "hash collision", so we simply free `item` directly
                 self.alloc.free(item)
             }
         }
-        self.s.top = 0;
+        self.s.top = new_top;
         for cell_ptr in 0..self.coalescer.1.top {
             let cell = &mut **(self.coalescer.1.data.get(cell_ptr) as *mut *mut RemoteFreeCell);
             // Slag::find will technically work if you hand it any pointer within the slag
@@ -1186,7 +1192,10 @@ impl MemoryBlock for Creek {
                 .as_ref()
                 .unwrap()
                 .fetch_add(npages, Ordering::Relaxed);
-            debug_assert!((new_bump * (self.page_size + 1)) < self.map_info.1);
+            assert!(
+                (new_bump + npages) * self.page_size < self.map_info.1,
+                "address space allocation exceeded"
+            );
             self.base.offset((new_bump * self.page_size) as isize)
         }
     }
@@ -1264,6 +1273,9 @@ impl Clone for Creek {
     }
 }
 
+/// A `DirtyFn` is a callback that is called upon allocating a clean page from a `PageAlloc`. It
+/// generally does nothing, but its presence in `PageAlloc` allows us to inject other callbacks for
+/// debugging or performance analysis.
 pub trait DirtyFn: Clone {
     fn dirty(mem: *mut u8);
 }

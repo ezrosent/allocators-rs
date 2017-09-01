@@ -107,6 +107,9 @@ pub mod global {
 
     type Block = Creek;
     type PA = PageAlloc<Block, ()>;
+    // For debugging purposes: run a callback to eagerly dirty several pages. This is generally bad
+    // for performance.
+    //
     // type PA = PageAlloc<Block, BackgroundDirty>;
 
     unsafe fn dirty_slag(mem: *mut u8) {
@@ -755,7 +758,7 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
-            let params = (m_ptr, 256 << 10, pa.clone(), RevocablePipe::new_size(8));
+            let params = (m_ptr, 1 << 20, pa.clone(), RevocablePipe::new_size(8));
             ObjectAlloc::new(params)
         });
         let max_size = am.max_key();

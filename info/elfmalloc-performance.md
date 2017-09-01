@@ -11,7 +11,12 @@ measure of how our work stacks up.
 
 This document is a work in progress. We are currently working on providing
 results for more `malloc` implementations in more workloads. We are also
-exploring various optimizations for the allocator.
+exploring various optimizations for the allocator. Various tuning parameters
+improve `elfmalloc` performance substantially in some of these benchmarks,
+sometimes at the cost of performance elsewhere. We are also still investigating
+the best balance of these parameters. We are also still investigating the
+different benchmark settings in use to ensure that all settings are fair wrt
+different allocators' thread-local cache sizes.
 
 ## Two variants of `elfmalloc`
 
