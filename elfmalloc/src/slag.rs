@@ -857,7 +857,7 @@ impl Coalescer {
             let p_num = p as usize;
             let words = p_num >> 3;
             let pages = words >> 18;
-            pages * words
+            pages.wrapping_mul(words)
         }
         let s = &*Slag::find(item, meta.total_bytes);
         let rc_ptr = &s.rc as *const _ as *mut RefCount;
