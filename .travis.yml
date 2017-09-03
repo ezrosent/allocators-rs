@@ -7,9 +7,15 @@
 language: rust
 rust:
   - nightly
+  - beta
+  - stable
 os:
   - linux
   - osx
+# Load travis-cargo
+before_script:
+  - pip install 'travis-cargo<0.2' --user &&
+    export PATH=$HOME/.local/bin:$PATH
 script:
   - set -x; set -e; for script in */travis.sh; do
         dir=$(dirname "$script");
@@ -19,3 +25,8 @@ script:
         popd;
     done
   - ./test-scripts/check-copyright-comments.sh
+
+env:
+  global:
+    # Override the default `--features unstable` used for the nightly branch
+    - TRAVIS_CARGO_NIGHTLY_FEATURE=""

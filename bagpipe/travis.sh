@@ -9,8 +9,8 @@
 set -x
 set -e
 
-cargo build --verbose --all
-RUST_BACKTRACE=1 cargo test --verbose --all -- --ignored
+travis-cargo build
+RUST_BACKTRACE=1 travis-cargo test
 for feature in check_empty_yq prime_schedules staggered_indexes huge_segments; do
-  RUST_BACKTRACE=1 cargo test --verbose --all --features "$feature" -- --ignored
+  RUST_BACKTRACE=1 travis-cargo test -- --features "$feature"
 done

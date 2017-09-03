@@ -1,3 +1,9 @@
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
 //! This module includes some lightweight utilities for tracing different allocation events.
 //! Like all global abstractions in use here, some hacks are required to get this to work correctly
 //! when this library is linked as part of a `malloc`.

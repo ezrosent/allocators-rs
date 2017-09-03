@@ -9,5 +9,5 @@
 set -x
 set -e
 
-cargo build --verbose --all
-RUST_BACKTRACE=1 cargo test --verbose --all -- --ignored
+travis-cargo --only nightly build
+RUST_BACKTRACE=1 travis-cargo --only nightly test
