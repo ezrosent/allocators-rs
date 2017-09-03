@@ -8,6 +8,17 @@
 name = "malloc-bind"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0"
+description = "A tool to implement the C malloc API using a Rust allocator."
+
+keywords = ["allocator", "malloc", "bindings", "C", "ffi"]
+categories = ["external-ffi-bindings", "memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/malloc-bind"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/malloc-bind"
+
+exclude = ["travis.sh"]
 
 [dependencies]
 errno = "0.2"

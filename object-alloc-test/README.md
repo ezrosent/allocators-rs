@@ -5,4 +5,7 @@ Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may
 object-alloc-test
 =================
 
+[![Crates.io](https://img.shields.io/crates/v/object-alloc-test.svg)](https://crates.io/crates/object-alloc-test)
+[![Docs](https://docs.rs/object-alloc-test/badge.svg)](https://docs.rs/object-alloc-test)
+
 Tests for object allocators. This crate provides mechanisms to test implementations of the `ObjectAlloc` trait for correctness, including a comprehensive memory corruption tester.

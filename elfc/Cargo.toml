@@ -8,6 +8,10 @@
 name = "elfc"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
+license = "Apache-2.0"
+
+publish = false
+exclude = ["travis.sh"]
 
 [lib]
 name = "elfc"

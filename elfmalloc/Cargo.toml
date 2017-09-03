@@ -8,6 +8,17 @@
 name = "elfmalloc"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>", "Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0"
+description = "A fast, concurrent, general-purpose allocator."
+
+keywords = ["allocator"]
+categories = ["caching", "concurrency", "memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/elfmalloc"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/elfmalloc"
+
+exclude = ["travis.sh"]
 
 [features]
 # TODO: Rename these features to use dashes instead of underscores
@@ -20,10 +31,10 @@ use_default_allocator = []
 print_stats = ["nightly"]
 
 [dependencies]
-bagpipe = { path = "../bagpipe" }
-bsalloc = { path = "../bsalloc" }
+bagpipe = "0.1.0"
+bsalloc = "0.1.0"
 lazy_static = "0.2"
-mmap-alloc = { path = "../mmap-alloc" }
+mmap-alloc = "0.1.0"
 num_cpus = "1.5"
 log = "0.3.8"
 

@@ -6,10 +6,19 @@
 
 [package]
 name = "slab-alloc"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>", "Eli Rosenthal <ezrosenthal@gmail.com>"]
-keywords = ["allocator", "cache", "object", "slab", "magazine"]
-categories = ["algorithm", "caching", "no-std", "memory-management"]
+license = "Apache-2.0"
+description = "A fast, single-threaded object allocator."
+
+keywords = ["allocator", "cache", "object", "slab"]
+categories = ["algorithms", "caching", "memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/slab-alloc"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/slab-alloc"
+
+exclude = ["travis.sh"]
 
 [profile.test]
 opt-level = 3
@@ -31,8 +40,8 @@ hashmap-no-coalesce = []
 [dependencies]
 interpolate_idents = "0.1"
 lazy_static = { version = "0.2", features = ["spin_no_std"] }
-mmap-alloc = { path = "../mmap-alloc" }
-object-alloc = { path = "../object-alloc" }
-object-alloc-test = { path = "../object-alloc-test" }
+mmap-alloc = "0.1.0"
+object-alloc = "0.1.0"
+object-alloc-test = "0.1.0"
 rand = "0.3"
 sysconf = "0.3.0"

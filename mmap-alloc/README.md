@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may
 mmap-alloc
 ==========
 
+[![Crates.io](https://img.shields.io/crates/v/mmap-alloc.svg)](https://crates.io/crates/mmap-alloc)
+[![Docs](https://docs.rs/mmap-alloc/badge.svg)](https://docs.rs/mmap-alloc)
+
 An allocator that is backed by directly mapping memory pages.
 
 The `MapAlloc` type defined by this crate implements the `Alloc` and `ObjectAlloc` traits by directly mapping memory pages from the kernel (`mmap`/`munmap` on POSIX systems and `VirtualAlloc`/`VirtualFree` on Windows). It also allows pages to be committed or uncommitted.

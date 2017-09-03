@@ -8,6 +8,17 @@
 name = "bagpipe"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
+license = "Apache-2.0"
+description = "A concurrent bag datastructure."
+
+keywords = ["bagpipe", "bag", "concurrent", "queue", "set"]
+categories = ["algorithms", "concurrency", "data-structures"]
+
+readme = "README.md"
+documentation = "https://docs.rs/bagpipe"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/bagpipe"
+
+exclude = ["travis.sh"]
 
 [features]
 # TODO: Rename these features to use dashes instead of underscores
