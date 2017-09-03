@@ -45,7 +45,7 @@ Providing clean, ergonomic APIs are important. If you're adding or modifying API
 All public-facing APIs should have documentation which abides by [RFC 505](https://github.com/rust-lang/rfcs/blob/master/text/0505-api-comment-conventions.md). Try running `cargo doc --open` to compile and view documentation in the browser to see if it looks as you expect.
 
 ### Commit messages
-Commit messages should be of the form `<component>: <description>`, where the description is written in the third person singular present imperative form. What a mouthful! Basically, this means a description like "Do the thing." For example, `slab-alloc: Add documentation comments`.
+Commit messages should be of the form `<component>: <description>`, where the description is written in the third person singular present imperative form, and doesn't have a period at the end. What a mouthful! Basically, this means a description like "Do the thing." For example, `slab-alloc: Add documentation comments`.
 
 ### Copyright comment
 Every new file should bear the following copyright comment at the top, preceding any other text:
