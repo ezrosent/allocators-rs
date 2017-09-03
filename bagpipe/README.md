@@ -2,7 +2,11 @@
 
 Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
 
-# Bagpipe
+bagpipe
+=======
+
+[![Crates.io](https://img.shields.io/crates/v/bagpipe.svg)](https://crates.io/crates/bagpipe)
+[![Docs](https://docs.rs/bagpipe/badge.svg)](https://docs.rs/bagpipe)
 
 A `Bagpipe` is an implementation of a concurrent pool data-structure. It
 is built on top of an implementation of a concurrent queue or stack

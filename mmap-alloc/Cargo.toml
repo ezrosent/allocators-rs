@@ -8,6 +8,17 @@
 name = "mmap-alloc"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0"
+description = "A simple allocator backed by memory mappings."
+
+keywords = ["allocator", "mmap", "virtualalloc", "memory"]
+categories = ["memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/mmap-alloc"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/mmap-alloc"
+
+exclude = ["travis.sh"]
 
 [features]
 # By default, test builds are not no_std. This feature makes test builds no_std.
@@ -18,6 +29,6 @@ errno = "0.2"
 kernel32-sys = "0.2"
 # use no_std libc
 libc = { version = "0.2", default-features = false }
-object-alloc = { path = "../object-alloc" }
+object-alloc = "0.1.0"
 sysconf = "0.3.0"
 winapi = "0.2"

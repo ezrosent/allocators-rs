@@ -2,7 +2,11 @@
 
 Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may not be copied, modified, or distributed except according to those terms. -->
 
-# `bsalloc`: a global, `no-std` dynamic memory allocator.
+bsalloc
+=======
+
+[![Crates.io](https://img.shields.io/crates/v/bsalloc.svg)](https://crates.io/crates/bsalloc)
+[![Docs](https://docs.rs/bsalloc/badge.svg)](https://docs.rs/bsalloc)
 
 This crate implements a very simple global allocator. This is used to
 service heap allocations for dependencies of the dynamic allocators in

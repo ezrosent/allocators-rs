@@ -8,12 +8,23 @@
 name = "object-alloc-test"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0"
+description = "A suite of tests for object allocators."
+
+keywords = ["allocator", "object", "test", "memory", "corruption"]
+categories = ["caching", "memory-management"]
+
+readme = "README.md"
+documentation = "https://docs.rs/object-alloc-test"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc-test"
+
+exclude = ["travis.sh"]
 
 [dependencies]
 interpolate_idents = "0.1"
 lazy_static = "0.2"
 libc = "0.2"
-object-alloc = { path = "../object-alloc" }
+object-alloc = "0.1.0"
 quickcheck = "0.4"
 rand = "0.3"
 twox-hash = "1.1"

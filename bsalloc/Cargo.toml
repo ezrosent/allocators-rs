@@ -8,6 +8,17 @@
 name = "bsalloc"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
+license = "Apache-2.0"
+description = "A simple general-purpose allocator used to bootstrap other allocators."
+
+keywords = ["bootstrap", "allocator"]
+categories = ["concurrency", "memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/bsalloc"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/bsalloc"
+
+exclude = ["travis.sh"]
 
 [profile.dev]
 panic = "abort"
@@ -16,4 +27,4 @@ panic = "abort"
 
 [dependencies]
 lazy_static = { version = "0.2", features = ["spin_no_std"] }
-mmap-alloc = { path = "../mmap-alloc" }
+mmap-alloc = "0.1.0"

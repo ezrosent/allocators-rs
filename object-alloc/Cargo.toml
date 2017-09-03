@@ -8,5 +8,14 @@
 name = "object-alloc"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
-keywords = ["allocator", "cache", "object"]
-categories = ["memory-management"]
+license = "Apache-2.0"
+description = "An object allocator trait for Rust."
+
+keywords = ["allocator", "object", "caching"]
+categories = ["algorithms", "caching", "memory-management"]
+
+readme = "README.md"
+documentation = "https://docs.rs/object-alloc"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc"
+
+exclude = ["travis.sh"]

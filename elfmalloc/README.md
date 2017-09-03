@@ -4,6 +4,9 @@ Licensed under the Apache License, Version 2.0 (the LICENSE file). This file may
 
 # Efficient Dynamic Memory Allocation
 
+[![Crates.io](https://img.shields.io/crates/v/elfmalloc.svg)](https://crates.io/crates/elfmalloc)
+[![Docs](https://docs.rs/elfmalloc/badge.svg)](https://docs.rs/elfmalloc)
+
 This crate provides efficient multi-threaded heap allocation both on a
 per-object (i.e. fixed-size) or dynamic (i.e. `malloc`-like) basis.
 Most of the details are currently provided in the crate documentation.
