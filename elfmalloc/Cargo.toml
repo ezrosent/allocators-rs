@@ -16,6 +16,7 @@ huge_segments = ["bagpipe/huge_segments"]
 no_lazy_region = []
 nightly = []
 local_cache = []
+use_default_allocator = []
 print_stats = ["nightly"]
 
 [dependencies]

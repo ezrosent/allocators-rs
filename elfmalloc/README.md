@@ -12,3 +12,13 @@ Note that the allocators in this crate only work on 64-bit machines
 right now. There are currently some ideas on how to add 32-bit support,
 but any such changes would require serious additions to the allocators'
 designs.
+
+Note, if you link in this crate to a Rust project (e.g. to use object-specific
+allocators), you will want to set the `use_default_allocator` feature. Without
+this feature, all existing dynamic allocation requests from the rest of the
+project will be slower.
+
+## More Info
+
+* [Performance](https://github.com/ezrosent/allocators-rs/blob/master/info/elfmalloc-performance.md)
+* [Design](https://github.com/ezrosent/allocators-rs/blob/master/info/elfmalloc.md)
