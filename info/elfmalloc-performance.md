@@ -39,10 +39,10 @@ come from several teams of developers that have worked on allocator
 performance over the years. We describe them briefly here, but we
 encourage anyone curious to examine Section 7 of that paper.
 
-  * *Threadtest*: This benchmark allocates and deallocates number of
+  * *Threadtest*: This benchmark allocates and deallocates a number of
     small objects in rounds each round with several allocations, causing
     thread-local caches to be overrun. While this is performed with
-    multiple threads, we call this workload "thread-local" all pointers
+    multiple threads, we call this workload "thread-local" as all pointers
     are freed in the same thread in which they were
     allocated. Threadtest was developed to assess allocator performance
     during [Hoard's](http://www.cs.utexas.edu/users/mckinley/papers/asplos-2000.pdf)
@@ -53,25 +53,25 @@ encourage anyone curious to examine Section 7 of that paper.
     [Larson et al](https://pdfs.semanticscholar.org/e41a/d0406628edf82712d16cf4c6d7e486f26f9f.pdf).
 
   * *ACDC Producer-Consumer Workload*: This benchmark involves each
-    thread scattering a portion of its allocations among all other threads
-    participating in the benchmark. Threads that receive these allocations
-    are the ones that free the objects themselves. The
-    [ACDC framework](https://github.com/cksystemsgroup/ACDC) was developed
-    by the scalloc authors.
+    thread sending a portion of its allocated objects to other threads
+    participating in the benchmark. Those threads (not the allocating
+    thread) are the ones that ultimately free those objects. The [ACDC
+    framework](https://github.com/cksystemsgroup/ACDC) was developed by
+    the scalloc authors.
 
 The data here were gathered using a version of the [`scalloc`
 artifact](https://github.com/cksystemsgroup/scalloc-artifact).  The only
 modifications to the artifact were ones that allowed it to run on our testing
 setup. These involve tweaking some benchmark parameters to cope with how
-WSL handles overcommit.
+Windows Subsystem for Linux (WSL) handles overcommit.
 
-These benchmarks were conducted on a 16-core 32-thread workstation with 2 Xeon
-E5-2620v4 CPUs on the Windows Subsystem for Linux (WSL). We benchmark these
-workloads at 1, 2, 4, 8, 16, 24, and 32 threads. For the (1-8) thread
-configurations, all use physical cores. For 16 threads, all threads are
-scheduled on a single socket using all hardware threads. The 24-thread
-configuration uses some subset of the available hardware threads, this time
-crossing a NUMA domain.  Finally, the 32-thread benchmark uses all available
+These benchmarks were conducted on a 16-core 32-thread workstation with
+2 Xeon E5-2620v4 CPUs on the WSL. We benchmark these workloads at 1,
+2, 4, 8, 16, 24, and 32 threads. For the (1-8) thread configurations,
+all use physical cores. For 16 threads, all threads are scheduled on a
+single socket using all hardware threads. The 24-thread configuration
+uses some subset of the available hardware threads, this time crossing
+a NUMA domain.  Finally, the 32-thread benchmark uses all available
 hardware threads across both sockets.
 
 ### Other Allocators Measured
@@ -105,7 +105,8 @@ performance than `llalloc` while using a similar amount of memory to `jemalloc`.
 In order to make the graphs at all readable, we express throughput in terms of a
 multiple over the performance of `ptmalloc2`, which is consistently the slowest
 allocator. For `threadtest` and `shbench`, we provide numbers for both small (64
-bytes or smaller) and medium-sized (a few KB) objects.
+bytes or smaller) and medium-sized (a few KB) objects. For throughput, more is
+better; for memory consumption less is better.
 
 ### Threadtest
 
