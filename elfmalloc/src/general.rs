@@ -662,6 +662,18 @@ impl DynamicAllocator {
     pub unsafe fn free(&mut self, item: *mut u8) {
         self.0.free(item)
     }
+
+    pub unsafe fn realloc(&mut self, item: *mut u8, new_size: usize) -> *mut u8 {
+        self.0.realloc(item, new_size, mem::size_of::<usize>())
+    }
+
+    pub unsafe fn aligned_realloc(&mut self,
+                                  item: *mut u8,
+                                  new_size: usize,
+                                  new_alignment: usize)
+                                  -> *mut u8 {
+        self.0.realloc(item, new_size, new_alignment)
+    }
 }
 
 // we default to using the `MagazineCache` here, as it performs better in general. There are some
@@ -731,8 +743,12 @@ unsafe fn elfmalloc_get_layout<M: MemoryBlock>(m_block: &M, item: *mut u8) -> (u
              mem::size_of::<usize>()
          })
     } else {
-        let (size, _) = large_alloc::get_commitment(item);
-        (size, large_alloc::PAGE_SIZE as usize)
+        let (stored_size, _) = large_alloc::get_commitment(item);
+        let page_size = large_alloc::PAGE_SIZE as usize;
+        // the size stored using large_alloc is the total size of the mapping, which includes the
+        // padding page. We want to return the size usable by the caller, so we subtract the
+        // padding space.
+        (stored_size - page_size, page_size)
     }
 }
 
@@ -918,6 +934,29 @@ mod tests {
     use super::*;
     use std::ptr::{write_bytes, write_volatile};
 
+
+    #[test]
+    fn layout_lookup() {
+        fn test_and_free<F: Fn(usize, usize)>(inp: usize, tester: F) {
+            unsafe {
+                let obj = global::alloc(inp);
+                let (size, align) = global::get_layout(obj);
+                tester(size, align);
+                global::free(obj);
+            }
+        }
+
+        test_and_free(8, |size, align| assert_eq!((size, align), (8, 8)));
+        test_and_free(24, |size, align| {
+            assert!(size >= 24);
+            assert!(align >= 8);
+        });
+        test_and_free(512, |size, align| assert_eq!((size, align), (512, 512)));
+        test_and_free(4 << 20, |size, align| {
+            assert_eq!((size, align), (4 << 20, large_alloc::PAGE_SIZE as usize))
+        });
+    }
+
     #[test]
     fn general_alloc_basic_global_single_threaded() {
         let _ = env_logger::init();
@@ -991,6 +1030,43 @@ mod tests {
                         for p in ptrs {
                             global::free(p);
                         }
+                    }
+                })
+                .unwrap());
+        }
+
+        for t in threads {
+            t.join().expect("threads should exit successfully")
+        }
+    }
+
+    #[test]
+    fn realloc_basic() {
+        let _ = env_logger::init();
+        use std::thread;
+        const N_THREADS: usize = 32;
+        let alloc = DynamicAllocator::new();
+        let mut threads = Vec::with_capacity(N_THREADS);
+        for t in 0..N_THREADS {
+            let mut da = alloc.clone();
+            threads.push(thread::Builder::new()
+                .name(t.to_string())
+                .spawn(move || for size in 1..(1 << 13) {
+                    unsafe {
+                        let item = da.alloc(size * 8);
+                        write_bytes(item, 0xFF, size * 8);
+                        let new_item = da.aligned_realloc(item,
+                                                          size * 16,
+                                                          if size % 2 == 0 {
+                                                              8
+                                                          } else {
+                                                              size.next_power_of_two()
+                                                          });
+                        write_bytes(item.offset(size as isize * 8), 0xFE, size * 8);
+                        da.free(new_item);
+                    }
+                    if size * 8 >= (1 << 20) {
+                        return;
                     }
                 })
                 .unwrap());
