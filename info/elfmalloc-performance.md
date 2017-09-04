@@ -34,27 +34,36 @@ time being.
 ## Benchmarks
 
 We use a subset of the benchmarks used in the `scalloc`
-[paper](https://arxiv.org/pdf/1503.09006.pdf). We describe them briefly
-here, but we encourage anyone curious to examine Section 7 of that paper.
+[paper](https://arxiv.org/pdf/1503.09006.pdf). These benchmarks
+come from several teams of developers that have worked on allocator
+performance over the years. We describe them briefly here, but we
+encourage anyone curious to examine Section 7 of that paper.
 
   * *Threadtest*: This benchmark allocates and deallocates number of
     small objects in rounds each round with several allocations, causing
     thread-local caches to be overrun. While this is performed with
     multiple threads, we call this workload "thread-local" all pointers
-    are freed in the same thread in which they were allocated.
+    are freed in the same thread in which they were
+    allocated. Threadtest was developed to assess allocator performance
+    during [Hoard's](http://www.cs.utexas.edu/users/mckinley/papers/asplos-2000.pdf)
+    development.
 
   * *Shbench*: Similar to *Threadtest* but with varying object sizes and
-    varying object lifetimes.
+    varying object lifetimes. Our understanding is that this benchmark is due to
+    [Larson et al](https://pdfs.semanticscholar.org/e41a/d0406628edf82712d16cf4c6d7e486f26f9f.pdf).
 
   * *ACDC Producer-Consumer Workload*: This benchmark involves each
     thread scattering a portion of its allocations among all other threads
     participating in the benchmark. Threads that receive these allocations
-    are the ones that free the objects themselves.
+    are the ones that free the objects themselves. The
+    [ACDC framework](https://github.com/cksystemsgroup/ACDC) was developed
+    by the scalloc authors.
 
 The data here were gathered using a version of the [`scalloc`
 artifact](https://github.com/cksystemsgroup/scalloc-artifact).  The only
 modifications to the artifact were ones that allowed it to run on our testing
-setup.
+setup. These involve tweaking some benchmark parameters to cope with how
+WSL handles overcommit.
 
 These benchmarks were conducted on a 16-core 32-thread workstation with 2 Xeon
 E5-2620v4 CPUs on the Windows Subsystem for Linux (WSL). We benchmark these
@@ -81,7 +90,9 @@ getting to run on WSL due to some `mmap`-related issues).
     [link](https://locklessinc.com/)
 
   * `ptmalloc2`: The default allocator on Linux. Throughput numbers are
-    expressed as a multiple of the numbers for this allocator.
+    expressed as a multiple of the numbers for this allocator. These
+    numbers represent performance for ptmalloc version 2.19; the default
+    present from the version of glibc in use.
 
 ## Measurements
 
