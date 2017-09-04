@@ -383,8 +383,11 @@ pub mod global {
     }
 
     pub unsafe fn aligned_realloc(item: *mut u8, new_size: usize, new_alignment: usize) -> *mut u8 {
-        if likely(!PTR.is_null()) {
-            (*PTR).realloc(item, new_size, new_alignment);
+        #[cfg(feature = "nightly")]
+        {
+            if likely(!PTR.is_null()) {
+                (*PTR).realloc(item, new_size, new_alignment);
+            }
         }
         assert!(!is_initializing(), "realloc can't be called recursively");
         init_begin();
