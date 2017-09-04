@@ -29,3 +29,5 @@ mod utils;
 mod stats;
 pub mod slag;
 pub mod general;
+#[cfg(feature = "nightly")]
+pub mod alloc_impl;
