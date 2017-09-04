@@ -228,7 +228,6 @@ more information on the performance trade-offs of these two approaches.
 To support full generic allocation, we simply have an array of size-specific
 allocators. Each size class has its own available `Bagpipe`, but they all share
 a single page allocator. Check out `elfmalloc/src/general.rs` for more of the
-details on how we get this to work. There are plenty of tricks we use to get
-this to actually work. They are not particularly interesting from an algorithmic
-perspective, but they may be helpful for someone trying to do something similar
-in Rust.
+details on how we get this to work. They are not particularly interesting from
+an algorithmic perspective, but they may be helpful for someone trying to do
+something similar in Rust.
