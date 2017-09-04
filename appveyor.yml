@@ -1,0 +1,96 @@
+# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# README.md file at the top-level directory of this repository.
+#
+# Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+# may not be copied, modified, or distributed except according to those terms.
+
+# Partially adapted from https://github.com/starkat99/appveyor-rust/blob/master/appveyor.yml
+
+# Description of environment variables:
+# CHANNEL - stable/beta/nightly
+# TARGET - target platform
+# CYGWIN_BASH - cygwin's bash binary
+# RUST_NIGHTLY - set to "1" on the nightly channel so that appveyor.sh scripts
+#                can check for it
+
+environment:
+  matrix:
+
+### MSVC Toolchains ###
+
+  # Stable 64-bit MSVC
+    - CHANNEL: stable
+      TARGET: x86_64-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+  # Stable 32-bit MSVC
+    - CHANNEL: stable
+      TARGET: i686-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+  # Beta 64-bit MSVC
+    - CHANNEL: beta
+      TARGET: x86_64-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+  # Beta 32-bit MSVC
+    - CHANNEL: beta
+      TARGET: i686-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+  # Nightly 64-bit MSVC
+    - CHANNEL: nightly
+      TARGET: x86_64-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+      RUST_NIGHTLY: 1
+  # Nightly 32-bit MSVC
+    - CHANNEL: nightly
+      TARGET: i686-pc-windows-msvc
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+      RUST_NIGHTLY: 1
+
+### GNU Toolchains ###
+
+  # Stable 64-bit GNU
+    - CHANNEL: stable
+      TARGET: x86_64-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+  # Stable 32-bit GNU
+    - CHANNEL: stable
+      TARGET: i686-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+  # Beta 64-bit GNU
+    - CHANNEL: beta
+      TARGET: x86_64-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+  # Beta 32-bit GNU
+    - CHANNEL: beta
+      TARGET: i686-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+  # Nightly 64-bit GNU
+    - CHANNEL: nightly
+      TARGET: x86_64-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin64\bin\bash
+      RUST_NIGHTLY: 1
+  # Nightly 32-bit GNU
+    - CHANNEL: nightly
+      TARGET: i686-pc-windows-gnu
+      CYGWIN_BASH: C:\Cygwin\bin\bash
+      RUST_NIGHTLY: 1
+
+# NOTE: The %CHANNEL% and %TARGET% environment variables are taken from the
+# build matrix defined above.
+install:
+  - appveyor DownloadFile https://win.rustup.rs/ -FileName rustup-init.exe
+  - rustup-init -yv --default-toolchain %CHANNEL% --default-host %TARGET%
+  - set PATH=%PATH%;%USERPROFILE%\.cargo\bin
+  - rustc -vV
+  - cargo -vV
+
+# We build ourselves (in the test script)
+build: false
+
+test_script:
+  - "%CYGWIN_BASH% -c 'set -x; set -e; for script in */appveyor.sh; do
+        dir=$(dirname \"$script\");
+        file=$(basename \"$script\");
+        pushd \"$dir\";
+        ./$file;
+        popd;
+    done'"
