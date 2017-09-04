@@ -77,7 +77,7 @@ environment:
 # NOTE: The %CHANNEL% and %TARGET% environment variables are taken from the
 # build matrix defined above.
 install:
-  - appveyor DownloadFile https://win.rustup.rs/ -FileName rustup-init.exe
+  - curl -fsS --retry 10 --retry-connrefused -o rustup-init.exe https://win.rustup.rs/
   - rustup-init -yv --default-toolchain %CHANNEL% --default-host %TARGET%
   - set PATH=%PATH%;%USERPROFILE%\.cargo\bin
   - rustc -vV
