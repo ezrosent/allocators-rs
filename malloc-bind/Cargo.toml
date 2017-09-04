@@ -24,4 +24,4 @@ exclude = ["travis.sh"]
 errno = "0.2"
 lazy_static = "0.2"
 libc = "0.2"
-sysconf = "0.3.0"
+sysconf = "0.3.1"
