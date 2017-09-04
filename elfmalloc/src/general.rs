@@ -295,6 +295,11 @@ pub mod global {
         }
     }
 
+    pub unsafe fn get_layout(item: *mut u8) -> (usize /* size */, usize /* alignment */) {
+        let m_block = ELF_HEAP.inner.pages.backing_memory();
+        super::elfmalloc_get_layout(m_block, item)
+    }
+
     lazy_static! {
         static ref ELF_HEAP: GlobalAllocator = GlobalAllocator::new();
         static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PA>>>> = {
@@ -373,14 +378,17 @@ pub mod global {
         }
     }
 
-    unsafe fn realloc_inner(item: *mut u8, size: usize) -> *mut u8 {
-        LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.realloc(item, size))
+    pub unsafe fn realloc(item: *mut u8, new_size: usize) -> *mut u8 {
+        aligned_realloc(item, new_size, mem::size_of::<usize>())
     }
 
-    pub unsafe fn realloc(item: *mut u8, new_size: usize) -> *mut u8 {
+    pub unsafe fn aligned_realloc(item: *mut u8, new_size: usize, new_alignment: usize) -> *mut u8 {
+        if likely(!PTR.is_null()) {
+            (*PTR).realloc(item, new_size, new_alignment);
+        }
         assert!(!is_initializing(), "realloc can't be called recursively");
         init_begin();
-        let res = realloc_inner(item, new_size);
+        let res = LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.realloc(item, new_size, new_alignment));
         init_end();
         res
     }
@@ -712,6 +720,22 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
     }
 }
 
+
+unsafe fn elfmalloc_get_layout<M: MemoryBlock>(m_block: &M, item: *mut u8) -> (usize, usize) {
+    if likely(m_block.contains(item)) {
+        let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
+        (meta.object_size,
+         if meta.object_size.is_power_of_two() {
+             meta.object_size
+         } else {
+             mem::size_of::<usize>()
+         })
+    } else {
+        let (size, _) = large_alloc::get_commitment(item);
+        (size, large_alloc::PAGE_SIZE as usize)
+    }
+}
+
 impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
     ElfMalloc<PageAlloc<M, D>, AM> {
     fn new_internal(usable_size: usize,
@@ -763,7 +787,11 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
         }
     }
 
-    unsafe fn realloc(&mut self, item: *mut u8, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&mut self,
+                      item: *mut u8,
+                      mut new_size: usize,
+                      new_alignment: usize)
+                      -> *mut u8 {
         if item.is_null() {
             return self.alloc(new_size);
         }
@@ -774,9 +802,13 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
         if likely(self.pages.backing_memory().contains(item)) {
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
             let meta = slag.get_metadata();
-            // TODO(ezrosent): support shrinking
-            if meta.object_size >= new_size {
+            let old_size = meta.object_size;
+            if old_size.is_power_of_two() && new_size <= old_size {
                 return item;
+            }
+            if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
+               new_size <= self.max_size {
+                new_size = new_size.next_power_of_two();
             }
             let new_memory = self.alloc(new_size);
             ptr::copy_nonoverlapping(item, new_memory, meta.object_size);
@@ -824,7 +856,7 @@ mod large_alloc {
     }
     use super::mmap::{map, unmap};
     // TODO(ezrosent): sysconf
-    const PAGE_SIZE: isize = 4096;
+    pub const PAGE_SIZE: isize = 4096;
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
         let mem = map(size + PAGE_SIZE as usize);

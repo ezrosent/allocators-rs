@@ -37,6 +37,7 @@ lazy_static = "0.2"
 mmap-alloc = "0.1.0"
 num_cpus = "1.5"
 log = "0.3.8"
+malloc-bind = "0.1.0"
 
 [dev-dependencies]
 env_logger = "0.4.3"
