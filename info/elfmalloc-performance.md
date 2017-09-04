@@ -103,9 +103,11 @@ and `llalloc`: both in terms of memory usage and throughput. `elfmalloc-l` has
 dissapointing memory performance that we are still looking into.
 
 *Threadtest Throughput (Small Objects)*
+
 ![Threadtest Throughput](elfmalloc-data/threadtest-small-tp.png?raw=true)
 
 *Threadtest Memory Consumption (Small Objects)*
+
 ![Threadtest Memory](elfmalloc-data/threadtest-small-mem.png?raw=true)
 
 For larger objects, `elfmalloc` gets closer in terms of throughput to `llalloc`
@@ -114,9 +116,11 @@ Both object sizes show an odd spike of memory usage at 4 and 8 threads: we are
 still looking into why this occurs.
 
 *Threadtest Throughput (Medium Objects)*
+
 ![Threadtest Throughput](elfmalloc-data/threadtest-large-tp.png?raw=true)
 
 *Threadtest Memory Consumption (Medium Objects)*
+
 ![Threadtest Memory](elfmalloc-data/threadtest-large-mem.png?raw=true)
 
 ### Shbench
@@ -133,15 +137,21 @@ as they use over an order of magnitude more memory than `jemalloc` and
 `elfmalloc`.
 
 *Shbench Throughput (Small Objects)*
+
 ![Shbench Throughput](elfmalloc-data/shbench-small-tp.png?raw=true)
+
 *Shbench Memory Consumption (Small Objects)*
+
 ![Shbench Memomry](elfmalloc-data/shbench-small-mem.png?raw=true)
 
 We see a similar improvement for shebench on larger objects.
 
 *Shbench Throughput (Medium Objects)*
+
 ![Shbench Large Object Throughput](elfmalloc-data/shbench-large-tp.png?raw=true)
+
 *Shbench Memory Consumption (Small Objects)*
+
 ![Shbench Large Object Memory](elfmalloc-data/shbench-large-mem.png?raw=true)
 
 ### Producer-Consumer
@@ -152,6 +162,9 @@ at a level between those of `llalloc` and `jemalloc`. `elfmalloc` performs
 similarly, though it often falls behind `jemalloc` in terms of throughput.
 
 *Producer-Consumer Throughput*
+
 ![Producer-Consumer Throughput](elfmalloc-data/prod-cons-tp.png?raw=true)
+
 *Producer-Consumer Memory Consumption*
+
 ![Producer-Consumer Memory](elfmalloc-data/prod-cons-mem.png?raw=true)
