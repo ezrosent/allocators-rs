@@ -13,10 +13,14 @@
 #![cfg_attr(all(test, not(feature = "test-no-std")), feature(test))]
 #![feature(alloc, allocator_api)]
 
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("mmap-alloc only supports Windows, Linux, and Mac");
+
 #[cfg(all(test, not(feature = "test-no-std")))]
 extern crate core;
 
 extern crate alloc;
+#[cfg(not(windows))]
 extern crate libc;
 extern crate object_alloc;
 extern crate sysconf;
@@ -66,6 +70,8 @@ pub struct MapAllocBuilder {
     read: bool,
     write: bool,
     exec: bool,
+    // Only supported on Linux (which has MAP_POPULATE) and Windows (which has MEM_COMMIT)
+    commit: bool,
     pagesize: usize,
     huge_pagesize: Option<usize>,
     obj_size: Option<usize>,
@@ -96,6 +102,7 @@ impl MapAllocBuilder {
             pagesize: self.pagesize,
             huge_pagesize: self.huge_pagesize,
             perms: perms::get_perm(self.read, self.write, self.exec),
+            commit: self.commit,
             obj_size: obj_size,
         }
     }
@@ -180,6 +187,34 @@ impl MapAllocBuilder {
         self
     }
 
+    /// Makes it so that `alloc` returns committed memory.
+    ///
+    /// `commit` makes it so that the memory returned by `alloc` is already in a committed state.
+    /// The default is to have memory be returned by `alloc` uncommitted.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// `commit` is only supported on Linux and Windows.
+    #[cfg(any(target_os = "linux", windows))]
+    pub fn commit(mut self) -> MapAllocBuilder {
+        self.commit = true;
+        self
+    }
+
+    /// Makes it so that `alloc` returns uncommitted memory.
+    ///
+    /// `no_commit` makes it so that the memory returned by `alloc` is in an uncommitted state.
+    /// This is the default.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// `no_commit` is only supported on Linux and Windows.
+    #[cfg(any(target_os = "linux", windows))]
+    pub fn no_commit(mut self) -> MapAllocBuilder {
+        self.commit = false;
+        self
+    }
+
     /// Sets the object size for the `UntypedObjectAlloc` implementation.
     ///
     /// `MapAlloc` implements `UntypedObjectAlloc`. `obj_size` sets the object size that will be
@@ -197,6 +232,7 @@ impl Default for MapAllocBuilder {
             read: true,
             write: true,
             exec: false,
+            commit: false,
             pagesize: sysconf::page::pagesize(),
             huge_pagesize: None,
             obj_size: None,
@@ -208,6 +244,7 @@ pub struct MapAlloc {
     pagesize: usize,
     huge_pagesize: Option<usize>,
     perms: perms::Perm,
+    commit: bool,
     obj_size: usize,
 }
 
@@ -218,21 +255,21 @@ impl Default for MapAlloc {
 }
 
 impl MapAlloc {
-    // alloc_helper performs the requested allocation, properly handling the case in which mmap
+    // alloc_helper performs the requested allocation, properly handling the case in which map
     // returns null.
-    fn alloc_helper(&self, size: usize) -> Option<*mut u8> {
+    unsafe fn alloc_helper(&self, size: usize) -> Option<*mut u8> {
         // Since allocators in Rust are not allowed to return null pointers, but it is valid for
-        // mmap to return memory starting at null, we have to handle that case. We do this by
-        // checking for null, and if we find that mmap has returned null, we unmap all but the
-        // first page and try again. Since we leave the first page (the one starting at address 0)
-        // mapped, future calls to mmap are guaranteed to not return null. Note that this leaks
-        // memory since we never unmap that page, but this isn't a big deal - even if the page is a
-        // huge page, since we never write to it, it will remain uncommitted and will thus not
-        // consume any physical memory.
+        // mmap and VirtualFree to return memory starting at null, we have to handle that case. We
+        // do this by checking for null, and if we find that map has returned null, we unmap all
+        // but the first page and try again. Since we leave the first page (the one starting at
+        // address 0) mapped, future calls to map are guaranteed to not return null. Note that this
+        // leaks memory since we never unmap that page, but this isn't a big deal - even if the
+        // page is a huge page, since we never write to it, it will remain uncommitted and will
+        // thus not consume any physical memory.
         let f = |ptr: *mut u8| if ptr.is_null() {
             let unmap_size = size - self.pagesize;
             if unmap_size > 0 {
-                munmap(self.pagesize as *mut u8, unmap_size);
+                unmap(self.pagesize as *mut u8, unmap_size);
             }
             // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
@@ -243,44 +280,54 @@ impl MapAlloc {
         } else {
             Some(ptr)
         };
-        mmap(size, self.perms, self.huge_pagesize).and_then(f)
+        // NOTE: self.commit is guaranteed to be false on Mac.
+        map(size, self.perms, self.commit, self.huge_pagesize).and_then(f)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub fn commit(&self, ptr: *mut u8, layout: Layout) {
+    /// Commits an existing allocated object.
+    ///
+    /// `commit` moves the given object into the committed state. After `commit` has returned, the
+    /// object can be accessed without crashing the program. If this `MapAlloc` was configured with
+    /// the "commit" option disabled (the default), then allocated objects are unusable until they
+    /// have been committed by this method.
+    ///
+    /// If `commit` is called on an already-committed object, it does nothing.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// `commit` is only present on Windows. On Linux and Mac, uncommitted memory is automatically
+    /// committed upon the first access.
+    #[cfg(windows)]
+    pub unsafe fn commit(&self, ptr: *mut u8, layout: Layout) {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
-        // allocations, and so they are legal to pass to uncommit.
-        let step = if let Some(huge) = self.huge_pagesize {
-            debug_assert_eq!(ptr as usize % huge,
-                             0,
-                             "ptr {:?} not aligned to huge page size {}",
-                             ptr,
-                             huge);
-            debug_assert!(layout.align() <= huge);
-            huge
-        } else {
-            debug_assert_eq!(ptr as usize % self.pagesize,
-                             0,
-                             "ptr {:?} not aligned to page size {}",
-                             ptr,
-                             self.pagesize);
-            debug_assert!(layout.align() <= self.pagesize);
-            self.pagesize
-        };
-        // TODO: More elegant way to do this?
-        // TODO: If the size isn't a multiple of the page size, this math might be wrong.
-        let steps = layout.size() / step;
-        for i in 0..steps {
-            // TODO: How to make this read not optimized out?
-            unsafe { ptr::read(((ptr as usize) + (i * step)) as *mut u8) };
-        }
+        // allocations, and so they are legal to pass to uncommit, but will VirtualFree handle them
+        // properly?
+        #[cfg(debug_assertions)]
+        self.debug_verify_ptr(ptr, layout.clone());
+        commit(ptr, layout.size(), self.perms);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+    /// Uncommits an existing allocated object.
+    ///
+    /// `uncommit` moves the given object into the uncommitted state. If `uncommit` is called on
+    /// an already-uncommitted object, it does nothing.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// On Windows, after `uncommit` has returned, the object cannot be accessed without crashing
+    /// the program. On Linux and Mac, the memory can still safely be accessed, but it may have
+    /// been zeroed.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
+        #[cfg(debug_assertions)]
+        self.debug_verify_ptr(ptr, layout.clone());
+        uncommit(ptr, layout.size());
+    }
+
+    fn debug_verify_ptr(&self, ptr: *mut u8, layout: Layout) {
         if let Some(huge) = self.huge_pagesize {
             debug_assert_eq!(ptr as usize % huge,
                              0,
@@ -296,7 +343,6 @@ impl MapAlloc {
                              self.pagesize);
             debug_assert!(layout.align() <= self.pagesize);
         }
-        uncommit(ptr, layout.size());
     }
 }
 
@@ -306,7 +352,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        munmap(ptr, layout.size());
+        unmap(ptr, layout.size());
     }
 
     unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
@@ -347,7 +393,7 @@ unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8) {
-        munmap(ptr, self.obj_size);
+        unmap(ptr, self.obj_size);
     }
 }
 
@@ -392,30 +438,30 @@ fn next_multiple(size: usize, unit: usize) -> usize {
 }
 
 #[cfg(target_os = "linux")]
-fn mark_unused(ptr: *mut u8, size: usize) {
+unsafe fn mark_unused(ptr: *mut u8, size: usize) {
     use libc::{c_void, MADV_DONTNEED, PROT_NONE};
-    unsafe {
-        // Let the kernel know we don't need this memory, so it can free physical resources for it
-        libc::madvise(ptr as *mut c_void, size, MADV_DONTNEED);
-        // Make it so that accesses to this memory result in a segfault
-        libc::mprotect(ptr as *mut c_void, size, PROT_NONE);
-    }
+    // Let the kernel know we don't need this memory, so it can free physical resources for it
+    libc::madvise(ptr as *mut c_void, size, MADV_DONTNEED);
+    // Make it so that accesses to this memory result in a segfault
+    libc::mprotect(ptr as *mut c_void, size, PROT_NONE);
 }
 
 #[cfg(target_os = "macos")]
-fn mark_unused(ptr: *mut u8, size: usize) {
+unsafe fn mark_unused(ptr: *mut u8, size: usize) {
     use libc::{c_void, MADV_FREE, PROT_NONE};
-    unsafe {
-        // Let the kernel know we don't need this memory, so it can free physical resources for it
-        libc::madvise(ptr as *mut c_void, size, MADV_FREE);
-        // Make it so that accesses to this memory result in a segfault
-        libc::mprotect(ptr as *mut c_void, size, PROT_NONE);
-    }
+    // Let the kernel know we don't need this memory, so it can free physical resources for it
+    libc::madvise(ptr as *mut c_void, size, MADV_FREE);
+    // Make it so that accesses to this memory result in a segfault
+    libc::mprotect(ptr as *mut c_void, size, PROT_NONE);
 }
 
 #[cfg(target_os = "linux")]
-fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8> {
-    use libc::{MAP_ANONYMOUS, MAP_PRIVATE, MAP_HUGETLB, MAP_FAILED, ENOMEM};
+unsafe fn map(size: usize,
+              perms: i32,
+              commit: bool,
+              huge_pagesize: Option<usize>)
+              -> Option<*mut u8> {
+    use libc::{ENOMEM, MAP_ANONYMOUS, MAP_FAILED, MAP_HUGETLB, MAP_PRIVATE, MAP_POPULATE};
 
     // TODO: Figure out when it's safe to pass MAP_UNINITIALIZED (it's not defined in all
     // versions of libc). Be careful about not invalidating alloc_zeroed.
@@ -435,16 +481,14 @@ fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8
         MAP_HUGETLB | ((log as i32) << MAP_HUGE_SHIFT)
     } else {
         0
-    };
+    } | if commit { MAP_POPULATE } else { 0 };
 
-    let ptr = unsafe {
-        libc::mmap(ptr::null_mut(),
-                   size,
-                   perms,
-                   MAP_ANONYMOUS | MAP_PRIVATE | flags,
-                   -1,
-                   0)
-    };
+    let ptr = libc::mmap(ptr::null_mut(),
+                         size,
+                         perms,
+                         MAP_ANONYMOUS | MAP_PRIVATE | flags,
+                         -1,
+                         0);
 
     if ptr == MAP_FAILED {
         if errno().0 == ENOMEM {
@@ -457,14 +501,21 @@ fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8
     }
 }
 
+// commit must be false
 #[cfg(target_os = "macos")]
-fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8> {
+unsafe fn map(size: usize,
+              perms: i32,
+              commit: bool,
+              huge_pagesize: Option<usize>)
+              -> Option<*mut u8> {
     use libc::{MAP_ANON, MAP_PRIVATE, MAP_FAILED, ENOMEM};
+
+    debug_assert!(!commit);
 
     // TODO: Support superpages (see MAP_ANON description in mmap manpage)
     debug_assert!(huge_pagesize.is_none());
 
-    let ptr = unsafe { libc::mmap(ptr::null_mut(), size, perms, MAP_ANON | MAP_PRIVATE, -1, 0) };
+    let ptr = libc::mmap(ptr::null_mut(), size, perms, MAP_ANON | MAP_PRIVATE, -1, 0);
 
     if ptr == MAP_FAILED {
         if errno().0 == ENOMEM {
@@ -476,82 +527,108 @@ fn mmap(size: usize, perms: i32, huge_pagesize: Option<usize>) -> Option<*mut u8
         Some(ptr as *mut u8)
     }
 }
+
+// type of the size parameter to VirtualAlloc and VirtualFree
+#[cfg(all(windows, target_pointer_width = "32"))]
+type WindowsSize = u32;
+#[cfg(all(windows, target_pointer_width = "64"))]
+type WindowsSize = u64;
 
 // For a good overview of virtual memory handling on Windows, see
 // https://blogs.technet.microsoft.com/markrussinovich/2008/11/17/pushing-the-limits-of-windows-virtual-memory/
 
 #[cfg(windows)]
-fn mmap(size: usize, perms: u32, huge_pagesize: Option<usize>) -> Option<*mut u8> {
+unsafe fn map(size: usize,
+              perms: u32,
+              commit: bool,
+              huge_pagesize: Option<usize>)
+              -> Option<*mut u8> {
     use kernel32::VirtualAlloc;
     use winapi::winnt::{MEM_RESERVE, MEM_COMMIT, MEM_LARGE_PAGES};
 
-    let typ = if huge_pagesize.is_none() {
-        MEM_RESERVE | MEM_COMMIT
-    } else {
-        MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES
-    };
+    let typ = MEM_RESERVE | if commit { MEM_COMMIT } else { 0 } |
+              if huge_pagesize.is_some() {
+                  MEM_LARGE_PAGES
+              } else {
+                  0
+              };
 
-    unsafe {
-        // NOTE: While Windows makes a distinction between allocation granularity and page size
-        // (see https://msdn.microsoft.com/en-us/library/windows/desktop/ms724958(v=vs.85).aspx),
-        // VirtualAlloc only cares about allocation granularity for the pointer argument, not the
-        // size. Since we're passing null for the pointer, this doesn't affect us.
-        let ptr = VirtualAlloc(ptr::null_mut(), size as u64, typ, perms) as *mut u8;
-        // NOTE: Windows can return many different error codes in different scenarios that all
-        // relate to being out of memory. Instead of trying to list them all, we assume that any
-        // error is an out-of-memory condition. This is fine so long as our code doesn't have a bug
-        // (that would, e.g., result in VirtualAlloc being called with invalid arguments). This
-        // isn't ideal, but during debugging, error codes can be printed here, so it's not the end
-        // of the world.
-        if ptr.is_null() { None } else { Some(ptr) }
-    }
+    // NOTE: While Windows makes a distinction between allocation granularity and page size (see
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/ms724958(v=vs.85).aspx),
+    // VirtualAlloc only cares about allocation granularity for the pointer argument, not the size.
+    // Since we're passing null for the pointer, this doesn't affect us.
+    let ptr = VirtualAlloc(ptr::null_mut(), size as WindowsSize, typ, perms) as *mut u8;
+    // NOTE: Windows can return many different error codes in different scenarios that all relate
+    // to being out of memory. Instead of trying to list them all, we assume that any error is an
+    // out-of-memory condition. This is fine so long as our code doesn't have a bug (that would,
+    // e.g., result in VirtualAlloc being called with invalid arguments). This isn't ideal, but
+    // during debugging, error codes can be printed here, so it's not the end of the world.
+    if ptr.is_null() { None } else { Some(ptr) }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn munmap(ptr: *mut u8, size: usize) {
+unsafe fn unmap(ptr: *mut u8, size: usize) {
     use libc::{munmap, c_void};
-    unsafe {
-        // NOTE: Don't inline the call to munmap; then errno might be called before munmap.
-        let ret = munmap(ptr as *mut c_void, size);
-        assert_eq!(ret, 0, "munmap failed: {}", errno());
-    }
+    // NOTE: Don't inline the call to munmap; then errno might be called before munmap.
+    let ret = munmap(ptr as *mut c_void, size);
+    assert_eq!(ret, 0, "munmap failed: {}", errno());
 }
 
 #[cfg(windows)]
-fn munmap(ptr: *mut u8, _size: usize) {
+unsafe fn unmap(ptr: *mut u8, _size: usize) {
     use kernel32::{VirtualFree, GetLastError};
     use winapi::winnt::MEM_RELEASE;
 
-    unsafe {
-        // NOTE: VirtualFree, when unmapping memory (as opposed to decommitting it), can only
-        // operate on an entire region previously mapped with VirtualAlloc. As a result, 'ptr' must
-        // have been previously returned by VirtualAlloc, and no length is needed since it is known
-        // by the kernel (VirtualFree /requires/ that if the third argument is MEM_RELEASE, the
-        // second is 0).
-        let ret = VirtualFree(ptr as *mut winapi::c_void, 0, MEM_RELEASE);
-        if ret == 0 {
-            panic!("Call to VirtualFree failed with error code {}.",
-                   GetLastError());
-        }
-    }
+    // NOTE: VirtualFree, when unmapping memory (as opposed to decommitting it), can only operate
+    // on an entire region previously mapped with VirtualAlloc. As a result, 'ptr' must have been
+    // previously returned by VirtualAlloc, and no length is needed since it is known by the kernel
+    // (VirtualFree /requires/ that if the third argument is MEM_RELEASE, the second is 0).
+    let ret = VirtualFree(ptr as *mut winapi::c_void, 0, MEM_RELEASE);
+    assert_ne!(ret,
+               0,
+               "Call to VirtualFree failed with error code {}.",
+               GetLastError());
+}
+
+#[cfg(windows)]
+unsafe fn commit(ptr: *mut u8, size: usize, perms: u32) {
+    use kernel32::VirtualAlloc;
+    use winapi::winnt::MEM_COMMIT;
+
+    let ret = VirtualAlloc(ptr as *mut winapi::c_void,
+                           size as WindowsSize,
+                           MEM_COMMIT,
+                           perms);
+    assert_eq!(ret as *mut u8, ptr);
 }
 
 #[cfg(target_os = "linux")]
-fn uncommit(ptr: *mut u8, size: usize) {
+unsafe fn uncommit(ptr: *mut u8, size: usize) {
     use libc::{c_void, MADV_DONTNEED};
-    unsafe {
-        // TODO: Other options such as MADV_FREE are available on newer versions of Linux. Is there
-        // a way that we can use those when available? Is that even desirable?
-        libc::madvise(ptr as *mut c_void, size, MADV_DONTNEED);
-    }
+
+    // TODO: Other options such as MADV_FREE are available on newer versions of Linux. Is there
+    // a way that we can use those when available? Is that even desirable?
+    libc::madvise(ptr as *mut c_void, size, MADV_DONTNEED);
 }
 
 #[cfg(target_os = "macos")]
-fn uncommit(ptr: *mut u8, size: usize) {
+unsafe fn uncommit(ptr: *mut u8, size: usize) {
     use libc::{c_void, MADV_FREE};
-    unsafe {
-        libc::madvise(ptr as *mut c_void, size, MADV_FREE);
-    }
+    libc::madvise(ptr as *mut c_void, size, MADV_FREE);
+}
+
+#[cfg(windows)]
+unsafe fn uncommit(ptr: *mut u8, size: usize) {
+    use kernel32::{VirtualFree, GetLastError};
+    use winapi::winnt::MEM_DECOMMIT;
+
+    let ret = VirtualFree(ptr as *mut winapi::c_void,
+                          size as WindowsSize,
+                          MEM_DECOMMIT);
+    assert_ne!(ret,
+               0,
+               "Call to VirtualFree failed with error code {}.",
+               GetLastError());
 }
 
 mod perms {
@@ -611,7 +688,6 @@ mod perms {
 
 #[cfg(test)]
 mod tests {
-    extern crate sysconf;
     use sysconf::page::pagesize;
     use super::*;
     use super::perms::*;
@@ -672,160 +748,224 @@ mod tests {
 
     #[test]
     fn test_map() {
-        // Check that:
-        // - Mapping a single page works
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - The page is zero-filled
-        // - Unmapping it after it's already been unmapped is OK (except on windows).
-        let mut ptr = mmap(pagesize(), PROT_READ_WRITE, None).unwrap();
-        test_valid_map_address(ptr);
-        test_zero_filled(ptr, pagesize());
-        munmap(ptr, pagesize());
-        #[cfg(not(windows))]
-        munmap(ptr, pagesize());
+        unsafe {
+            // Check that:
+            // - Mapping a single page works
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - The page is zero-filled (on Windows, after the page is committed)
+            // - Unmapping it after it's already been unmapped is OK (except on windows).
+            let mut ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_READ_WRITE);
+            test_zero_filled(ptr, pagesize());
+            unmap(ptr, pagesize());
+            #[cfg(not(windows))]
+            unmap(ptr, pagesize());
 
-        // Check that:
-        // - Mapping multiple pages work
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - The pages are zero-filled
-        // - Unmapping it after it's already been unmapped is OK (except on windows).
-        ptr = mmap(16 * pagesize(), PROT_READ_WRITE, None).unwrap();
-        test_valid_map_address(ptr);
-        test_zero_filled(ptr, 16 * pagesize());
-        munmap(ptr, 16 * pagesize());
-        #[cfg(not(windows))]
-        munmap(ptr, 16 * pagesize());
+            // Check that:
+            // - Mapping multiple pages work
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - The pages are zero-filled (on Windows, after the page is committed)
+            // - Unmapping it after it's already been unmapped is OK (except on windows).
+            ptr = map(16 * pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, 16 * pagesize(), PROT_READ_WRITE);
+            test_zero_filled(ptr, 16 * pagesize());
+            unmap(ptr, 16 * pagesize());
+            #[cfg(not(windows))]
+            unmap(ptr, 16 * pagesize());
+        }
     }
 
     #[cfg(not(windows))]
     #[test]
     fn test_map_non_windows() {
-        // Check that:
-        // - Unmapping a subset of a previously-mapped region works
-        // - The remaining pages are still mapped
-        let mut ptr = mmap(5 * pagesize(), PROT_READ_WRITE, None).unwrap();
-        test_valid_map_address(ptr);
-        test_zero_filled(ptr, 5 * pagesize());
-        munmap(ptr, pagesize());
-        munmap(unsafe { ptr.offset(2 * pagesize() as isize) }, pagesize());
-        munmap(unsafe { ptr.offset(4 * pagesize() as isize) }, pagesize());
-        test_zero_filled(unsafe { ptr.offset(1 * pagesize() as isize) }, pagesize());
-        test_zero_filled(unsafe { ptr.offset(3 * pagesize() as isize) }, pagesize());
+        unsafe {
+            // Check that:
+            // - Unmapping a subset of a previously-mapped region works
+            // - The remaining pages are still mapped
+            let mut ptr = map(5 * pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, 5 * pagesize());
+            unmap(ptr, pagesize());
+            unmap(ptr.offset(2 * pagesize() as isize), pagesize());
+            unmap(ptr.offset(4 * pagesize() as isize), pagesize());
+            test_zero_filled(ptr.offset(1 * pagesize() as isize), pagesize());
+            test_zero_filled(ptr.offset(3 * pagesize() as isize), pagesize());
 
-        // Check that:
-        // - Mapping a vast region of memory works and is fast
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - A read in the middle of mapping succeds and is zero
+            // Check that:
+            // - Mapping a vast region of memory works and is fast
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - A read in the middle of mapping succeds and is zero
 
-        // NOTE: Pick 2^29 bytes because, on Linux, 2^30 causes mmap to return null, which breaks
-        // test_valid_map_address.
-        let size = 1 << 29;
-        #[cfg(not(feature = "test-no-std"))]
-        let t0 = Instant::now();
-        ptr = mmap(size, PROT_READ_WRITE, None).unwrap();
-        #[cfg(not(feature = "test-no-std"))]
-        {
-            // In tests on a 2016 MacBook Pro (see bench_large_mmap), a 2^31 byte map/unmap pair
-            // took ~5 usec natively (Mac OS X) and ~350 ns in a Linux VM. Thus, 1 ms is a safe
-            // upper bound.
-            let diff = Instant::now().duration_since(t0);
-            let target = Duration::from_millis(1);
-            assert!(diff < target, "duration: {:?}", diff);
+            // NOTE: Pick 2^29 bytes because, on Linux, 2^30 causes map to return null, which breaks
+            // test_valid_map_address.
+            let size = 1 << 29;
+            #[cfg(not(feature = "test-no-std"))]
+            let t0 = Instant::now();
+            ptr = map(size, PROT_READ_WRITE, false, None).unwrap();
+            #[cfg(not(feature = "test-no-std"))]
+            {
+                // In tests on a 2016 MacBook Pro (see bench_large_map), a 2^31 byte map/unmap pair
+                // took ~5 usec natively (Mac OS X) and ~350 ns in a Linux VM. Thus, 1 ms is a safe
+                // upper bound.
+                let diff = Instant::now().duration_since(t0);
+                let target = Duration::from_millis(1);
+                assert!(diff < target, "duration: {:?}", diff);
+            }
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr.offset((size / 2) as isize), pagesize());
+            unmap(ptr, size);
         }
-        test_valid_map_address(ptr);
-        test_zero_filled(unsafe { ptr.offset((size / 2) as isize) }, pagesize());
-        munmap(ptr, size);
+    }
+
+    #[test]
+    fn test_commit() {
+        unsafe {
+            // Check that:
+            // - Mapping and committing a single page works (except on Mac, which doesn't support
+            //   committing)
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - We can read that page, and it is zero-filled (on Unix, this test is trivial, but
+            //   on Windows, it ensures that map properly committed the page)
+            let mut ptr = map(pagesize(),
+                              PROT_READ_WRITE,
+                              !cfg!(target_os = "macos"),
+                              None)
+                    .unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, pagesize());
+            unmap(ptr, pagesize());
+
+            // Check that:
+            // - Mapping a single page works
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - We can read that page, and it is zero-filled (on Windows, after the page is committed)
+            // - On Windows, we can commit the page after it has already been committed
+            // - We can uncommit the page
+            // - We can uncommit the page after it has already been uncommitted
+            ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_READ_WRITE);
+            test_zero_filled(ptr, pagesize());
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_READ_WRITE);
+            uncommit(ptr, pagesize());
+            uncommit(ptr, pagesize());
+            unmap(ptr, pagesize());
+        }
     }
 
     #[test]
     fn test_perms() {
-        // TODO: Add tests for executable permissions
+        unsafe {
+            // TODO: Add tests for executable permissions
 
-        // Check that:
-        // - Mapping a single read-only page works
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - We can read the page, and it is zero-filled
-        let mut ptr = mmap(pagesize(), PROT_READ, None).unwrap();
-        test_valid_map_address(ptr);
-        test_zero_filled(ptr, pagesize());
-        munmap(ptr, pagesize());
+            // Check that:
+            // - Mapping a single read-only page works
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - We can read the page, and it is zero-filled (on Windows, after the page is committed)
+            let mut ptr = map(pagesize(), PROT_READ, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_READ);
+            test_zero_filled(ptr, pagesize());
+            unmap(ptr, pagesize());
 
-        // Check that:
-        // - Mapping a single write-only page works
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - We can write to the page
-        ptr = mmap(pagesize(), PROT_WRITE, None).unwrap();
-        test_valid_map_address(ptr);
-        test_write(ptr, pagesize());
-        munmap(ptr, pagesize());
+            // Check that:
+            // - Mapping a single write-only page works
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - We can write to the page (on Windows, after the page is committed)
+            ptr = map(pagesize(), PROT_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_WRITE);
+            test_write(ptr, pagesize());
+            unmap(ptr, pagesize());
 
-        // Check that:
-        // - Mapping a single read-write page works
-        // - The returned pointer is non-null
-        // - The returned pointer is page-aligned
-        // - We can read the page, and it is zero-filled
-        // - We can write to the page, and those writes are properly read back
-        ptr = mmap(pagesize(), PROT_READ_WRITE, None).unwrap();
-        test_valid_map_address(ptr);
-        test_zero_filled(ptr, pagesize());
-        test_write_read(ptr, pagesize());
-        munmap(ptr, pagesize());
+            // Check that:
+            // - Mapping a single read-write page works
+            // - The returned pointer is non-null
+            // - The returned pointer is page-aligned
+            // - We can read the page, and it is zero-filled (on Windows, after the page is committed)
+            // - We can write to the page, and those writes are properly read back
+            ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            test_valid_map_address(ptr);
+            #[cfg(windows)]
+            commit(ptr, pagesize(), PROT_READ_WRITE);
+            test_zero_filled(ptr, pagesize());
+            test_write_read(ptr, pagesize());
+            unmap(ptr, pagesize());
+        }
     }
 
     #[cfg(not(windows))]
     #[test]
     #[should_panic]
     fn test_map_panic_zero() {
-        // Check that zero length causes mmap to panic. On Windows, our mmap implementation never
-        // panics.
-        mmap(0, PROT_READ_WRITE, None);
+        unsafe {
+            // Check that zero length causes map to panic. On Windows, our map implementation never
+            // panics.
+            map(0, PROT_READ_WRITE, false, None);
+        }
     }
 
     #[cfg(all(not(all(target_os = "linux", target_pointer_width = "64")), not(windows)))]
     #[test]
     #[should_panic]
     fn test_map_panic_too_large() {
-        // Check that an overly large length causes mmap to panic. On Windows, our mmap
-        // implementation never panics. On 64-bit Linux, mmap simply responds to overly large mmaps
-        // by returning ENOMEM.
-        use core::usize::MAX;
-        mmap(MAX, PROT_READ_WRITE, None);
+        unsafe {
+            // Check that an overly large length causes map to panic. On Windows, our map
+            // implementation never panics. On 64-bit Linux, map simply responds to overly large maps
+            // by returning ENOMEM.
+            use core::usize::MAX;
+            map(MAX, PROT_READ_WRITE, false, None);
+        }
     }
 
     #[cfg(not(windows))]
     #[test]
     #[should_panic]
     fn test_unmap_panic_zero() {
-        // Check that zero length causes munmap to panic. On Windows, the length parameter is
-        // ignored, so the page will simply be unmapped normally.
+        unsafe {
+            // Check that zero length causes unmap to panic. On Windows, the length parameter is
+            // ignored, so the page will simply be unmapped normally.
 
-        // NOTE: This test leaks memory, but it's only a page, so it doesn't really matter.
-        let ptr = mmap(pagesize(), PROT_READ_WRITE, None).unwrap();
-        munmap(ptr, 0);
+            // NOTE: This test leaks memory, but it's only a page, so it doesn't really matter.
+            let ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+            unmap(ptr, 0);
+        }
     }
 
     #[test]
     #[should_panic]
     fn test_unmap_panic_unaligned() {
-        // Check that a non-page-aligned address causes munmap to panic.
-        munmap((pagesize() / 2) as *mut u8, pagesize());
+        unsafe {
+            // Check that a non-page-aligned address causes unmap to panic.
+            unmap((pagesize() / 2) as *mut u8, pagesize());
+        }
     }
 
     #[cfg(not(windows))]
     #[cfg(not(feature = "test-no-std"))]
     #[bench]
     #[ignore]
-    fn bench_large_mmap(b: &mut Bencher) {
+    fn bench_large_map(b: &mut Bencher) {
         // Determine the speed of mapping a large region of memory so that we can tune the timeout
         // in test_map_non_windows.
-        b.iter(|| {
-                   let ptr = mmap(1 << 29, PROT_READ_WRITE, None).unwrap();
-                   munmap(ptr, 1 << 29);
+        b.iter(|| unsafe {
+                   let ptr = map(1 << 29, PROT_READ_WRITE, false, None).unwrap();
+                   unmap(ptr, 1 << 29);
                })
     }
 }
