@@ -112,7 +112,7 @@ better; for memory consumption less is better.
 
 Threadtest shows `elfmalloc` almost splitting the difference between `jemalloc`
 and `llalloc`: both in terms of memory usage and throughput. `elfmalloc-l` has
-dissapointing memory performance that we are still looking into.
+disappointing memory performance that we are still looking into.
 
 *Threadtest Throughput (Small Objects)*
 
