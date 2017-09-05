@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Added this changelog
+
 ### Fixed
 - Fixed a bug that prevented compilation on 32-bit Windows
 - Fixed a bug caused by `sysconf` 0.3.0 that prevented compilation on Windows
