@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Added this changelog
 - Added `commit` and `uncommit` methods on Windows
 - Added the ability to configure whether `alloc` commits memory
 
