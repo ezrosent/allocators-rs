@@ -12,8 +12,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Added this changelog
+- Added `_aligned_malloc` on Windows
+
+### Changed
+- Made `posix_memalign` only compile on Linux and Mac
+- Made `cfree` only compile on Linux
+- Made `valloc` only compile on Linux and Mac
 
 ### Fixed
-- Fixed a bug that prevented compilation on 32-bit Windows
+- Implemented missing logic to better match the semantics of the C allocation
+  API
 - Fixed a bug caused by `sysconf` 0.3.0 that prevented compilation on Windows
   by upgrading to 0.3.1
+- Made it so that the correct lower bound on alignment is used on Windows
+- Set `errno` in more places where it should have been set before

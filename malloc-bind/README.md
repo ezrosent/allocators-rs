@@ -9,3 +9,7 @@ malloc-bind
 [![Docs](https://docs.rs/malloc-bind/badge.svg)](https://docs.rs/malloc-bind)
 
 The `malloc-bind` crate provides bindings for the C `malloc` API. Given an implementation of the Rust `Alloc` trait, it produces implementations of the C `malloc` API (`malloc`, `free`, `realloc`, etc) and defines `extern "C"` functions that can be used to produce a C shared object file.
+
+## Platform support
+
+`malloc-bind` currently supports Linux, Mac, and Windows.
