@@ -47,6 +47,9 @@ All public-facing APIs should have documentation which abides by [RFC 505](https
 ### Commit messages
 Commit messages should be of the form `<component>: <description>`, where the description is written in the third person singular present imperative form, and doesn't have a period at the end. What a mouthful! Basically, this means a description like "Do the thing." For example, `slab-alloc: Add documentation comments`.
 
+### `CHANGELOG.md` file
+Each crate has its own `CHANGELOG.md` file, and unreleased changes are tracked in the "Unreleased" section at the top of the file. Any changes that you make should be added to this section so that they can be incorporated into the changelog entry for the next release. Our changelogs follow the [keep a changelog](http://keepachangelog.com/) format.
+
 ### Copyright comment
 Every new file should bear the following copyright comment at the top, preceding any other text:
 
