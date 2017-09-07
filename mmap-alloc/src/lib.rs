@@ -441,10 +441,11 @@ unsafe impl UntypedObjectAlloc for MapAlloc {
 }
 
 fn next_multiple(size: usize, unit: usize) -> usize {
-    if size % unit == 0 {
+    let remainder = size % unit;
+    if remainder == 0 {
         size
     } else {
-        size + (size - (size % unit))
+        size + (unit - remainder)
     }
 }
 

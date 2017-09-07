@@ -23,3 +23,5 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Fixed a bug that prevented compilation on 32-bit Windows
 - Fixed a bug caused by `sysconf` 0.3.0 that prevented compilation on Windows
   by upgrading to 0.3.1
+- Fixed a bug that failed to round allocations up correctly to the next multiple
+  of the page size
