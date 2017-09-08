@@ -66,6 +66,17 @@ use errno::errno;
 /// - Windows:
 ///   - Write permission is not supported; it is implemented as read/write.
 ///   - Write/execute permission is not supported; it is implemented as read/write/execute.
+///
+/// ## A warning about executable memory
+///
+/// When allocating memory for the purpose of storing executable code, be careful about instruction
+/// cache incoherency. Most CPUs keep a cache of recently-executed instructions, and writing to
+/// executable memory will often not cause this cache to be invalidated, leading to surprising
+/// behavior such as old code being executed even after new code has been written to memory.
+///
+/// In order to avoid this scenario, it is often necessary to explicitly flush the instruction
+/// cache before executing newly-written memory. The mechanism to accomplish this differs by
+/// system.
 pub struct MapAllocBuilder {
     read: bool,
     write: bool,
