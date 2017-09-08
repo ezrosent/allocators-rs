@@ -22,57 +22,57 @@ environment:
     - CHANNEL: stable
       TARGET: x86_64-pc-windows-msvc
       CYGWIN_BASH: C:\Cygwin64\bin\bash
-  # Stable 32-bit MSVC
-    - CHANNEL: stable
-      TARGET: i686-pc-windows-msvc
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-  # Beta 64-bit MSVC
-    - CHANNEL: beta
-      TARGET: x86_64-pc-windows-msvc
-      CYGWIN_BASH: C:\Cygwin64\bin\bash
-  # Beta 32-bit MSVC
-    - CHANNEL: beta
-      TARGET: i686-pc-windows-msvc
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-  # Nightly 64-bit MSVC
-    - CHANNEL: nightly
-      TARGET: x86_64-pc-windows-msvc
-      CYGWIN_BASH: C:\Cygwin64\bin\bash
-      RUST_NIGHTLY: 1
-  # Nightly 32-bit MSVC
-    - CHANNEL: nightly
-      TARGET: i686-pc-windows-msvc
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-      RUST_NIGHTLY: 1
-
-### GNU Toolchains ###
-
-  # Stable 64-bit GNU
-    - CHANNEL: stable
-      TARGET: x86_64-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin64\bin\bash
-  # Stable 32-bit GNU
-    - CHANNEL: stable
-      TARGET: i686-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-  # Beta 64-bit GNU
-    - CHANNEL: beta
-      TARGET: x86_64-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin64\bin\bash
-  # Beta 32-bit GNU
-    - CHANNEL: beta
-      TARGET: i686-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-  # Nightly 64-bit GNU
-    - CHANNEL: nightly
-      TARGET: x86_64-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin64\bin\bash
-      RUST_NIGHTLY: 1
-  # Nightly 32-bit GNU
-    - CHANNEL: nightly
-      TARGET: i686-pc-windows-gnu
-      CYGWIN_BASH: C:\Cygwin\bin\bash
-      RUST_NIGHTLY: 1
+#   # Stable 32-bit MSVC
+#     - CHANNEL: stable
+#       TARGET: i686-pc-windows-msvc
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#   # Beta 64-bit MSVC
+#     - CHANNEL: beta
+#       TARGET: x86_64-pc-windows-msvc
+#       CYGWIN_BASH: C:\Cygwin64\bin\bash
+#   # Beta 32-bit MSVC
+#     - CHANNEL: beta
+#       TARGET: i686-pc-windows-msvc
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#   # Nightly 64-bit MSVC
+#     - CHANNEL: nightly
+#       TARGET: x86_64-pc-windows-msvc
+#       CYGWIN_BASH: C:\Cygwin64\bin\bash
+#       RUST_NIGHTLY: 1
+#   # Nightly 32-bit MSVC
+#     - CHANNEL: nightly
+#       TARGET: i686-pc-windows-msvc
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#       RUST_NIGHTLY: 1
+#
+# ### GNU Toolchains ###
+#
+#   # Stable 64-bit GNU
+#     - CHANNEL: stable
+#       TARGET: x86_64-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin64\bin\bash
+#   # Stable 32-bit GNU
+#     - CHANNEL: stable
+#       TARGET: i686-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#   # Beta 64-bit GNU
+#     - CHANNEL: beta
+#       TARGET: x86_64-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin64\bin\bash
+#   # Beta 32-bit GNU
+#     - CHANNEL: beta
+#       TARGET: i686-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#   # Nightly 64-bit GNU
+#     - CHANNEL: nightly
+#       TARGET: x86_64-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin64\bin\bash
+#       RUST_NIGHTLY: 1
+#   # Nightly 32-bit GNU
+#     - CHANNEL: nightly
+#       TARGET: i686-pc-windows-gnu
+#       CYGWIN_BASH: C:\Cygwin\bin\bash
+#       RUST_NIGHTLY: 1
 
 # NOTE: The %CHANNEL% and %TARGET% environment variables are taken from the
 # build matrix defined above.
