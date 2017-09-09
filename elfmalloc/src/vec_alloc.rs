@@ -304,4 +304,38 @@ mod tests {
             test::black_box(vec)
         });
     }
+
+    #[bench]
+    fn bench_extend_avec_elf(b: &mut Bencher) {
+        bench_extend::<AVec<usize, DynamicAlloc>>(b);
+    }
+
+    #[bench]
+    fn bench_extend_avec_shared_elf(b: &mut Bencher) {
+        bench_extend::<AVec<usize, SharedAlloc>>(b);
+    }
+
+    #[bench]
+    fn bench_extend_avec_heap(b: &mut Bencher) {
+        bench_extend::<AVec<usize, Heap>>(b);
+    }
+
+    #[bench]
+    fn bench_extend_vec(b: &mut Bencher) {
+        bench_extend::<Vec<usize>>(b);
+    }
+
+    fn bench_extend<V: VecLike<usize> + Default>(b: &mut Bencher) {
+        #[inline(never)]
+        fn extend_noinline<V: VecLike<usize>>(vec: &mut V) {
+            vec.extend((0..(1 << 10)));
+        }
+        b.iter(|| {
+            let mut vec = V::default();
+            for _ in 0..10 {
+                extend_noinline(&mut vec);
+            }
+            test::black_box(vec)
+        });
+    }
 }

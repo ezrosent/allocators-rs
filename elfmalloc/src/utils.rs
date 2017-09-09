@@ -38,16 +38,16 @@ pub mod mmap {
     }
 
     pub unsafe fn unmap(p: *mut u8, len: usize) {
-        MapAllocBuilder::default()
-            .exec()
-            .build()
-            .dealloc(p, Layout::from_size_align(len, 1).unwrap())
+        MapAllocBuilder::default().exec().build().dealloc(
+            p,
+            Layout::from_size_align(len, 1).unwrap(),
+        )
     }
     pub unsafe fn uncommit(p: *mut u8, len: usize) {
-        MapAllocBuilder::default()
-            .exec()
-            .build()
-            .uncommit(p, Layout::from_size_align(len, 1).unwrap())
+        MapAllocBuilder::default().exec().build().uncommit(
+            p,
+            Layout::from_size_align(len, 1).unwrap(),
+        )
     }
 }
 
@@ -84,7 +84,8 @@ pub struct Lazy<T: LazyInitializable> {
 }
 
 impl<T: LazyInitializable> Clone for Lazy<T>
-    where T::Params: Clone
+where
+    T::Params: Clone,
 {
     fn clone(&self) -> Self {
         Lazy {

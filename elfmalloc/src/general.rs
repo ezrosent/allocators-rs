@@ -250,10 +250,12 @@ pub mod global {
             {
                 let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
                 unsafe {
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.small_objs.classes)));
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.medium_objs.classes)));
+                    let _ = chan.send(Husk::Array(
+                        ptr::read(&self.inner.allocs.small_objs.classes),
+                    ));
+                    let _ = chan.send(Husk::Array(
+                        ptr::read(&self.inner.allocs.medium_objs.classes),
+                    ));
                     let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                     let _ = chan.send(sc);
                 }
@@ -269,27 +271,23 @@ pub mod global {
                 }
                 LOCAL_DESTRUCTOR_CHAN
                     .try_with(|chan| unsafe {
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .small_objs
-                            .classes)));
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .medium_objs
-                            .classes)));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.small_objs.classes),
+                        ));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.medium_objs.classes),
+                        ));
                         let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                         let _ = chan.send(sc);
                     })
                     .unwrap_or_else(|_| unsafe {
                         let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .small_objs
-                            .classes)));
-                        let _ = chan.send(Husk::Array(ptr::read(&self.inner
-                            .allocs
-                            .medium_objs
-                            .classes)));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.small_objs.classes),
+                        ));
+                        let _ = chan.send(Husk::Array(
+                            ptr::read(&self.inner.allocs.medium_objs.classes),
+                        ));
                         let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
                         let _ = chan.send(sc);
                     })
@@ -368,10 +366,10 @@ pub mod global {
         {
             LOCAL_ELF_HEAP
                 .try_with(|h| {
-                              let res = (*h.get()).inner.alloc(size);
-                              PTR = &mut (*h.get()).inner as *mut _;
-                              res
-                          })
+                    let res = (*h.get()).inner.alloc(size);
+                    PTR = &mut (*h.get()).inner as *mut _;
+                    res
+                })
                 .unwrap_or_else(|_| super::large_alloc::alloc(size))
         }
 
@@ -427,7 +425,8 @@ pub mod global {
 
 /// A trait encapsulating the notion of an array of size classes for an allocator.
 pub trait AllocMap<T>
-    where Self: Sized
+where
+    Self: Sized,
 {
     /// The type used to index size classes.
     type Key;
@@ -438,10 +437,11 @@ pub trait AllocMap<T>
     }
 
     /// Create and initialize the map, handing back ownership of the constructor.
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: Self::Key,
-                                               n_classes: usize,
-                                               f: F)
-                                               -> (F, Self);
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: Self::Key,
+        n_classes: usize,
+        f: F,
+    ) -> (F, Self);
 
     /// Get an unchecked raw pointer to the class corresponding to `k`.
     unsafe fn get_raw(&self, k: Self::Key) -> *mut T;
@@ -491,12 +491,14 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
         let (mut f3, medium_classes) =
             PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
         let word_objs = f3(8);
-        (f3,
-         TieredSizeClasses {
-             word_objs: Some(word_objs),
-             small_objs: small_classes,
-             medium_objs: medium_classes,
-         })
+        (
+            f3,
+            TieredSizeClasses {
+                word_objs: Some(word_objs),
+                small_objs: small_classes,
+                medium_objs: medium_classes,
+            },
+        )
     }
 
     unsafe fn get_raw(&self, n: usize) -> *mut T {
@@ -532,10 +534,8 @@ pub struct Multiples<T> {
 
 impl<T: Clone> Clone for Multiples<T> {
     fn clone(&self) -> Self {
-        Multiples::init(self.starting_size, self.classes.len(), |size| {
-            unsafe {
-                self.get(size).clone()
-            }
+        Multiples::init(self.starting_size, self.classes.len(), |size| unsafe {
+            self.get(size).clone()
         })
     }
 }
@@ -572,8 +572,9 @@ impl<T> AllocMap<T> for Multiples<T> {
     unsafe fn get_raw(&self, n: usize) -> *mut T {
         let class = round_up(n);
         debug_assert!(class <= self.max_size);
-        self.classes
-            .get((round_up(n) - self.starting_size) / MULTIPLE)
+        self.classes.get(
+            (round_up(n) - self.starting_size) / MULTIPLE,
+        )
     }
 
     #[inline]
@@ -600,10 +601,8 @@ pub struct PowersOfTwo<T> {
 
 impl<T: Clone> Clone for PowersOfTwo<T> {
     fn clone(&self) -> Self {
-        PowersOfTwo::init(self.starting_size, self.classes.len(), |size| {
-            unsafe {
-                self.get(size).clone()
-            }
+        PowersOfTwo::init(self.starting_size, self.classes.len(), |size| unsafe {
+            self.get(size).clone()
         })
     }
 }
@@ -632,10 +631,11 @@ impl<T> PowersOfTwo<T> {
 
 impl<T> AllocMap<T> for PowersOfTwo<T> {
     type Key = usize;
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: usize,
-                                               n_classes: usize,
-                                               mut f: F)
-                                               -> (F, Self) {
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: usize,
+        n_classes: usize,
+        mut f: F,
+    ) -> (F, Self) {
         let mut res = Self::new(start, n_classes);
         let mut cur_size = res.starting_size;
         unsafe {
@@ -653,11 +653,13 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
     unsafe fn get_raw(&self, k: usize) -> *mut T {
         debug_assert!(k <= self.max_size);
         let log = (k.next_power_of_two().trailing_zeros() -
-                   self.starting_size.trailing_zeros()) as usize;
-        debug_assert!(log < self.classes.len(),
-                      "log={} len={}",
-                      log,
-                      self.classes.len());
+            self.starting_size.trailing_zeros()) as usize;
+        debug_assert!(
+            log < self.classes.len(),
+            "log={} len={}",
+            log,
+            self.classes.len()
+        );
         self.classes.get(log)
     }
 
@@ -695,11 +697,12 @@ impl DynamicAllocator {
         self.0.realloc(item, new_size, mem::size_of::<usize>())
     }
 
-    pub unsafe fn aligned_realloc(&mut self,
-                                  item: *mut u8,
-                                  new_size: usize,
-                                  new_alignment: usize)
-                                  -> *mut u8 {
+    pub unsafe fn aligned_realloc(
+        &mut self,
+        item: *mut u8,
+        new_size: usize,
+        new_alignment: usize,
+    ) -> *mut u8 {
         self.0.realloc(item, new_size, new_alignment)
     }
 }
@@ -736,8 +739,8 @@ impl Default for DynamicAllocator {
     }
 }
 
-impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
-                                           TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
+impl<M: MemoryBlock, D: DirtyFn>
+    ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
         let pa = PageAlloc::new(1 << 21, 1 << 20, 8);
         Self::new_internal(128 << 10, 0.6, pa, 8, 25)
@@ -764,12 +767,14 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
 unsafe fn elfmalloc_get_layout<M: MemoryBlock>(m_block: &M, item: *mut u8) -> (usize, usize) {
     if likely(m_block.contains(item)) {
         let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
-        (meta.object_size,
-         if meta.object_size.is_power_of_two() {
-             meta.object_size
-         } else {
-             mem::size_of::<usize>()
-         })
+        (
+            meta.object_size,
+            if meta.object_size.is_power_of_two() {
+                meta.object_size
+            } else {
+                mem::size_of::<usize>()
+            },
+        )
     } else {
         let (stored_size, _) = large_alloc::get_commitment(item);
         let page_size = large_alloc::PAGE_SIZE as usize;
@@ -782,12 +787,13 @@ unsafe fn elfmalloc_get_layout<M: MemoryBlock>(m_block: &M, item: *mut u8) -> (u
 
 impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
     ElfMalloc<PageAlloc<M, D>, AM> {
-    fn new_internal(usable_size: usize,
-                    cutoff_factor: f64,
-                    pa: PageAlloc<M, D>,
-                    start_from: usize,
-                    n_classes: usize)
-                    -> Self {
+    fn new_internal(
+        usable_size: usize,
+        cutoff_factor: f64,
+        pa: PageAlloc<M, D>,
+        start_from: usize,
+        n_classes: usize,
+    ) -> Self {
         use self::mmap::map;
         let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes) as *mut Metadata;
         let am = AM::init(start_from, n_classes, |size: usize| {
@@ -799,12 +805,16 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
             let m_ptr = meta_pointer;
             unsafe {
                 meta_pointer = meta_pointer.offset(1);
-                ptr::write(m_ptr,
-                           compute_metadata(size,
-                                            pa.backing_memory().page_size(),
-                                            0,
-                                            cutoff_factor,
-                                            u_size));
+                ptr::write(
+                    m_ptr,
+                    compute_metadata(
+                        size,
+                        pa.backing_memory().page_size(),
+                        0,
+                        cutoff_factor,
+                        u_size,
+                    ),
+                );
             }
 
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
@@ -831,11 +841,12 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
         }
     }
 
-    unsafe fn realloc(&mut self,
-                      item: *mut u8,
-                      mut new_size: usize,
-                      new_alignment: usize)
-                      -> *mut u8 {
+    unsafe fn realloc(
+        &mut self,
+        item: *mut u8,
+        mut new_size: usize,
+        new_alignment: usize,
+    ) -> *mut u8 {
         if item.is_null() {
             return self.alloc(new_size);
         }
@@ -851,7 +862,8 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
                 return item;
             }
             if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
-               new_size <= self.max_size {
+                new_size <= self.max_size
+            {
                 new_size = new_size.next_power_of_two();
             }
             let new_memory = self.alloc(new_size);
@@ -872,9 +884,9 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
     unsafe fn free(&mut self, item: *mut u8) {
         if likely(self.pages.backing_memory().contains(item)) {
             let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
-            self.allocs
-                .get_mut(slag.get_metadata().object_size)
-                .free(item)
+            self.allocs.get_mut(slag.get_metadata().object_size).free(
+                item,
+            )
         } else {
             large_alloc::free(item)
         }
@@ -912,8 +924,7 @@ mod large_alloc {
         let upage = PAGE_SIZE as usize;
         debug_assert_eq!(mem as usize % upage, 0);
         debug_assert_eq!(res as usize % upage, 0);
-        #[cfg(test)]
-        SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, size + PAGE_SIZE as usize));
+        #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, size + PAGE_SIZE as usize));
         // end extra debugging information
 
         res
@@ -1019,22 +1030,24 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
-                    unsafe {
-                        let item = global::alloc(size * 8);
-                        write_volatile(item, 10);
-                        global::free(item);
-                    }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = global::alloc(size * 8);
+                                write_volatile(item, 10);
+                                global::free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1050,17 +1063,20 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || unsafe {
-                    for _ in 0..2 {
-                        let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
-                        for p in ptrs {
-                            global::free(p);
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || unsafe {
+                        for _ in 0..2 {
+                            let ptrs: Vec<*mut u8> =
+                                (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                            for p in ptrs {
+                                global::free(p);
+                            }
                         }
-                    }
-                })
-                .unwrap());
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1077,30 +1093,31 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || for size in 1..(1 << 13) {
-                                        unsafe {
-                                            let item = da.alloc(size * 8);
-                                            write_bytes(item, 0xFF, size * 8);
-                                            let new_item =
-                                                da.aligned_realloc(item,
-                                                                   size * 16,
-                                                                   if size % 2 == 0 {
-                                                                       8
-                                                                   } else {
-                                                                       size.next_power_of_two()
-                                                                   });
-                                            write_bytes(item.offset(size as isize * 8),
-                                                        0xFE,
-                                                        size * 8);
-                                            da.free(new_item);
-                                        }
-                                        if size * 8 >= (1 << 20) {
-                                            return;
-                                        }
-                                    })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || for size in 1..(1 << 13) {
+                        unsafe {
+                            let item = da.alloc(size * 8);
+                            write_bytes(item, 0xFF, size * 8);
+                            let new_item = da.aligned_realloc(
+                                item,
+                                size * 16,
+                                if size % 2 == 0 {
+                                    8
+                                } else {
+                                    size.next_power_of_two()
+                                },
+                            );
+                            write_bytes(item.offset(size as isize * 8), 0xFE, size * 8);
+                            da.free(new_item);
+                        }
+                        if size * 8 >= (1 << 20) {
+                            return;
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1118,22 +1135,24 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
-                    unsafe {
-                        let item = da.alloc(size * 8);
-                        write_bytes(item, 0xFF, size * 8);
-                        da.free(item);
-                    }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = da.alloc(size * 8);
+                                write_bytes(item, 0xFF, size * 8);
+                                da.free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
