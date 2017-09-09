@@ -1317,20 +1317,20 @@ where
 }
 
 impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
-    type Params = (usize, usize);
-    fn init(&(page_size, target_overhead): &Self::Params) -> Self {
-        Self::new(page_size, target_overhead)
+    type Params = (usize, usize, usize);
+    fn init(&(page_size, target_overhead, pipe_size): &Self::Params) -> Self {
+        Self::new(page_size, target_overhead, pipe_size)
     }
 }
 
 impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     /// Create a new `PageAlloc`.
-    pub fn new(page_size: usize, target_overhead: usize) -> Self {
+    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize) -> Self {
         let mut res = PageAlloc {
             target_overhead: target_overhead,
             creek: C::new(page_size),
             clean: SlagPipe::new_size(2),
-            dirty: SlagPipe::new_size(8),
+            dirty: SlagPipe::new_size(pipe_size),
             _marker: PhantomData,
         };
         res.refresh_pages();
@@ -1370,18 +1370,23 @@ impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
     }
 
     unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
-        const MINOR_PAGE_SIZE: isize = 4096;
         use self::mmap::uncommit;
         use std::cmp;
-        if decommit || self.dirty.size_guess() >= self.target_overhead as isize {
+        let minor_page_size = mmap::page_size() as isize;
+        if self.dirty.size_guess() >= self.target_overhead as isize {
+            uncommit(ptr, self.backing_memory().page_size());
+            self.clean.push_mut(ptr);
+            return;
+        }
+        if decommit {
             let uncommit_len = cmp::max(
                 0,
-                self.backing_memory().page_size() as isize - MINOR_PAGE_SIZE,
+                self.backing_memory().page_size() as isize - minor_page_size,
             ) as usize;
             if uncommit_len == 0 {
                 self.dirty.push_mut(ptr);
             } else {
-                uncommit(ptr.offset(MINOR_PAGE_SIZE), uncommit_len);
+                uncommit(ptr.offset(minor_page_size), uncommit_len);
                 self.dirty.push_mut(ptr);
             }
         } else {
@@ -1531,7 +1536,7 @@ macro_rules! typed_wrapper {
                                   eager_decommit: usize,
                                   max_objects: usize)
                 -> Self {
-                    let pa = PageAlloc::new(page_size, target_overhead);
+                    let pa = PageAlloc::new(page_size, target_overhead, 8);
                     let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
                                                   cutoff_factor, eager_decommit, pa);
                     $name($wrapped::new(slag), PhantomData)

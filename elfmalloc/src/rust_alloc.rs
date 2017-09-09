@@ -1,8 +1,7 @@
 //! This module is an attempt at craeting a variant of elfmalloc that takes advantage of the extra
 //! information that the `Alloc` trait provides.
 
-extern crate alloc;
-use self::alloc::allocator::{Alloc, AllocErr, Layout};
+use super::alloc::allocator::{Alloc, AllocErr, Layout};
 
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
 use super::slag::{PageAlloc, MemorySource, Metadata, RevocablePipe, compute_metadata,
@@ -17,9 +16,11 @@ use std::ptr;
 /// A `MemorySource` that just calls mmap. It still maintains that all pages returned by `carve`
 /// are aligned to their size.
 #[derive(Copy, Clone)]
-struct MmapSource {
+pub struct MmapSource {
     page_size: usize,
 }
+
+unsafe impl Send for MmapSource {}
 
 impl MemorySource for MmapSource {
     fn new(page_size: usize) -> MmapSource {
@@ -30,6 +31,7 @@ impl MemorySource for MmapSource {
     }
 
     fn carve(&self, npages: usize) -> Option<*mut u8> {
+        trace!("carve({:?})", npages);
         // faster mod for power-of-2 sizes.
         fn mod_size(x: usize, n: usize) -> usize {
             x & (n - 1)
@@ -70,7 +72,6 @@ impl MemorySource for MmapSource {
     }
 }
 
-
 /// An `Alloc` impl that takes advantage of size information at the call-site to more efficiently
 /// handle larger allocations.
 #[derive(Clone)]
@@ -79,7 +80,48 @@ pub struct ElfMalloc<M: MemorySource> {
     large: PowersOfTwo<Lazy<PageAlloc<M>>>,
 }
 
-unsafe impl<M: MemorySource> Send for ElfMalloc<M> {}
+/// Following the structure of the `general` module, we keep the underlying `ElfMalloc` struct with
+/// a trivial drop method, as drop needs to be specialized when the allocator is and isn't used in
+/// thread local storage.
+///
+/// `OwnedElfMalloc` is the standard version, where the destructor reclaims any cached memory.
+#[derive(Clone)]
+pub struct OwnedElfMalloc<M: MemorySource>(pub ElfMalloc<M>);
+
+
+impl<M: MemorySource> ::std::ops::Deref for OwnedElfMalloc<M> {
+    type Target = ElfMalloc<M>;
+    fn deref(&self) -> &ElfMalloc<M> {
+        &self.0
+    }
+}
+
+impl<M: MemorySource> ::std::ops::DerefMut for OwnedElfMalloc<M> {
+    fn deref_mut(&mut self) -> &mut ElfMalloc<M> {
+        &mut self.0
+    }
+}
+
+unsafe impl<M: MemorySource + Send> Send for ElfMalloc<M> {}
+unsafe impl<M: MemorySource + Send> Send for OwnedElfMalloc<M> {}
+
+impl<M: MemorySource> ElfMalloc<M> {
+    unsafe fn destroy(&mut self) {
+        self.small.foreach(|x| ptr::drop_in_place(x));
+        self.large.foreach(|x| ptr::drop_in_place(x));
+        self.small.classes.destroy();
+        self.large.classes.destroy();
+    }
+}
+
+impl<M: MemorySource> Drop for OwnedElfMalloc<M> {
+    fn drop(&mut self) {
+        unsafe {
+            self.0.destroy();
+        }
+    }
+}
+
 
 macro_rules! case_analyze {
     ($self:expr, $layout:expr, small $small:expr; medium $medium:expr; large $large:expr;) => {
@@ -96,7 +138,9 @@ macro_rules! case_analyze {
 }
 
 unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
+    #[inline(always)]
     unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+        trace!("alloc({:?})", l);
         case_analyze!(
             self,
             l,
@@ -117,7 +161,9 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
         )
     }
 
+    #[inline(always)]
     unsafe fn dealloc(&mut self, item: *mut u8, l: Layout) {
+        trace!("dealloc({:?}, {:?})", item, l);
         case_analyze!(
             self,
             l,
@@ -131,7 +177,9 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
             large mmap::unmap(item, l.size());)
     }
 
+    #[inline(always)]
     fn usable_size(&self, l: &Layout) -> (usize, usize) {
+        trace!("usable_size({:?})", l.clone());
         (
             l.size(),
             case_analyze!(
@@ -145,6 +193,20 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
             medium l.size().next_power_of_two();
             large l.size();),
         )
+    }
+}
+
+unsafe impl<M: MemorySource> Alloc for OwnedElfMalloc<M> {
+    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+        self.0.alloc(l)
+    }
+
+    unsafe fn dealloc(&mut self, p: *mut u8, l: Layout) {
+        self.0.dealloc(p, l)
+    }
+
+    fn usable_size(&self, l: &Layout) -> (usize, usize) {
+        self.0.usable_size(l)
     }
 }
 
@@ -198,7 +260,7 @@ impl ElfMallocBuilder {
     }
 
     pub fn build<M: MemorySource>(&self) -> ElfMalloc<M> {
-        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size);
+        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size);
         let n_small_classes = (self.page_size / 4) / MULTIPLE;
         assert!(n_small_classes > 0);
         let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes) as
@@ -230,12 +292,146 @@ impl ElfMallocBuilder {
         let max_size = self.max_object_size.next_power_of_two();
         let n_classes = max_size.trailing_zeros() - next_size_class.trailing_zeros();
         let large_classes = PowersOfTwo::init(next_size_class, n_classes as usize, |size: usize| {
-            Lazy::<PageAlloc<M>>::new((size, self.target_pa_size))
+            Lazy::<PageAlloc<M>>::new((size, self.target_pa_size, self.large_pipe_size))
         });
         debug_assert!(small_classes.max_key().is_power_of_two());
         ElfMalloc {
             small: small_classes,
             large: large_classes,
+        }
+    }
+
+    pub fn build_owned<M: MemorySource>(&self) -> OwnedElfMalloc<M> {
+        OwnedElfMalloc(self.build())
+    }
+}
+
+pub use self::global::{DynamicAlloc, SharedAlloc, new_owned_handle};
+
+mod global {
+    //! This module provides an interface to global instances of allocators in the parent module.
+    //! Two interfaces are provides. All allocations from either of these allocators share the same
+    //! global data-structures.
+    //! 
+    //! # `DynamicAlloc`
+    //!
+    //! This allocator is a complete instance of the `ElfMalloc` frontend. When its destructor is
+    //! called, any cached memory is returned to the global pool of memory. A `DynamicAlloc` can be
+    //! embedded in a long-lived data-structure and grant its allocations some degree of isolation
+    //! from other components of the current thread. Embedding the allocator in this manner also
+    //! ensure that allocations and frees are cached correctly even when the allocator is moved to
+    //! a different thread.
+    //!
+    //! # `SharedAlloc`
+    //!
+    //! This allocator stores a single frontend per thread in thread-local storage (TLS). It
+    //! therefore allows different data-structures to share a single frontend. In experiments with
+    //! a custom `Vec` implementation, this leads to serious performance wins.
+    use super::*;
+
+    use std::intrinsics::unlikely;
+    use std::sync::mpsc::{channel, Sender};
+    use std::sync::Mutex;
+    use std::thread;
+    use std::cell::UnsafeCell;
+
+    type InnerAlloc = ElfMalloc<MmapSource>;
+
+    pub type DynamicAlloc = OwnedElfMalloc<MmapSource>;
+
+    /// A global handle that can hand out thread-local handles to the allocator.
+    struct ElfCloner(InnerAlloc);
+
+    impl ElfCloner {
+        fn new_handle(&self) -> DynamicAlloc {
+            OwnedElfMalloc(self.0.clone())
+        }
+    }
+    unsafe impl Sync for ElfCloner {}
+
+    /// Construct a new `DynamicAlloc`.
+    pub fn new_owned_handle() -> DynamicAlloc {
+        GLOBAL_HANDLE.new_handle()
+    }
+
+    lazy_static! {
+        static ref GLOBAL_HANDLE: ElfCloner = ElfCloner(ElfMallocBuilder::default()
+                                                        .page_size(32 << 10)
+                                                        .build());
+
+        /// We still have a crossbeam dependency, which means that we may have to reclaim a
+        /// thread's cached memory after it is destroyed. See the comments in `general::global` for
+        /// more context on why this is necessary.
+        static ref BACKUP_CLEAN: Mutex<Sender<DynamicAlloc>> = {
+            let (sender, receiver) = channel();
+            thread::spawn(move || loop {
+                if let Ok(msg) = receiver.recv() {
+                    mem::drop(msg);
+                }
+            });
+            Mutex::new(sender)
+        };
+    }
+
+    #[thread_local]
+    static mut RUST_PTR: *mut InnerAlloc = ptr::null_mut();
+
+    /// A newtype wrapper around `ElfMalloc<MmapSource>` that sends its contents to the background
+    /// thread in its destructor.
+    struct ElfMallocTLS(InnerAlloc);
+
+    impl Drop for ElfMallocTLS {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = BACKUP_CLEAN.lock().unwrap().send(OwnedElfMalloc(
+                    ptr::read(&mut self.0),
+                ));
+            }
+        }
+    }
+
+    thread_local! {
+        static LOCAL_RUSTMALLOC: UnsafeCell<ElfMallocTLS> =
+            UnsafeCell::new(ElfMallocTLS(GLOBAL_HANDLE.0.clone()));
+    }
+
+    macro_rules! with_instance {
+
+        ($ptr:ident, $exp:expr) => {
+            with_instance!($ptr, $exp, panic!("TLS in invalid state"))
+        };
+
+        ($ptr:ident, $exp:expr, $else:expr) => {
+            if unlikely(RUST_PTR.is_null()) {
+                LOCAL_RUSTMALLOC.try_with(|uc| {
+                    let $ptr: &mut InnerAlloc = &mut (*uc.get()).0;
+                    let res = $exp;
+                    RUST_PTR = $ptr;
+                    res
+                }).unwrap_or_else(|_| {
+                    $else
+                })
+            } else {
+                let $ptr = &mut *RUST_PTR;
+                $exp
+            }
+        };
+
+    }
+
+    /// A ZST for routing allocations through the thread-local handle.
+    #[derive(Clone)]
+    pub struct SharedAlloc;
+
+    unsafe impl Alloc for SharedAlloc {
+        unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+            with_instance!(r_ptr, r_ptr.alloc(l))
+        }
+        unsafe fn dealloc(&mut self, p: *mut u8, l: Layout) {
+            with_instance!(r_ptr, r_ptr.dealloc(p, l))
+        }
+        fn usable_size(&self, l: &Layout) -> (usize, usize) {
+            unsafe { with_instance!(r_ptr, r_ptr.usable_size(l)) }
         }
     }
 }
@@ -250,7 +446,7 @@ mod tests {
     #[test]
     fn basic_alloc_functionality() {
         let word_size = mem::size_of::<usize>();
-        let mut alloc = ElfMallocBuilder::default().build::<MmapSource>();
+        let mut alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
         let layouts: Vec<_> = (word_size..(8 << 10))
             .map(|size| {
                 Layout::from_size_align(size * 128, word_size).unwrap()
@@ -272,7 +468,7 @@ mod tests {
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
         const N_THREADS: usize = 64;
-        let alloc = ElfMallocBuilder::default().build::<MmapSource>();
+        let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
 
         let mut threads = Vec::new();
         for _ in 0..N_THREADS {
@@ -282,7 +478,8 @@ mod tests {
                 for _ in 0..2 {
                     let mut ptrs = Vec::new();
                     for l in &my_layouts {
-                        let p = my_alloc.alloc(l.clone()).expect("alloc should not fail") as *mut usize;
+                        let p = my_alloc.alloc(l.clone()).expect("alloc should not fail") as
+                            *mut usize;
                         ptr::write_volatile(p, !0);
                         ptrs.push(p);
                     }

@@ -527,7 +527,7 @@ pub const MULTIPLE: usize = 16;
 pub struct Multiples<T> {
     starting_size: usize,
     max_size: usize,
-    classes: TypedArray<T>,
+    pub classes: TypedArray<T>,
 }
 
 impl<T: Clone> Clone for Multiples<T> {
@@ -595,7 +595,7 @@ impl<T> AllocMap<T> for Multiples<T> {
 pub struct PowersOfTwo<T> {
     starting_size: usize,
     max_size: usize,
-    classes: TypedArray<T>,
+    pub classes: TypedArray<T>,
 }
 
 impl<T: Clone> Clone for PowersOfTwo<T> {
@@ -739,7 +739,7 @@ impl Default for DynamicAllocator {
 impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
                                            TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
-        let pa = PageAlloc::new(1 << 21, 1 << 20);
+        let pa = PageAlloc::new(1 << 21, 1 << 20, 8);
         Self::new_internal(128 << 10, 0.6, pa, 8, 25)
     }
 }
