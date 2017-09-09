@@ -128,7 +128,7 @@ macro_rules! case_analyze {
         {
             if $layout.size() <= $self.small.max_key() {
                 $small
-            } else if $layout.align() <= $self.large.max_key() {
+            } else if $layout.size() <= $self.large.max_key() {
                 $medium
             } else {
                 $large
@@ -312,7 +312,7 @@ mod global {
     //! This module provides an interface to global instances of allocators in the parent module.
     //! Two interfaces are provides. All allocations from either of these allocators share the same
     //! global data-structures.
-    //! 
+    //!
     //! # `DynamicAlloc`
     //!
     //! This allocator is a complete instance of the `ElfMalloc` frontend. When its destructor is
@@ -464,7 +464,6 @@ mod tests {
             }
         }
     }
-
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
         const N_THREADS: usize = 64;
