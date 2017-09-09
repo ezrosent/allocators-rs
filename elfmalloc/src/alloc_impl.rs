@@ -13,9 +13,8 @@
 //!
 //! This module also implements additional traits from the `malloc-bind` crate.
 
-extern crate alloc;
 extern crate malloc_bind;
-use self::alloc::allocator::{Alloc, AllocErr, Layout};
+use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use self::malloc_bind::LayoutFinder;
 use super::general::global;
 use std::mem;

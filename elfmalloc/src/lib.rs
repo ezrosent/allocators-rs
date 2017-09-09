@@ -7,6 +7,7 @@
 
 #![feature(alloc)]
 #![feature(allocator_api)]
+#![cfg_attr(test, feature(test))]
 #![cfg_attr(feature = "nightly", feature(thread_local_state))]
 #![cfg_attr(feature = "nightly", feature(thread_local))]
 #![cfg_attr(feature = "nightly", feature(const_fn))]
@@ -30,7 +31,10 @@ mod utils;
 mod stats;
 pub mod slag;
 pub mod general;
+
 #[cfg(feature = "nightly")]
 pub mod alloc_impl;
 #[cfg(feature = "nightly")]
 pub mod rust_alloc;
+#[cfg(feature = "nightly")]
+pub mod vec_alloc;
