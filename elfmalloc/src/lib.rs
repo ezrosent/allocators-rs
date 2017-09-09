@@ -32,3 +32,5 @@ pub mod slag;
 pub mod general;
 #[cfg(feature = "nightly")]
 pub mod alloc_impl;
+#[cfg(feature = "nightly")]
+pub mod rust_alloc;

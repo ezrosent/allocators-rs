@@ -8,7 +8,6 @@
 #![feature(alloc)]
 #![feature(allocator_api)]
 extern crate alloc;
-extern crate bagpipe;
 extern crate elfmalloc;
 extern crate num_cpus;
 use std::marker;
@@ -168,7 +167,7 @@ macro_rules! time_block {
             let start = time::Instant::now();
             $block;
             let dur = start.elapsed();
-            (dur.as_secs() * 1_000_000_000) + (dur.subsec_nanos() as u64)
+            (dur.as_secs() * 1_000_000_000) + u64::from(dur.subsec_nanos())
         }
     }
 }
@@ -179,7 +178,7 @@ macro_rules! time_block_once {
             let start = time::Instant::now();
             $block;
             let dur = start.elapsed();
-            (dur.as_secs() * 1_000_000_000) + (dur.subsec_nanos() as u64)
+            (dur.as_secs() * 1_000_000_000) + u64::from(dur.subsec_nanos())
         }
     }
 }

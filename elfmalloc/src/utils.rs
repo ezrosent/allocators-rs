@@ -12,8 +12,13 @@ use std::cell::UnsafeCell;
 
 pub mod mmap {
     extern crate mmap_alloc;
+    extern crate sysconf;
     use self::mmap_alloc::MapAllocBuilder;
     use super::super::alloc::allocator::{Alloc, Layout};
+
+    pub fn page_size() -> usize {
+        self::sysconf::page::pagesize()
+    }
 
     pub fn map(size: usize) -> *mut u8 {
         fallible_map(size).expect("mmap should not fail")
