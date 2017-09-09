@@ -426,7 +426,7 @@ pub mod global {
 }
 
 /// A trait encapsulating the notion of an array of size classes for an allocator.
-trait AllocMap<T>
+pub trait AllocMap<T>
     where Self: Sized
 {
     /// The type used to index size classes.
@@ -521,13 +521,23 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
 }
 
 // Once this can be a type parameter, it should be.
-const MULTIPLE: usize = 16;
+pub const MULTIPLE: usize = 16;
 
 /// An array of size classes where sizes are multiples of 16.
-struct Multiples<T> {
+pub struct Multiples<T> {
     starting_size: usize,
     max_size: usize,
     classes: TypedArray<T>,
+}
+
+impl<T: Clone> Clone for Multiples<T> {
+    fn clone(&self) -> Self {
+        Multiples::init(self.starting_size, self.classes.len(), |size| {
+            unsafe {
+                self.get(size).clone()
+            }
+        })
+    }
 }
 
 /// Round up to the closest multiple of 16 greater than or equal to `n`.
@@ -582,12 +592,21 @@ impl<T> AllocMap<T> for Multiples<T> {
 ///
 /// This is useful mostly for testing purposes: it is a very simple implementation, but it can also
 /// be rather wasteful.
-struct PowersOfTwo<T> {
+pub struct PowersOfTwo<T> {
     starting_size: usize,
     max_size: usize,
     classes: TypedArray<T>,
 }
 
+impl<T: Clone> Clone for PowersOfTwo<T> {
+    fn clone(&self) -> Self {
+        PowersOfTwo::init(self.starting_size, self.classes.len(), |size| {
+            unsafe {
+                self.get(size).clone()
+            }
+        })
+    }
+}
 
 impl Drop for DynamicAllocator {
     fn drop(&mut self) {
@@ -688,9 +707,9 @@ impl DynamicAllocator {
 // we default to using the `MagazineCache` here, as it performs better in general. There are some
 // settings in which the `LocalCache` frontend is superior. Hence, we feature-gate this.
 #[cfg(not(feature = "local_cache"))]
-type ObjectAlloc<CA> = Lazy<MagazineCache<CA>>;
+pub type ObjectAlloc<CA> = Lazy<MagazineCache<CA>>;
 #[cfg(feature = "local_cache")]
-type ObjectAlloc<CA> = Lazy<LocalCache<CA>>;
+pub type ObjectAlloc<CA> = Lazy<LocalCache<CA>>;
 
 /// A Dynamic memory allocator, parmetrized on a particular `ObjectAlloc`, `CourseAllocator` and
 /// `AllocMap`.
