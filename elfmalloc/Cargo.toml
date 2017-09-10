@@ -22,6 +22,7 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/elfmalloc"
 exclude = ["travis.sh"]
 
 [features]
+default = ["nightly"]
 # TODO: Rename these features to use dashes instead of underscores
 prime_schedules = ["bagpipe/prime_schedules"]
 huge_segments = ["bagpipe/huge_segments"]

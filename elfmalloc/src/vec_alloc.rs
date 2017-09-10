@@ -206,11 +206,16 @@ impl<T, A: Alloc> ops::IndexMut<usize> for AVec<T, A> {
     }
 }
 
+// TODO(ezrosent): This is a method where we appear to be meaningfully
+// slower than `Vec` (roughly 4x in a microbenchmark). Looking at the
+// `Vec` source, they do a bunch of extra work in this method. It is
+// worth examining an implementation of that technique here.
+
 impl<T, A: Alloc> Extend<T> for AVec<T, A> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iterable: I) {
         let iter = iterable.into_iter();
         let (lower_bound, _) = iter.size_hint();
-        self.buf.reserve_exact(self.len, lower_bound);
+        self.buf.reserve(self.len, lower_bound);
         for item in iter {
             self.push(item);
         }

@@ -69,6 +69,7 @@
 //! this because we can use the size passed in at the call site to determine the allocator to which
 //! a given object belongs. This is also the trick that allows us to handle medium objects
 //! specially: in the other system, they would need their own `Creek`.
+extern crate num_cpus;
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
@@ -294,9 +295,9 @@ impl Default for ElfMallocBuilder {
             // very large -- this effectively turns the feature off
             target_pa_size: 1 << 30,
             reuse_threshold: 0.6,
-            max_object_size: 2 << 20,
-            small_pipe_size: 8,
-            large_pipe_size: 16,
+            max_object_size: 8 << 20,
+            small_pipe_size: cmp::max(1, num_cpus::get() / 4),
+            large_pipe_size: cmp::max(1, num_cpus::get() / 2),
         }
     }
 }
