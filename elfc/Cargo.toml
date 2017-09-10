@@ -24,8 +24,9 @@ local_cache = ["elfmalloc/local_cache"]
 logging = ["elfmalloc/print_stats"]
 
 [dependencies]
-elfmalloc = { path = "../elfmalloc" }
+elfmalloc = { path = "../elfmalloc", features = ["nightly"] }
 errno = "0.2"
 libc = "0.2"
-sysconf = "0.3.1"
+malloc-bind = { path = "../malloc-bind" }
+# sysconf = "0.3.1"
 env_logger = "0.4.3"
