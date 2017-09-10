@@ -1,8 +1,76 @@
-//! This module is an attempt at craeting a variant of elfmalloc that takes advantage of the extra
-//! information that the `Alloc` trait provides.
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
+//! A version of elfmalloc tailored to the `Alloc` trait.
+//!
+//! This module is an attempt at creating a variant of elfmalloc that follows Rust's own allocation
+//! idioms. Unlike the traditional `malloc`/`free` interface, Rust's `Alloc` trait passes size and
+//! alignment at the call site for both allocations and deallocations. This allows us to simplify
+//! the design in several ways.
+//!
+//! # Differences in Design
+//!
+//! The design is still quite similar to that of the standard `elfmalloc` implementation. In fact,
+//! the implementation of this rust-specific variant is cobbled together out of different reusable
+//! components from the initial allocator. We briefly mention the newer elements of the design
+//! below.
+//!
+//! ## Small Objects
+//!
+//! Small objects are allocated much the same as they are in `elfmalloc`: we use the slab allocation
+//! system present in the `slag` module. The main difference is that the slag page size can be
+//! relatively small (several KiB rather than a few MiB), but also allowed to filled usable space.
+//! This is because the slab subsystem *only* handles smaller allocations, rather than handling
+//! both small and medium sized objects. This has the advantage that it doesn't rely on holding
+//! large chunks of uncommitted memory around. That's a good thing for 2 reasons:
+//!
+//! * Windows requires memory to be committed explicitly. For a `malloc`, this will require
+//!   explicit bookkeeping for which slabs are fully committed and which are only using a small
+//!   portion of the available space. If slabs are always fully committed, this is no longer a
+//!   problem.
+//!
+//! * For 32-bit support, we cannot be so profligate with virutal memory. Committing to only the
+//!   memory we (physically) require is a good step towards getting 32-bit machines fully supported.
+//!
+//! ## Medium Objects
+//!
+//! So if each slab is only, say, 32K, what do we do for larger objects? In the standard malloc
+//! interface, we simply fell back on `mmap` directly. Now that the slab subsystem has a smaller
+//! maximum size (roughly a fourth of he slab size), we want a more scalable solution for objects
+//! that are still relatively small. These medium-sized objects are instead allocated from
+//! `PageAlloc`s directly. While this can reduce the amount of reuse among larger size classes, it
+//! also lowers fragmentation and overhead due to the slag state transitions.
+//!
+//! *Future Work*: It is worth exploring grouping some of these size classes together. For example,
+//! one could have the 256K and 512K objects share a `PageAlloc` along with some decommit rule for
+//! the 512k objects. This would be less 32-bit friendly, but it would help facilitate further
+//! memory reuse.
+//!
+//! ## Large Objects
+//!
+//! Large objects simply call `mmap` and `munmap` directly. Indeed, no additional metadata needs to
+//! be stored for these operations because size information is provided by the caller of `dealloc`.
+//!
+//! ## Backing Allocation
+//!
+//! The `malloc`-style `elfmalloc` implementation is essentially a composition of two separate
+//! allocators. On the one hand, there is the "ensemble of slabs" allocator. On the other, there
+//! are the "large" allocations which have a different method for storing metadata. We crucially
+//! must have a means of determining which of these allocators corresponds to a given pointer
+//! passed to `free`. Our solution is to use the `Creek` data-structure: a means of ensuring all
+//! (and only) slab-allocated memory belongs to the same (large) contiguous region of memory. The
+//! `Creek`, however, is cumbersome to use: overcommitted memory has different support across
+//! different operating systems, and it essentially locks us into using 64-bit architectures.
+//!
+//! In this module, memory is backed by a much thinner wrapper around `mmap`. We can get away with
+//! this because we can use the size passed in at the call site to determine the allocator to which
+//! a given object belongs. This is also the trick that allows us to handle medium objects
+//! specially: in the other system, they would need their own `Creek`.
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
-
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
 use super::slag::{PageAlloc, MemorySource, Metadata, RevocablePipe, compute_metadata,
                   CoarseAllocator};
@@ -356,7 +424,7 @@ mod global {
 
     lazy_static! {
         static ref GLOBAL_HANDLE: ElfCloner = ElfCloner(ElfMallocBuilder::default()
-                                                        .page_size(32 << 10)
+                                                        .page_size(16 << 10)
                                                         .build());
 
         /// We still have a crossbeam dependency, which means that we may have to reclaim a

@@ -1,6 +1,14 @@
-//! In this module, we take a stab at an `Alloc`-parametric `Vec` implementation based on `RawVec`.
-//! The `Vec` module is quite large, and we do not implement all of the supported algorithms
-//! therein. The intent here is to support basic operations to facilitate benchmarking.
+// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// README.md file at the top-level directory of this repository.
+//
+// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
+// may not be copied, modified, or distributed except according to those terms.
+
+//! An inital stab at `Alloc`-parametric collections.
+//!
+//! This module contains an `Alloc`-parametric `Vec` implementation based on `RawVec`.
+//! This is currently more of a proof of concept, though it may serve as a starting point
+//! for more robust `Alloc`-parametric collections.
 
 extern crate smallvec;
 use self::smallvec::VecLike;
@@ -302,6 +310,48 @@ mod tests {
                 push_noinline(&mut vec, x);
             }
             test::black_box(vec)
+        });
+    }
+
+    #[bench]
+    fn bench_push_nested_avec_elf(b: &mut Bencher) {
+        bench_push_nested::<
+            AVec<usize, DynamicAlloc>,
+            AVec<AVec<usize, DynamicAlloc>, DynamicAlloc>,
+        >(b);
+    }
+
+    #[bench]
+    fn bench_push_nested_avec_shared_elf(b: &mut Bencher) {
+        bench_push_nested::<AVec<usize, SharedAlloc>,
+                            AVec<AVec<usize, SharedAlloc>, SharedAlloc>>(b);
+    }
+
+    #[bench]
+    fn bench_push_nested_avec_heap(b: &mut Bencher) {
+        bench_push_nested::<AVec<usize, Heap>, AVec<AVec<usize, Heap>, Heap>>(b);
+    }
+
+    #[bench]
+    fn bench_push_nested_vec(b: &mut Bencher) {
+        bench_push_nested::<Vec<usize>, Vec<Vec<usize>>>(b);
+    }
+
+    fn bench_push_nested<V: VecLike<usize> + Default, VV: VecLike<V> + Default>(b: &mut Bencher) {
+        #[inline(never)]
+        fn push_noinline<T, V2: VecLike<T>>(vec: &mut V2, t: T) {
+            vec.push(t);
+        }
+        b.iter(|| {
+            let mut big_vec = VV::default();
+            for _ in 0..128 {
+                let mut vec = V::default();
+                for x in 0..(1 << 10) {
+                    push_noinline(&mut vec, x);
+                }
+                push_noinline(&mut big_vec, vec);
+            }
+            test::black_box(big_vec)
         });
     }
 

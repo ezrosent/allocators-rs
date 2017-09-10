@@ -5,7 +5,7 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-//! Implementation of general allocator routines based off of the `Slag`
+//! Implementation of traditional `malloc`-style allocator routines based off of the `Slag`
 //! allocator design.
 //!
 //! The primary use of this module is to provide the rudaments of a `malloc`-compatible global
