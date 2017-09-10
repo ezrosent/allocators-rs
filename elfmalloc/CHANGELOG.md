@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ### Added
 - Added this changelog
 - Implemented `Alloc` trait
-- Implemented `mmap-alloc`'s `LayoutFinder` trait
+- Implemented `malloc-bind`'s `LayoutFinder` and `Malloc` traits
 
 ### Fixed
 - Fixed a bug preventing non-nightly builds from compiling

@@ -28,4 +28,4 @@ panic = "abort"
 
 [dependencies]
 lazy_static = { version = "0.2", features = ["spin_no_std"] }
-mmap-alloc = "0.1.0"
+mmap-alloc = { path = "../mmap-alloc" }

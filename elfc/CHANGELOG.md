@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ### Added
 - Added this changelog
 
+### Changed
+- Switched to using `malloc-bind` to provide C bindings
+
 ### Fixed
 - Fixed a bug caused by `sysconf` 0.3.0 that prevented compilation on Windows
   by upgrading to 0.3.1
