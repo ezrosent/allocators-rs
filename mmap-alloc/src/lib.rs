@@ -306,11 +306,15 @@ impl MapAlloc {
         // since we never write to it, it will remain uncommitted and will thus not consume any
         // physical memory.
         let f = |ptr: *mut u8| if ptr.is_null() {
+
+            // First create a mapping that will server as the destination of the remap
             let new_ptr = map(new_size, self.perms, false, self.huge_pagesize)
                 .expect("Not enough virtual memory to make new mapping");
             debug_assert!(!new_ptr.is_null(),
                 "we have an open mapping on null, new mapping should never be null");
 
+            // remap onto the newly-created mapping. This should never fail because the target
+            // mapping already exists.
             let move_result = libc::mremap(
                 ptr::null_mut(),
                 new_size,
@@ -318,11 +322,12 @@ impl MapAlloc {
                 libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
                 new_ptr
             );
-            if move_result == libc::MAP_FAILED {
-                panic!("Unable to move mapping: {}", errno());
-            }
+            // Should never fail: we're remapping into an existing mapping
+            assert_ne!(move_result, libc::MAP_FAILED, "Unable to move mapping: {}", errno());
 
+            // Map a singe page at 0 to ensure this doesn't happen again
             let pagesize = sysconf::page::pagesize();
+            // TODO: Race condition if another mmap/mremap returned null after we mremaped, but before mmap
             let null_map = libc::mmap(
                 ptr::null_mut(),
                 pagesize,
@@ -331,7 +336,8 @@ impl MapAlloc {
                 -1,
                 0
             );
-            // ignore errors creating the new map at null
+            // Ignore errors creating the new map at 0.
+            // This should never fail
             if null_map.is_null() {
                 // a) Make it more likely that the kernel will not keep the page backed by physical
                 // memory and, b) make it so that an access to that range will result in a segfault to
