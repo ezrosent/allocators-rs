@@ -34,7 +34,7 @@ extern crate kernel32;
 #[cfg(windows)]
 extern crate winapi;
 
-use self::alloc::allocator::{Alloc, Layout, Excess, AllocErr};
+use self::alloc::allocator::{Alloc, Layout, Excess, AllocErr, CannotReallocInPlace};
 use self::object_alloc::{Exhausted, UntypedObjectAlloc};
 use core::ptr;
 
@@ -278,22 +278,101 @@ impl MapAlloc {
         // leaks memory since we never unmap that page, but this isn't a big deal - even if the
         // page is a huge page, since we never write to it, it will remain uncommitted and will
         // thus not consume any physical memory.
-        let f = |ptr: *mut u8| if ptr.is_null() {
-            let unmap_size = size - self.pagesize;
+        #[cold]
+        unsafe fn fix_null(allocator: &MapAlloc, size: usize) -> Option<*mut u8> {
+            let unmap_size = size - allocator.pagesize;
             if unmap_size > 0 {
-                unmap(self.pagesize as *mut u8, unmap_size);
+                unmap(allocator.pagesize as *mut u8, unmap_size);
             }
             // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
             // make other bugs easier to detect.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            mark_unused(ptr::null_mut(), self.pagesize);
-            self.alloc_helper(size)
-        } else {
-            Some(ptr)
-        };
+            mark_unused(ptr::null_mut(), allocator.pagesize);
+            allocator.alloc_helper(size)
+
+        }
         // NOTE: self.commit is guaranteed to be false on Mac.
-        map(size, self.perms, self.commit, self.huge_pagesize).and_then(f)
+        map(size, self.perms, self.commit, self.huge_pagesize).and_then(|ptr| {
+            if ptr.is_null() {
+                fix_null(self, size)
+            } else {
+                Some(ptr)
+            }
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn realloc_helper(&self, old_ptr: *mut u8, old_size: usize, new_size: usize) -> Option<*mut u8> {
+        // Since allocators in Rust are not allowed to return null pointers, but it may be valid for
+        // mremap to return memory starting at null, we have to handle that case. We
+        // do this by checking for null, and if we find that map has returned null, we create a
+        // new mapping, and mremap all pages after the first into that region. We store the first
+        // byte of the original map (to avoid trying to read data at NULL,
+        // which is Undefined Behaviour for LLVM), and set that byte in
+        // the new mapping. Then memcpy the remainder of the page at NULL.
+        // Finally, we tell the OS that the page at NULL is unused, but do not unmap it.
+        // Since we leave the page at 0 mapped, future calls should never return null.
+        // Note that this leaks memory since we never unmap that page, but this isn't a big deal -
+        // since we never write to it, it will remain uncommitted and will thus not consume any
+        // physical memory.
+        #[cold]
+        unsafe fn fix_null(allocator: &MapAlloc, size: usize, first_byte: u8) ->  *mut u8 {
+            use core::cmp;
+
+            // First create a mapping that will serve as the destination of the remap
+            let new_ptr = map(size, perms::PROT_WRITE, false, allocator.huge_pagesize)
+                .expect("Not enough virtual memory to make new mapping");
+            debug_assert!(!new_ptr.is_null(),
+                          "we have an open mapping on null, new mapping should never be null");
+
+            // remap onto the newly-created mapping. This should never fail because the target
+            // mapping already exists.
+            let move_size = size - allocator.pagesize;
+            if move_size > 0 {
+                let move_result = libc::mremap(
+                    allocator.pagesize as *mut _,
+                    move_size,
+                    move_size,
+                    libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+                    new_ptr.offset(allocator.pagesize as isize)
+                );
+                // Should never fail: we're remapping into an existing mapping
+                assert_ne!(move_result, libc::MAP_FAILED, "Unable to move mapping: {}", errno());
+            }
+
+            *new_ptr = first_byte;
+            ptr::copy_nonoverlapping(
+                1 as *const _,
+                new_ptr.offset(1),
+                cmp::min(allocator.pagesize - 1, size - 1)
+            );
+            // a) Make it more likely that the kernel will not keep the page backed by physical
+            // memory and, b) make it so that an access to that range will result in a segfault to
+            // make other bugs easier to detect.
+            mark_unused(ptr::null_mut(), allocator.pagesize);
+            new_ptr
+        }
+
+        // in case of a null mapping, we need to be able read the first byte
+        if self.perms & perms::PROT_READ == 0 {
+            libc::mprotect(old_ptr as *mut _, self.pagesize, self.perms | perms::PROT_READ);
+        }
+        let first_byte = *old_ptr;
+        remap(old_ptr, old_size, new_size, false).map(|ptr| {
+            let new_ptr = if ptr.is_null() {
+                fix_null(self, new_size, first_byte)
+            } else {
+                ptr
+            };
+            // if we got a null mapping, the first page was marked writable, so
+            // reset the permissions on the first page, even if we didn't have to change it to make
+            // it readable
+            if ptr.is_null() || self.perms & perms::PROT_READ == 0 {
+                libc::mprotect(new_ptr as *mut _, self.pagesize, self.perms);
+            }
+            new_ptr
+        })
     }
 
     /// Commits an existing allocated object.
@@ -360,18 +439,6 @@ impl MapAlloc {
 
 unsafe impl<'a> Alloc for &'a MapAlloc {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        self.alloc_excess(layout).map(|Excess(ptr, _)| ptr)
-    }
-
-    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        unmap(ptr, layout.size());
-    }
-
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        <&'a MapAlloc as Alloc>::alloc(self, layout)
-    }
-
-    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
         if layout.align() > self.pagesize {
@@ -379,10 +446,64 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         }
 
         let size = next_multiple(layout.size(), self.pagesize);
-        match self.alloc_helper(size) {
-            Some(ptr) => Ok(Excess(ptr, size)),
-            None => Err(AllocErr::Exhausted { request: layout }),
+        self.alloc_helper(size).ok_or(AllocErr::Exhausted { request: layout })
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        unmap(ptr, layout.size());
+    }
+
+    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        let max_size = next_multiple(layout.size(), self.pagesize);
+        (max_size - self.pagesize + 1, max_size)
+    }
+
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&'a MapAlloc as Alloc>::alloc(self, layout)
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn realloc(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<*mut u8, AllocErr> {
+        // alignment less than a page is fine because page-aligned objects are also aligned to
+        // any alignment less than a page
+        if new_layout.align() > self.pagesize {
+            return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
         }
+
+        let old_size = next_multiple(layout.size(), self.pagesize);
+        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        if old_size == new_size {
+            return Ok(ptr);
+        }
+        self.realloc_helper(ptr, old_size, new_layout.size()).ok_or(AllocErr::Exhausted { request: new_layout })
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn grow_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        // alignment less than a page is fine because page-aligned objects are also aligned to
+        // any alignment less than a page
+        if new_layout.align() > self.pagesize {
+            return Err(CannotReallocInPlace);
+        }
+
+        let old_size = next_multiple(layout.size(), self.pagesize);
+        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        if old_size == new_size {
+            return Ok(());
+        }
+        match remap(ptr, old_size, new_size, true) {
+            Some(new_ptr) => {
+                debug_assert_eq!(new_ptr, ptr);
+                Ok(())
+            }
+            None => Err(CannotReallocInPlace),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn shrink_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        // grow in place does not check if new_layout is larger than the old layout.
+        self.grow_in_place(ptr, layout, new_layout)
     }
 }
 
@@ -414,6 +535,10 @@ unsafe impl Alloc for MapAlloc {
         <&MapAlloc as Alloc>::alloc(&mut (&*self), layout)
     }
 
+    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        <&MapAlloc as Alloc>::usable_size(&(&*self), layout)
+    }
+
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         <&MapAlloc as Alloc>::dealloc(&mut (&*self), ptr, layout)
     }
@@ -424,6 +549,18 @@ unsafe impl Alloc for MapAlloc {
 
     unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
         <&MapAlloc as Alloc>::alloc_excess(&mut (&*self), layout)
+    }
+    
+    unsafe fn realloc(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&MapAlloc as Alloc>::realloc(&mut (&*self), ptr, layout, new_layout)
+    }
+    
+    unsafe fn grow_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        <&MapAlloc as Alloc>::grow_in_place(&mut (&*self), ptr, layout, new_layout)
+    }
+
+    unsafe fn shrink_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        <&MapAlloc as Alloc>::shrink_in_place(&mut (&*self), ptr, layout, new_layout)
     }
 }
 
@@ -579,6 +716,26 @@ unsafe fn map(size: usize,
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
+#[cfg(target_os = "linux")]
+unsafe fn remap(ptr: *mut u8, old_size: usize, new_size: usize, in_place: bool) -> Option<*mut u8> {
+    let flags = if !in_place {
+        libc::MREMAP_MAYMOVE
+    } else {
+        0
+    };
+    let result = libc::mremap(ptr as *mut _, old_size, new_size, flags);
+    if result == libc::MAP_FAILED {
+        let err = errno();
+        if err.0 == libc::ENOMEM {
+            None
+        } else {
+            panic!("mremap failed: {}", err)
+        }
+    } else {
+        Some(result as *mut u8)
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 unsafe fn unmap(ptr: *mut u8, size: usize) {
     use libc::{munmap, c_void};
@@ -728,34 +885,111 @@ mod tests {
     }
 
     // Test that the given range is readable and initialized to zero.
-    fn test_zero_filled(ptr: *mut u8, size: usize) {
+    unsafe fn test_zero_filled(ptr: *mut u8, size: usize) {
         for i in 0..size {
-            unsafe {
-                assert_eq!(*ptr.offset(i as isize), 0);
-            }
+            assert_eq!(*ptr.offset(i as isize), 0);
         }
     }
 
     // Test that the given range is writable.
-    fn test_write(ptr: *mut u8, size: usize) {
+    unsafe fn test_write(ptr: *mut u8, size: usize) {
         for i in 0..size {
-            unsafe {
-                *ptr.offset(i as isize) = 1;
-            }
+            *ptr.offset(i as isize) = (i & 0xff) as u8;
+        }
+    }
+
+    // Test that the given range is readable, and matches data written by test_write/test_write_read
+    unsafe fn test_read(ptr: *mut u8, size: usize) {
+        for i in 0..size {
+            assert_eq!(*ptr.offset(i as isize), (i & 0xff) as u8);
         }
     }
 
     // Test that the given range is readable and writable, and that writes can be read back.
-    fn test_write_read(ptr: *mut u8, size: usize) {
-        for i in 0..size {
-            unsafe {
-                *ptr.offset(i as isize) = 1;
-            }
+    unsafe fn test_write_read(ptr: *mut u8, size: usize) {
+        test_write(ptr, size);
+        test_read(ptr, size);
+    }
+
+    #[test]
+    fn test_small_realloc() {
+        unsafe {
+            let mut allocator = MapAlloc::default();
+            let small = Layout::array::<u8>(1).unwrap();
+            let medium = Layout::array::<u8>(2048).unwrap();
+            let big = Layout::array::<u8>(4096).unwrap();
+            let ptr = <MapAlloc as Alloc>::alloc(&mut allocator, medium.clone()).unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, medium.size());
+            test_write_read(ptr, medium.size());
+            allocator.shrink_in_place(ptr, medium.clone(), small.clone()).unwrap();
+            test_read(ptr, small.size());
+            test_write(ptr, small.size());
+            allocator.grow_in_place(ptr, small.clone(), big.clone()).unwrap();
+            test_read(ptr, small.size());
+            test_write_read(ptr, big.size());
+            let old_ptr = ptr;
+            let ptr = allocator.realloc(ptr, big.clone(), small.clone()).unwrap();
+            assert_eq!(old_ptr, ptr);
+            test_read(ptr, small.size());
+            test_write_read(ptr, small.size());
+            <MapAlloc as Alloc>::dealloc(&mut allocator, ptr, small.clone());
         }
-        for i in 0..size {
-            unsafe {
-                assert_eq!(*ptr.offset(i as isize), 1);
+    }
+
+    #[test]
+    fn test_large_realloc() {
+        unsafe {
+            let mut allocator = MapAlloc::default();
+            let small = Layout::array::<u8>(allocator.pagesize).unwrap();
+            let medium = Layout::array::<u8>(allocator.pagesize * 8).unwrap();
+            let big = Layout::array::<u8>(allocator.pagesize * 16).unwrap();
+            let mut ptr = <MapAlloc as Alloc>::alloc(&mut allocator, big.clone()).unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, big.size());
+            test_write_read(ptr, big.size());
+            if cfg!(target_os = "linux") {
+                allocator.shrink_in_place(ptr, big.clone(), small.clone()).unwrap();
+                test_read(ptr, small.size());
+                test_write(ptr, small.size());
+                allocator.grow_in_place(ptr, small.clone(), medium.clone()).unwrap();
+                test_read(ptr, small.size());
+                test_write_read(ptr, medium.size());
+            } else {
+                ptr = allocator.realloc(ptr, big.clone(), medium.clone()).unwrap();
+                test_valid_map_address(ptr);
+                test_read(ptr, medium.size());
+                test_read(ptr, medium.size());
             }
+            let old_ptr = ptr;
+            let ptr = allocator.realloc(ptr, medium.clone(), small.clone()).unwrap();
+            if cfg!(target_os = "linux") {
+                assert_eq!(old_ptr, ptr);
+            }
+            test_read(ptr, small.size());
+            test_write(ptr, small.size());
+            let ptr = allocator.realloc(ptr, small.clone(), big.clone()).unwrap();
+            if cfg!(target_os = "linux") {
+                assert_eq!(old_ptr, ptr);
+            }
+            test_read(ptr, small.size());
+            test_write_read(ptr, big.size());
+
+            // Treating the first page as its own allocation, grow that allocation to two pages.
+            // Since we know there's a second mapped page right after it, remap will be unable
+            // to simply grow the mapping in place, and will be forced to move it.
+            let remaining = ptr.offset(allocator.pagesize as isize);
+            let remaining_layout = Layout::array::<u8>(big.size() - allocator.pagesize).unwrap();
+            let new = allocator.realloc(ptr, small.clone(), medium.clone()).unwrap();
+            test_read(new, small.size());
+            test_zero_filled(new.offset(small.size() as isize), medium.size() - small.size());
+            test_read(remaining, remaining_layout.size());
+            <MapAlloc as Alloc>::dealloc(&mut allocator, new, medium.clone());
+            <MapAlloc as Alloc>::dealloc(
+                &mut allocator,
+                remaining,
+                remaining_layout.clone()
+            );
         }
     }
 

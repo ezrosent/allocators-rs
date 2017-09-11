@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Added `commit` and `uncommit` methods on Windows
 - Added the ability to configure whether `alloc` commits memory
 - Added documentation about instruction cache incoherency
+- Added support for full Alloc API (`shrink_in_place`, `grow_in_place`, `realloc`)
+    - In Linux, these functions can use `mremap` to grow/shrink beyond the size of a the pagesize
 
 ### Removed
 - Removed `commit` method on on Linux and Mac
