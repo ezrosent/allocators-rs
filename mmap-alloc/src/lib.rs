@@ -295,6 +295,56 @@ impl MapAlloc {
         map(size, self.perms, self.commit, self.huge_pagesize).and_then(f)
     }
 
+    #[cfg(target_os = "linux")]
+    unsafe fn realloc_helper(&self, old_ptr: *mut u8, old_size: usize, new_size: usize) -> Option<*mut u8> {
+        // Since allocators in Rust are not allowed to return null pointers, but it may be valid for
+        // mremap to return memory starting at null, we have to handle that case. We
+        // do this by checking for null, and if we find that map has returned null, we create a
+        // new mapping, and mremap the data onto that new mapping, and try to map a new empty page
+        // at address 0. Since we leave the page at 0 mapped, future calls should never return null.
+        // Note that this leaks memory since we never unmap that page, but this isn't a big deal -
+        // since we never write to it, it will remain uncommitted and will thus not consume any
+        // physical memory.
+        let f = |ptr: *mut u8| if ptr.is_null() {
+            let new_ptr = map(new_size, self.perms, false, self.huge_pagesize)
+                .expect("Not enough virtual memory to make new mapping");
+            debug_assert!(!new_ptr.is_null(),
+                "we have an open mapping on null, new mapping should never be null");
+
+            let move_result = libc::mremap(
+                ptr::null_mut(),
+                new_size,
+                new_size,
+                libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+                new_ptr
+            );
+            if move_result == libc::MAP_FAILED {
+                panic!("Unable to move mapping: {}", errno());
+            }
+
+            let pagesize = sysconf::page::pagesize();
+            let null_map = libc::mmap(
+                ptr::null_mut(),
+                pagesize,
+                libc::PROT_NONE,
+                libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                -1,
+                0
+            );
+            // ignore errors creating the new map at null
+            if null_map.is_null() {
+                // a) Make it more likely that the kernel will not keep the page backed by physical
+                // memory and, b) make it so that an access to that range will result in a segfault to
+                // make other bugs easier to detect.
+                mark_unused(ptr::null_mut(), pagesize);
+            }
+            new_ptr
+        } else {
+            ptr
+        };
+        remap(old_ptr, old_size, new_size, false).map(f)
+    }
+
     /// Commits an existing allocated object.
     ///
     /// `commit` moves the given object into the committed state. After `commit` has returned, the
@@ -395,8 +445,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         if old_size == new_size {
             return Ok(ptr);
         }
-        match remap(ptr, layout.size(), new_size, false) {
-            Some(ptr) if ptr.is_null() => panic!("mremap returned a null mapping"),
+        match self.realloc_helper(ptr, old_size, new_size) {
             Some(ptr) => Ok(ptr),
             None => Err(AllocErr::Exhausted { request: new_layout }),
         }
@@ -416,7 +465,6 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             return Ok(());
         }
         match remap(ptr, old_size, new_size, true) {
-            Some(new_ptr) if new_ptr.is_null() => panic!("mremap returned a null mapping"),
             Some(new_ptr) => {
                 debug_assert_eq!(new_ptr, ptr);
                 Ok(())
