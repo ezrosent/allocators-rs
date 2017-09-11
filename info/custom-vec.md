@@ -1,7 +1,7 @@
 # Fun with the Rust `Alloc` trait
 
-This post goes through the new Rust allocation infrastructure, including an
-example of a `Vec` type with a custom allocator.
+This post gives a brief tour of Rust's new allocation interface, and some
+experiments with a custom `Vec` implementation.
 
 ## Allocation in Rust
 
@@ -69,25 +69,27 @@ called `AVec`.
 
 ## Performance
 
-**Warning**: These numbers appear to stress the `mmap` implementation in
-[Windows Subsystem for Linux](https://blogs.msdn.microsoft.com/commandline/learn-about-bash-on-windows-subsystem-for-linux/)
-(WSL)'s for benchmarks with larger objects. As such, the numbers may not easily
-transfer to other systems.  We benchmarked 3 separate `Vec` types:
+> **Warning**: These numbers appear to stress the `mmap` implementation in
+> [Windows Subsystem for Linux](https://blogs.msdn.microsoft.com/commandline/learn-about-bash-on-windows-subsystem-for-linux/)
+> (WSL) for benchmarks with larger objects. As such, the numbers may not easily
+> transfer to other systems. 
+
+This performance evaluation includes 3 separate `Vec` types:
 
 1. Rust's native `Vec` (suffix `_vec`)
-2. `AVec` parameterized on `Heap`  (suffix `_avec_heap`)
-3. `AVec` parameterized on the rust-specific `elfmalloc` (suffix `_avec_elf`)
+2. `AVec` instantiated with `Heap`  (suffix `_avec_heap`)
+3. `AVec` instantiated with the rust-specific `elfmalloc` (suffix `_avec_elf`)
 
 Options 1 and 2 both allocate memory using `jemalloc`. They should ideally be
 the same, but both are included in order to flag any cases in which the
-implementations of `AVec` and `Vec` might diverge. We currently benchmark 3
-workloads:
+implementations of `AVec` and `Vec` might diverge. There are currently
+measurements for 3 workloads:
 
-**PSA**: If you are ever doing operations like this in a tight loop and
-performance is a serious concern, you are probably better off calling `reserve`
-or initializing using `with_capacity` to pre-allocate all the needed space ahead
-of time. These are microbenchmarks, and as a result they do have caveats with
-regard to how they translate to impacts on real workloads.
+> **PSA**: If you are ever doing operations like this in a tight loop and
+> performance is a serious concern, you are probably better off calling `reserve`
+> or initializing using `with_capacity` to pre-allocate all the needed space ahead
+> of time. These are microbenchmarks, and as a result they do have caveats with
+> regard to how they translate to impacts on real workloads.
 
 *Workload 1: Small Allocations* This involves creating a vector and pushing 500
 `usize`s onto it. We start all vectors at size 0, so this should involve a small
@@ -110,10 +112,10 @@ benchmark-n32 bench_push_avec_heap                     4.961 us     per iteratio
 ```
 
 Here we can see that these are about the same. This makes sense: all of these
-allocations are going to be hitting thread-local caching layers and those
-data-structures seem to be fairly well-optimized in both cases. There is also
-fairly little room for improvement here: 2 microseconds for 5000 push operations
-on a processor that turbos to 2.3Ghz is pretty good.
+allocations are going to be hitting thread-local caching layers and the
+corresponding data-structures seem to be fairly well-optimized in both cases.
+There is also fairly little room for improvement here: 2 microseconds for 500
+push operations on a processor that turbos to 2.3Ghz is pretty good.
 
 *Workload 2: Medium Allocations*: This workload is very similar to the first,
 except that it starts the benchmark with a vector with 16K elements and pushes
