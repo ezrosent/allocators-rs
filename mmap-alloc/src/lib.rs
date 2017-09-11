@@ -33,7 +33,7 @@ extern crate kernel32;
 #[cfg(windows)]
 extern crate winapi;
 
-use self::alloc::allocator::{Alloc, Layout, Excess, AllocErr};
+use self::alloc::allocator::{Alloc, Layout, Excess, AllocErr, CannotReallocInPlace};
 use self::object_alloc::{Exhausted, UntypedObjectAlloc};
 use core::ptr;
 
@@ -359,18 +359,6 @@ impl MapAlloc {
 
 unsafe impl<'a> Alloc for &'a MapAlloc {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        self.alloc_excess(layout).map(|Excess(ptr, _)| ptr)
-    }
-
-    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        unmap(ptr, layout.size());
-    }
-
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        <&'a MapAlloc as Alloc>::alloc(self, layout)
-    }
-
-    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
         if layout.align() > self.pagesize {
@@ -378,10 +366,69 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         }
 
         let size = next_multiple(layout.size(), self.pagesize);
-        match self.alloc_helper(size) {
-            Some(ptr) => Ok(Excess(ptr, size)),
-            None => Err(AllocErr::Exhausted { request: layout }),
+        self.alloc_helper(size).ok_or(AllocErr::Exhausted { request: layout })
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        unmap(ptr, layout.size());
+    }
+
+    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        let max_size = next_multiple(layout.size(), self.pagesize);
+        (max_size - self.pagesize + 1, max_size)
+    }
+
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&'a MapAlloc as Alloc>::alloc(self, layout)
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn realloc(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<*mut u8, AllocErr> {
+        // alignment less than a page is fine because page-aligned objects are also aligned to
+        // any alignment less than a page
+        if new_layout.align() > self.pagesize {
+            return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
         }
+
+        let old_size = next_multiple(layout.size(), self.pagesize);
+        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        if old_size == new_size {
+            return Ok(ptr);
+        }
+        match remap(ptr, layout.size(), new_size, false) {
+            Some(ptr) if ptr.is_null() => panic!("mremap returned a null mapping"),
+            Some(ptr) => Ok(ptr),
+            None => Err(AllocErr::Exhausted { request: new_layout }),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn grow_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        // alignment less than a page is fine because page-aligned objects are also aligned to
+        // any alignment less than a page
+        if new_layout.align() > self.pagesize {
+            return Err(CannotReallocInPlace);
+        }
+
+        let old_size = next_multiple(layout.size(), self.pagesize);
+        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        if old_size == new_size {
+            return Ok(());
+        }
+        match remap(ptr, old_size, new_size, true) {
+            Some(new_ptr) if new_ptr.is_null() => panic!("mremap returned a null mapping"),
+            Some(new_ptr) => {
+                debug_assert_eq!(new_ptr, ptr);
+                Ok(())
+            }
+            None => Err(CannotReallocInPlace),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn shrink_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        // grow in place does not check if new_layout is larger than the old layout.
+        self.grow_in_place(ptr, layout, new_layout)
     }
 }
 
@@ -413,6 +460,10 @@ unsafe impl Alloc for MapAlloc {
         <&MapAlloc as Alloc>::alloc(&mut (&*self), layout)
     }
 
+    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        <&MapAlloc as Alloc>::usable_size(&(&*self), layout)
+    }
+
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         <&MapAlloc as Alloc>::dealloc(&mut (&*self), ptr, layout)
     }
@@ -423,6 +474,18 @@ unsafe impl Alloc for MapAlloc {
 
     unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
         <&MapAlloc as Alloc>::alloc_excess(&mut (&*self), layout)
+    }
+    
+    unsafe fn realloc(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<*mut u8, AllocErr> {
+        <&MapAlloc as Alloc>::realloc(&mut (&*self), ptr, layout, new_layout)
+    }
+    
+    unsafe fn grow_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        <&MapAlloc as Alloc>::grow_in_place(&mut (&*self), ptr, layout, new_layout)
+    }
+
+    unsafe fn shrink_in_place(&mut self, ptr: *mut u8, layout: Layout, new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        <&MapAlloc as Alloc>::shrink_in_place(&mut (&*self), ptr, layout, new_layout)
     }
 }
 
@@ -576,6 +639,26 @@ unsafe fn map(size: usize,
     // e.g., result in VirtualAlloc being called with invalid arguments). This isn't ideal, but
     // during debugging, error codes can be printed here, so it's not the end of the world.
     if ptr.is_null() { None } else { Some(ptr) }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn remap(ptr: *mut u8, old_size: usize, new_size: usize, in_place: bool) -> Option<*mut u8> {
+    let flags = if !in_place {
+        libc::MREMAP_MAYMOVE
+    } else {
+        0
+    };
+    let result = libc::mremap(ptr as *mut _, old_size, new_size, flags);
+    if result == libc::MAP_FAILED {
+        let err = errno();
+        if err.0 == libc::ENOMEM {
+            None
+        } else {
+            panic!("mremap failed: {}", err)
+        }
+    } else {
+        Some(result as *mut u8)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -755,6 +838,43 @@ mod tests {
             unsafe {
                 assert_eq!(*ptr.offset(i as isize), 1);
             }
+        }
+    }
+
+    #[test]
+    fn test_small_realloc() {
+        unsafe {
+            let mut allocator = MapAlloc::default();
+            let small = Layout::array::<u8>(1).unwrap();
+            let medium = Layout::array::<u8>(2048).unwrap();
+            let big = Layout::array::<u8>(4096).unwrap();
+            let ptr = <MapAlloc as Alloc>::alloc(&mut allocator, medium.clone()).unwrap();
+            allocator.shrink_in_place(ptr, medium.clone(), small.clone()).unwrap();
+            allocator.grow_in_place(ptr, small.clone(), big.clone()).unwrap();
+            let old_ptr = ptr;
+            let ptr = allocator.realloc(ptr, big.clone(), small.clone()).unwrap();
+            assert_eq!(old_ptr, ptr);
+            <MapAlloc as Alloc>::dealloc(&mut allocator, ptr, small.clone());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_large_realloc() {
+        unsafe {
+            let mut allocator = MapAlloc::default();
+            let small = Layout::array::<u8>(1).unwrap();
+            let medium = Layout::array::<u8>(allocator.pagesize * 8).unwrap();
+            let big = Layout::array::<u8>(allocator.pagesize * 16).unwrap();
+            let ptr = <MapAlloc as Alloc>::alloc(&mut allocator, big.clone()).unwrap();
+            allocator.shrink_in_place(ptr, big.clone(), small.clone()).unwrap();
+            allocator.grow_in_place(ptr, small.clone(), medium.clone()).unwrap();
+            let old_ptr = ptr;
+            let ptr = allocator.realloc(ptr, medium.clone(), small.clone()).unwrap();
+            assert_eq!(old_ptr, ptr);
+            let ptr = allocator.realloc(ptr, small.clone(), big.clone()).unwrap();
+            assert_eq!(old_ptr, ptr);
+            <MapAlloc as Alloc>::dealloc(&mut allocator, ptr, big.clone());
         }
     }
 
