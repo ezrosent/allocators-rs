@@ -1339,7 +1339,7 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
 
     /// Get more clean pages from the backing memory.
     fn refresh_pages(&mut self) {
-        const N_PAGES: isize = 16;
+        const N_PAGES: isize = 4;
         let creek = &self.creek;
         let pages = creek.carve(N_PAGES as usize).expect("out of memory!");
         let iter = (0..N_PAGES).map(|i| unsafe { pages.offset(creek.page_size() as isize * i) });

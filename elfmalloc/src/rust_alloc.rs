@@ -404,9 +404,10 @@ mod global {
     use std::thread;
     use std::cell::UnsafeCell;
 
-    type InnerAlloc = ElfMalloc<MmapSource>;
+    type Source = MmapSource;
+    type InnerAlloc = ElfMalloc<Source>;
 
-    pub type DynamicAlloc = OwnedElfMalloc<MmapSource>;
+    pub type DynamicAlloc = OwnedElfMalloc<Source>;
 
     /// A global handle that can hand out thread-local handles to the allocator.
     struct ElfCloner(InnerAlloc);
@@ -445,7 +446,7 @@ mod global {
     #[thread_local]
     static mut RUST_PTR: *mut InnerAlloc = ptr::null_mut();
 
-    /// A newtype wrapper around `ElfMalloc<MmapSource>` that sends its contents to the background
+    /// A newtype wrapper around `ElfMalloc<Source>` that sends its contents to the background
     /// thread in its destructor.
     struct ElfMallocTLS(InnerAlloc);
 
@@ -515,7 +516,7 @@ mod tests {
     #[test]
     fn basic_alloc_functionality() {
         let word_size = mem::size_of::<usize>();
-        let mut alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
+        let mut alloc = ElfMallocBuilder::default().build_owned::<SbrkSource>();
         let layouts: Vec<_> = (word_size..(8 << 10))
             .map(|size| {
                 Layout::from_size_align(size * 128, word_size).unwrap()
@@ -536,7 +537,7 @@ mod tests {
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
         const N_THREADS: usize = 64;
-        let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
+        let alloc = ElfMallocBuilder::default().build_owned::<Source>();
 
         let mut threads = Vec::new();
         for _ in 0..N_THREADS {
