@@ -13,11 +13,16 @@
 //!
 //! This module also implements additional traits from the `malloc-bind` crate.
 
+extern crate alloc;
 extern crate malloc_bind;
+extern crate libc;
 use self::alloc::allocator::{Alloc, AllocErr, Layout};
-use self::malloc_bind::{LayoutFinder, Malloc};
+use self::malloc_bind::{LayoutFinder, Malloc, MIN_ALIGN};
 use super::general::global;
 use std::mem;
+use std::intrinsics::unlikely;
+
+use self::libc::{size_t, c_void};
 
 /// A zero-sized type used for implementing `Alloc` and `LayoutFinder` for the global instance of
 /// elfmalloc.
@@ -44,8 +49,39 @@ unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
     }
 }
 
-unsafe impl Malloc for ElfMallocGlobal {}
+#[cfg(feature = "c-api")]
+unsafe impl Malloc for ElfMallocGlobal {
+    unsafe fn c_malloc(&self, size: size_t) -> *mut c_void {
+        let p = global::alloc(size as usize) as *mut c_void;
+        debug_assert_eq!((p as usize) % MIN_ALIGN,
+                         0,
+                         "object does not have the required alignment of {}: {:?}",
+                         MIN_ALIGN,
+                         p);
+        p
+    }
+    unsafe fn c_free(&self, p: *mut c_void) {
+        debug_assert_eq!((p as usize) % MIN_ALIGN,
+                         0,
+                         "object does not have the required alignment of {}: {:?}",
+                         MIN_ALIGN,
+                         p);
+        if unlikely(p.is_null()) {
+            return;
+        }
+        global::free(p as *mut u8)
+    }
+    unsafe fn c_realloc(&self, p: *mut c_void, new_size: size_t) -> *mut c_void {
+        debug_assert_eq!((p as usize) % MIN_ALIGN,
+                         0,
+                         "object does not have the required alignment of {}: {:?}",
+                         MIN_ALIGN,
+                         p);
+        global::realloc(p as *mut u8, new_size as usize) as *mut c_void
+    }
+}
 
+#[cfg(feature = "c-api")]
 unsafe impl LayoutFinder for ElfMallocGlobal {
     unsafe fn get_layout(&self, p: *mut u8) -> Layout {
         // Note that per the current implementation of malloc-bind, we could just return a dummy
