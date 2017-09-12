@@ -1,8 +1,9 @@
 // Copyright 2017 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
-// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
-// may not be copied, modified, or distributed except according to those terms.
+// Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+// the MIT license (the LICENSE-MIT file) at your option. This file may not be
+// copied, modified, or distributed except according to those terms.
 
 //! A fast concurrent memory allocator.
 //!
@@ -398,12 +399,12 @@ pub fn compute_metadata(obj_size: usize,
         debug_assert!(gran > 0);
         #[cfg_attr(feature = "cargo-clippy", allow(panic_params))]
         debug_assert!({
-            if gran == 1 {
-                padded_size.is_power_of_two()
-            } else {
-                true
-            }
-        });
+                          if gran == 1 {
+                              padded_size.is_power_of_two()
+                          } else {
+                              true
+                          }
+                      });
         // == gran
         // TODO(ezrosent): remove one of these
         let bits_per_object = padded_size >> round_up_to_shift;
@@ -490,13 +491,13 @@ pub fn compute_metadata(obj_size: usize,
     #[allow(unused)]
     let (frag, _, mut meta) = (1..(obj_size.next_power_of_two().trailing_zeros() as usize + 1))
         .map(|shift| {
-            meta_inner(obj_size,
-                       page_size,
-                       shift,
-                       local_index,
-                       cutoff_factor,
-                       usable_size)
-        })
+                 meta_inner(obj_size,
+                            page_size,
+                            shift,
+                            local_index,
+                            cutoff_factor,
+                            usable_size)
+             })
         .fold((-10.0, 1000, test_meta),
               |o1, o2| if o1.0 < o2.0 || (o1.0 - o2.0).abs() < 1e-5 && o1.1 > o2.1 {
                   o2
@@ -562,7 +563,8 @@ impl AllocIter {
            object_size: usize)
            -> AllocIter {
         unsafe {
-            let cur_word = first_bitset_word.as_ref()
+            let cur_word = first_bitset_word
+                .as_ref()
                 .expect("bitset must point to valid memory")
                 .swap(0, Ordering::Acquire);
             (*refcnt).dec_n(cur_word.count_ones() as usize);
@@ -1088,10 +1090,12 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
             .pop()
             .or_else(|| self.iter.next())
             .unwrap_or_else(|| {
-                let next_iter = self.alloc.refresh();
-                self.iter = next_iter;
-                self.iter.next().expect("New iterator should have values")
-            })
+                                let next_iter = self.alloc.refresh();
+                                self.iter = next_iter;
+                                self.iter
+                                    .next()
+                                    .expect("New iterator should have values")
+                            })
     }
 }
 
@@ -1789,7 +1793,9 @@ mod tests {
     fn obj_alloc_many_pages_single_threaded<T: 'static>() {
         let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
-        let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local();
+        let mut oa = AllocBuilder::<T>::default()
+            .page_size(4096)
+            .build_local();
         assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         // stay in a local cache
         for _ in 0..N_ITEMS {
