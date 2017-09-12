@@ -864,35 +864,30 @@ mod tests {
     }
 
     // Test that the given range is readable and initialized to zero.
-    fn test_zero_filled(ptr: *mut u8, size: usize) {
+    unsafe fn test_zero_filled(ptr: *mut u8, size: usize) {
         for i in 0..size {
-            unsafe {
-                assert_eq!(*ptr.offset(i as isize), 0);
-            }
+            assert_eq!(*ptr.offset(i as isize), 0);
         }
     }
 
     // Test that the given range is writable.
-    fn test_write(ptr: *mut u8, size: usize) {
+    unsafe fn test_write(ptr: *mut u8, size: usize) {
         for i in 0..size {
-            unsafe {
-                *ptr.offset(i as isize) = 1;
-            }
+            *ptr.offset(i as isize) = (i & 0xff) as u8;
+        }
+    }
+
+    // Test that the given range is readable, and matches data written by test_write/test_write_read
+    unsafe fn test_read(ptr: *mut u8, size: usize) {
+        for i in 0..size {
+            assert_eq!(*ptr.offset(i as isize), (i & 0xff) as u8);
         }
     }
 
     // Test that the given range is readable and writable, and that writes can be read back.
-    fn test_write_read(ptr: *mut u8, size: usize) {
-        for i in 0..size {
-            unsafe {
-                *ptr.offset(i as isize) = 1;
-            }
-        }
-        for i in 0..size {
-            unsafe {
-                assert_eq!(*ptr.offset(i as isize), 1);
-            }
-        }
+    unsafe fn test_write_read(ptr: *mut u8, size: usize) {
+        test_write(ptr, size);
+        test_read(ptr, size);
     }
 
     #[test]
@@ -903,32 +898,77 @@ mod tests {
             let medium = Layout::array::<u8>(2048).unwrap();
             let big = Layout::array::<u8>(4096).unwrap();
             let ptr = <MapAlloc as Alloc>::alloc(&mut allocator, medium.clone()).unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, medium.size());
+            test_write_read(ptr, medium.size());
             allocator.shrink_in_place(ptr, medium.clone(), small.clone()).unwrap();
+            test_read(ptr, small.size());
+            test_write(ptr, small.size());
             allocator.grow_in_place(ptr, small.clone(), big.clone()).unwrap();
+            test_read(ptr, small.size());
+            test_write_read(ptr, big.size());
             let old_ptr = ptr;
             let ptr = allocator.realloc(ptr, big.clone(), small.clone()).unwrap();
             assert_eq!(old_ptr, ptr);
+            test_read(ptr, small.size());
+            test_write_read(ptr, small.size());
             <MapAlloc as Alloc>::dealloc(&mut allocator, ptr, small.clone());
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn test_large_realloc() {
         unsafe {
             let mut allocator = MapAlloc::default();
-            let small = Layout::array::<u8>(1).unwrap();
+            let small = Layout::array::<u8>(allocator.pagesize).unwrap();
             let medium = Layout::array::<u8>(allocator.pagesize * 8).unwrap();
             let big = Layout::array::<u8>(allocator.pagesize * 16).unwrap();
-            let ptr = <MapAlloc as Alloc>::alloc(&mut allocator, big.clone()).unwrap();
-            allocator.shrink_in_place(ptr, big.clone(), small.clone()).unwrap();
-            allocator.grow_in_place(ptr, small.clone(), medium.clone()).unwrap();
+            let mut ptr = <MapAlloc as Alloc>::alloc(&mut allocator, big.clone()).unwrap();
+            test_valid_map_address(ptr);
+            test_zero_filled(ptr, big.size());
+            test_write_read(ptr, big.size());
+            if cfg!(target_os = "linux") {
+                allocator.shrink_in_place(ptr, big.clone(), small.clone()).unwrap();
+                test_read(ptr, small.size());
+                test_write(ptr, small.size());
+                allocator.grow_in_place(ptr, small.clone(), medium.clone()).unwrap();
+                test_read(ptr, small.size());
+                test_write_read(ptr, medium.size());
+            } else {
+                ptr = allocator.realloc(ptr, big.clone(), medium.clone()).unwrap();
+                test_valid_map_address(ptr);
+                test_read(ptr, medium.size());
+                test_read(ptr, medium.size());
+            }
             let old_ptr = ptr;
             let ptr = allocator.realloc(ptr, medium.clone(), small.clone()).unwrap();
-            assert_eq!(old_ptr, ptr);
+            if cfg!(target_os = "linux") {
+                assert_eq!(old_ptr, ptr);
+            }
+            test_read(ptr, small.size());
+            test_write(ptr, small.size());
             let ptr = allocator.realloc(ptr, small.clone(), big.clone()).unwrap();
-            assert_eq!(old_ptr, ptr);
-            <MapAlloc as Alloc>::dealloc(&mut allocator, ptr, big.clone());
+            if cfg!(target_os = "linux") {
+                assert_eq!(old_ptr, ptr);
+            }
+            test_read(ptr, small.size());
+            test_write_read(ptr, big.size());
+
+            // Treating the first page as its own allocation, grow that allocation to two pages.
+            // Since we know there's a second mapped page right after it, remap will be unable
+            // to simply grow the mapping in place, and will be forced to move it.
+            let remaining = ptr.offset(allocator.pagesize as isize);
+            let remaining_layout = Layout::array::<u8>(big.size() - allocator.pagesize).unwrap();
+            let new = allocator.realloc(ptr, small.clone(), medium.clone()).unwrap();
+            test_read(new, small.size());
+            test_zero_filled(new.offset(small.size() as isize), medium.size() - small.size());
+            test_read(remaining, remaining_layout.size());
+            <MapAlloc as Alloc>::dealloc(&mut allocator, new, medium.clone());
+            <MapAlloc as Alloc>::dealloc(
+                &mut allocator,
+                remaining,
+                remaining_layout.clone()
+            );
         }
     }
 
