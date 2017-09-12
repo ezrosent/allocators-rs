@@ -306,59 +306,64 @@ impl MapAlloc {
         // Since allocators in Rust are not allowed to return null pointers, but it may be valid for
         // mremap to return memory starting at null, we have to handle that case. We
         // do this by checking for null, and if we find that map has returned null, we create a
-        // new mapping, and mremap the data onto that new mapping, and try to map a new empty page
-        // at address 0. Since we leave the page at 0 mapped, future calls should never return null.
+        // new mapping, and mremap all pages after the first into that region. We store the first
+        // byte of the original map (to avoid trying to read data at NULL), and set that byte in
+        // the new mapping. Then memcpy the remainder of the page at NULL.
+        // Finally, we tell the OS that the page at NULL is unused, but do not unmap it.
+        // Since we leave the page at 0 mapped, future calls should never return null.
         // Note that this leaks memory since we never unmap that page, but this isn't a big deal -
         // since we never write to it, it will remain uncommitted and will thus not consume any
         // physical memory.
         #[cold]
-        unsafe fn fix_null(allocator: &MapAlloc, size: usize) ->  *mut u8 {
+        unsafe fn fix_null(allocator: &MapAlloc, size: usize, first_byte: u8) ->  *mut u8 {
             // First create a mapping that will serve as the destination of the remap
-            let new_ptr = map(size, allocator.perms, false, allocator.huge_pagesize)
+            let new_ptr = map(size, perms::PROT_WRITE, false, allocator.huge_pagesize)
                 .expect("Not enough virtual memory to make new mapping");
             debug_assert!(!new_ptr.is_null(),
                           "we have an open mapping on null, new mapping should never be null");
 
             // remap onto the newly-created mapping. This should never fail because the target
             // mapping already exists.
-            let move_result = libc::mremap(
-                ptr::null_mut(),
-                size,
-                size,
-                libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
-                new_ptr
-            );
-            // Should never fail: we're remapping into an existing mapping
-            assert_ne!(move_result, libc::MAP_FAILED, "Unable to move mapping: {}", errno());
-
-            // Map a singe page at 0 to ensure this doesn't happen again
-            let pagesize = sysconf::page::pagesize();
-            // TODO: Race condition if another mmap/mremap returned null after we mremaped, but before mmap
-            let null_map = libc::mmap(
-                ptr::null_mut(),
-                pagesize,
-                libc::PROT_NONE,
-                libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
-                -1,
-                0
-            );
-            // Ignore errors creating the new map at 0.
-            // This should never fail
-            if null_map.is_null() {
-                // a) Make it more likely that the kernel will not keep the page backed by physical
-                // memory and, b) make it so that an access to that range will result in a segfault to
-                // make other bugs easier to detect.
-                mark_unused(ptr::null_mut(), pagesize);
+            let move_size = size - allocator.pagesize;
+            if move_size > 0 {
+                let move_result = libc::mremap(
+                    allocator.pagesize as *mut _,
+                    size,
+                    size,
+                    libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+                    new_ptr.offset(allocator.pagesize as isize)
+                );
+                // Should never fail: we're remapping into an existing mapping
+                assert_ne!(move_result, libc::MAP_FAILED, "Unable to move mapping: {}", errno());
             }
+
+            *new_ptr = first_byte;
+            ptr::copy_nonoverlapping(ptr::null().offset(1), new_ptr.offset(1), allocator.pagesize - 1);
+            // a) Make it more likely that the kernel will not keep the page backed by physical
+            // memory and, b) make it so that an access to that range will result in a segfault to
+            // make other bugs easier to detect.
+            mark_unused(ptr::null_mut(), allocator.pagesize);
             new_ptr
         }
 
+        // in case of a null mapping, we need to be able read the first byte
+        if self.perms & perms::PROT_READ == 0 {
+            libc::mprotect(old_ptr as *mut _, self.pagesize, self.perms | perms::PROT_READ);
+        }
+        let first_byte = *old_ptr;
         remap(old_ptr, old_size, new_size, false).map(|ptr| {
-            if ptr.is_null() {
-                fix_null(self, new_size)
+            let new_ptr = if ptr.is_null() {
+                fix_null(self, new_size, first_byte)
             } else {
                 ptr
+            };
+            // if we got a null mapping, the first page was marked writable, so
+            // reset the permissions on the first page, even if we didn't have to change it to make
+            // it readable
+            if ptr.is_null() || self.perms & perms::PROT_READ == 0 {
+                libc::mprotect(new_ptr as *mut _, self.pagesize, self.perms);
             }
+            new_ptr
         })
     }
 
