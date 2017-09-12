@@ -307,7 +307,7 @@ impl MapAlloc {
         // physical memory.
         let f = |ptr: *mut u8| if ptr.is_null() {
 
-            // First create a mapping that will server as the destination of the remap
+            // First create a mapping that will serve as the destination of the remap
             let new_ptr = map(new_size, self.perms, false, self.huge_pagesize)
                 .expect("Not enough virtual memory to make new mapping");
             debug_assert!(!new_ptr.is_null(),
