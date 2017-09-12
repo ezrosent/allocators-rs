@@ -1,8 +1,9 @@
 // Copyright 2017 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
-// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
-// may not be copied, modified, or distributed except according to those terms.
+// Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+// the MIT license (the LICENSE-MIT file) at your option. This file may not be
+// copied, modified, or distributed except according to those terms.
 
 //! Some basic utilities used throughout the allocator code.
 use std::cmp;
@@ -21,9 +22,9 @@ pub mod mmap {
     pub fn fallible_map(size: usize) -> Option<*mut u8> {
         unsafe {
             if let Ok(s) = MapAllocBuilder::default()
-                .exec()
-                .build()
-                .alloc(Layout::from_size_align(size, 1).unwrap()) {
+                   .exec()
+                   .build()
+                   .alloc(Layout::from_size_align(size, 1).unwrap()) {
                 Some(s)
             } else {
                 None

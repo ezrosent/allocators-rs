@@ -3,8 +3,9 @@
 # Copyright 2017 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
-# Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
-# may not be copied, modified, or distributed except according to those terms.
+# Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+# the MIT license (the LICENSE-MIT file) at your option. This file may not be
+# copied, modified, or distributed except according to those terms.
 
 # last_modification_year <file>
 function last_modification_year {
@@ -63,6 +64,7 @@ EXIT=0
 check_comments '.rs' '//' || EXIT=1
 check_comments '.md' '<!--' || EXIT=1
 check_comments '.toml' '#' || EXIT=1
+check_comments '.yml' '#' || EXIT=1
 # In shell scripts, the copyright comment should start on line 3
 check_comments_line '.sh' '#' 3 || EXIT=1
 exit "$EXIT"

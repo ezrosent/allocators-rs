@@ -1,8 +1,9 @@
 // Copyright 2017 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
-// Licensed under the Apache License, Version 2.0 (the LICENSE file). This file
-// may not be copied, modified, or distributed except according to those terms.
+// Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+// the MIT license (the LICENSE-MIT file) at your option. This file may not be
+// copied, modified, or distributed except according to those terms.
 
 //! Implementation of general allocator routines based off of the `Slag`
 //! allocator design.
@@ -266,7 +267,8 @@ pub mod global {
                         PTR = ptr::null_mut();
                     }
                 }
-                LOCAL_DESTRUCTOR_CHAN.try_with(|chan| unsafe {
+                LOCAL_DESTRUCTOR_CHAN
+                    .try_with(|chan| unsafe {
                         let _ = chan.send(Husk::Array(ptr::read(&self.inner
                             .allocs
                             .small_objs
@@ -364,11 +366,12 @@ pub mod global {
     unsafe fn alloc_inner(size: usize) -> *mut u8 {
         #[cfg(feature = "nightly")]
         {
-            LOCAL_ELF_HEAP.try_with(|h| {
-                    let res = (*h.get()).inner.alloc(size);
-                    PTR = &mut (*h.get()).inner as *mut _;
-                    res
-                })
+            LOCAL_ELF_HEAP
+                .try_with(|h| {
+                              let res = (*h.get()).inner.alloc(size);
+                              PTR = &mut (*h.get()).inner as *mut _;
+                              res
+                          })
                 .unwrap_or_else(|_| super::large_alloc::alloc(size))
         }
 
@@ -406,13 +409,14 @@ pub mod global {
                     return (*PTR).free(item);
                 }
             }
-            LOCAL_ELF_HEAP.try_with(|h| (*h.get()).inner.free(item))
+            LOCAL_ELF_HEAP
+                .try_with(|h| (*h.get()).inner.free(item))
                 .unwrap_or_else(|_| if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
-                    super::large_alloc::free(item);
-                } else {
-                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                    let _ = chan.send(Husk::Ptr(item));
-                })
+                                    super::large_alloc::free(item);
+                                } else {
+                                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                                    let _ = chan.send(Husk::Ptr(item));
+                                })
         }
         #[cfg(not(feature = "nightly"))]
         {
@@ -587,7 +591,9 @@ struct PowersOfTwo<T> {
 
 impl Drop for DynamicAllocator {
     fn drop(&mut self) {
-        self.0.allocs.foreach(|x| unsafe { ptr::drop_in_place(x) });
+        self.0
+            .allocs
+            .foreach(|x| unsafe { ptr::drop_in_place(x) });
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
@@ -651,7 +657,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// parameters.
 #[derive(Clone)]
 pub struct DynamicAllocator(ElfMalloc<PageAlloc<Creek>,
-                                      TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
+                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -995,21 +1001,21 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = global::alloc(size * 8);
-                            write_volatile(item, 10);
-                            global::free(item);
-                        }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
+                             .name(t.to_string())
+                             .spawn(move || {
+                for size in 1..(1 << 13) {
+                    // ((1 << 9) + 1)..((1 << 18) + 1) {
+                    unsafe {
+                        let item = global::alloc(size * 8);
+                        write_volatile(item, 10);
+                        global::free(item);
                     }
-                })
-                .unwrap());
+                    if size * 8 >= (1 << 20) {
+                        return;
+                    }
+                }
+            })
+                             .unwrap());
         }
 
         for t in threads {
@@ -1053,26 +1059,29 @@ mod tests {
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
             threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || for size in 1..(1 << 13) {
-                    unsafe {
-                        let item = da.alloc(size * 8);
-                        write_bytes(item, 0xFF, size * 8);
-                        let new_item = da.aligned_realloc(item,
-                                                          size * 16,
-                                                          if size % 2 == 0 {
-                                                              8
-                                                          } else {
-                                                              size.next_power_of_two()
-                                                          });
-                        write_bytes(item.offset(size as isize * 8), 0xFE, size * 8);
-                        da.free(new_item);
-                    }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                })
-                .unwrap());
+                             .name(t.to_string())
+                             .spawn(move || for size in 1..(1 << 13) {
+                                        unsafe {
+                                            let item = da.alloc(size * 8);
+                                            write_bytes(item, 0xFF, size * 8);
+                                            let new_item =
+                                                da.aligned_realloc(item,
+                                                                   size * 16,
+                                                                   if size % 2 == 0 {
+                                                                       8
+                                                                   } else {
+                                                                       size.next_power_of_two()
+                                                                   });
+                                            write_bytes(item.offset(size as isize * 8),
+                                                        0xFE,
+                                                        size * 8);
+                                            da.free(new_item);
+                                        }
+                                        if size * 8 >= (1 << 20) {
+                                            return;
+                                        }
+                                    })
+                             .unwrap());
         }
 
         for t in threads {
@@ -1091,21 +1100,21 @@ mod tests {
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
             threads.push(thread::Builder::new()
-                .name(t.to_string())
-                .spawn(move || {
-                    for size in 1..(1 << 13) {
-                        // ((1 << 9) + 1)..((1 << 18) + 1) {
-                        unsafe {
-                            let item = da.alloc(size * 8);
-                            write_bytes(item, 0xFF, size * 8);
-                            da.free(item);
-                        }
-                        if size * 8 >= (1 << 20) {
-                            return;
-                        }
+                             .name(t.to_string())
+                             .spawn(move || {
+                for size in 1..(1 << 13) {
+                    // ((1 << 9) + 1)..((1 << 18) + 1) {
+                    unsafe {
+                        let item = da.alloc(size * 8);
+                        write_bytes(item, 0xFF, size * 8);
+                        da.free(item);
                     }
-                })
-                .unwrap());
+                    if size * 8 >= (1 << 20) {
+                        return;
+                    }
+                }
+            })
+                             .unwrap());
         }
 
         for t in threads {
