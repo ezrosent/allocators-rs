@@ -278,22 +278,28 @@ impl MapAlloc {
         // leaks memory since we never unmap that page, but this isn't a big deal - even if the
         // page is a huge page, since we never write to it, it will remain uncommitted and will
         // thus not consume any physical memory.
-        let f = |ptr: *mut u8| if ptr.is_null() {
-            let unmap_size = size - self.pagesize;
+        #[cold]
+        unsafe fn fix_null(allocator: &MapAlloc, size: usize) -> Option<*mut u8> {
+            let unmap_size = size - allocator.pagesize;
             if unmap_size > 0 {
-                unmap(self.pagesize as *mut u8, unmap_size);
+                unmap(allocator.pagesize as *mut u8, unmap_size);
             }
             // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
             // make other bugs easier to detect.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            mark_unused(ptr::null_mut(), self.pagesize);
-            self.alloc_helper(size)
-        } else {
-            Some(ptr)
-        };
+            mark_unused(ptr::null_mut(), allocator.pagesize);
+            allocator.alloc_helper(size)
+
+        }
         // NOTE: self.commit is guaranteed to be false on Mac.
-        map(size, self.perms, self.commit, self.huge_pagesize).and_then(f)
+        map(size, self.perms, self.commit, self.huge_pagesize).and_then(|ptr| {
+            if ptr.is_null() {
+                fix_null(self, size)
+            } else {
+                Some(ptr)
+            }
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -306,20 +312,20 @@ impl MapAlloc {
         // Note that this leaks memory since we never unmap that page, but this isn't a big deal -
         // since we never write to it, it will remain uncommitted and will thus not consume any
         // physical memory.
-        let f = |ptr: *mut u8| if ptr.is_null() {
-
+        #[cold]
+        unsafe fn fix_null(allocator: &MapAlloc, size: usize) ->  *mut u8 {
             // First create a mapping that will serve as the destination of the remap
-            let new_ptr = map(new_size, self.perms, false, self.huge_pagesize)
+            let new_ptr = map(size, allocator.perms, false, allocator.huge_pagesize)
                 .expect("Not enough virtual memory to make new mapping");
             debug_assert!(!new_ptr.is_null(),
-                "we have an open mapping on null, new mapping should never be null");
+                          "we have an open mapping on null, new mapping should never be null");
 
             // remap onto the newly-created mapping. This should never fail because the target
             // mapping already exists.
             let move_result = libc::mremap(
                 ptr::null_mut(),
-                new_size,
-                new_size,
+                size,
+                size,
                 libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
                 new_ptr
             );
@@ -346,10 +352,15 @@ impl MapAlloc {
                 mark_unused(ptr::null_mut(), pagesize);
             }
             new_ptr
-        } else {
-            ptr
-        };
-        remap(old_ptr, old_size, new_size, false).map(f)
+        }
+
+        remap(old_ptr, old_size, new_size, false).map(|ptr| {
+            if ptr.is_null() {
+                fix_null(self, new_size)
+            } else {
+                ptr
+            }
+        })
     }
 
     /// Commits an existing allocated object.
