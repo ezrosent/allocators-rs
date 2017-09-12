@@ -31,11 +31,17 @@ nightly = []
 local_cache = []
 use_default_allocator = []
 print_stats = ["nightly"]
+# Implement the C allocation API (malloc, free, etc) by implementing the
+# malloc-bind crate's Malloc trait. This feature will enable certain
+# optimizations that will make the C API faster but result in worse memory
+# usage for the Rust API (the Alloc trait).
+c-api = ["nightly"]
 
 [dependencies]
 bagpipe = "0.1.0"
 bsalloc = "0.1.0"
 lazy_static = "0.2"
+libc = "0.2"
 log = "0.3.8"
 malloc-bind = { path = "../malloc-bind" }
 mmap-alloc = { path = "../mmap-alloc" }
