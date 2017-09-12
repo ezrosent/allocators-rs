@@ -329,8 +329,8 @@ impl MapAlloc {
             if move_size > 0 {
                 let move_result = libc::mremap(
                     allocator.pagesize as *mut _,
-                    size,
-                    size,
+                    move_size,
+                    move_size,
                     libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
                     new_ptr.offset(allocator.pagesize as isize)
                 );
