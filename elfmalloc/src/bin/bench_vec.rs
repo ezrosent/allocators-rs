@@ -42,6 +42,9 @@ impl Timer {
     fn new() -> Self {
         Timer::default()
     }
+    fn reset(&mut self) {
+        *self = Timer::new();
+    }
     fn stop(&mut self) {
         let cur_elapsed = self.start.elapsed();
         self.elapsed += cur_elapsed;
@@ -63,7 +66,7 @@ impl Timer {
 fn run_parallel_bench<A: Clone + Send + 'static>(
     params: A,
     threads: usize,
-    work: fn(A, &mut Timer),
+    work: fn(A, &mut Timer) -> Vec<f64>,
 ) -> Vec<f64> {
     let b = Arc::new(Barrier::new(threads + 1));
     let threads: Vec<_> = (0..threads)
@@ -73,16 +76,19 @@ fn run_parallel_bench<A: Clone + Send + 'static>(
             thread::spawn(move || {
                 b.wait();
                 let mut t = Timer::new();
-                work(p, &mut t);
-                t.elapsed_ns() as f64
+                work(p, &mut t)
             })
         })
         .collect();
     b.wait();
-    threads
-        .into_iter()
-        .map(|j| j.join().expect("threads should exit successfully"))
-        .collect()
+    let mut res = Vec::new();
+    for t in threads.into_iter().map(|j| {
+        j.join().expect("threads should exit successfully")
+    })
+    {
+        res.extend(t)
+    }
+    res
 }
 
 fn format_dur(mut nsecs: f64) -> String {
@@ -94,7 +100,7 @@ fn format_dur(mut nsecs: f64) -> String {
         format!("{:.03} ms", nsecs)
     } else if nsecs >= 1_000f64 {
         nsecs /= 1_000f64;
-        format!("{:.03} us", nsecs)
+        format!("{:.03} μs", nsecs)
     } else {
         format!("{:.03} ns", nsecs)
     }
@@ -108,18 +114,25 @@ macro_rules! create_bench {
 
     ($name:ident, $desc:expr, $param:tt ::: $pty:ty = $pval:expr, $timer:ident, $nthr:expr, $iters:expr, $work:expr) => {
         fn $name() {
-            fn inner($param: $pty, $timer: &mut Timer) {
+            fn inner($param: $pty, $timer: &mut Timer) -> Vec<f64> {
+                // warm up round;
+                let p = $work;
+                let _ = test::black_box(p);
+                let mut __samples = Vec::with_capacity($iters);
                 for _ in 0..$iters {
+                    $timer.reset();
                     let p = $work;
                     let _ = test::black_box(p);
+                    __samples.push($timer.elapsed_ns() as f64);
                 }
+                __samples
             }
             let params = $pval;
             let nthr = $nthr;
             let res = run_parallel_bench(params, nthr, inner);
             let stats = &res[..];
             println!("benchmark-n{:02} {:40} {:12} per iteration (+/- {:.02}%)", nthr, $desc,
-                     format_dur(stats.mean() / ($iters as f64)),
+                     format_dur(stats.mean()),
                      stats.median_abs_dev_pct());
         }
     };
@@ -127,64 +140,50 @@ macro_rules! create_bench {
 
 /// Group a number of benchmarks created using `create_bench` for three `Vec`-like types.
 macro_rules! bench_group {
-    ($n0:ident, $param:tt ::: $pty:ty = $pval:expr, $iters:expr, $fn:tt) => {
-        bench_group!(param $pty, $n0, $param ::: $pty = $pval, $iters, $fn);
-    };
-    (param $vty: ty, $n0:ident,
-     $param:tt ::: $pty:ty = $pval:expr, $iters:expr, $fn:tt) => {
-        fn $n0() {
+    ($name:ident, $param:tt ::: $pty:ty = $pval:expr, $iters:expr, $fn:tt) => {
+        fn $name() {
             create_bench!(v1,
-                          format!("{}_vec", stringify!($n0)),
+                          format!("{}_vec", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           1,
                           $iters,
-                          $fn::<Vec<$vty>>($param,
-                          _t));
+                          $fn::<Vec<_>>($param, _t));
             create_bench!(v1n,
-                          format!("{}_vec", stringify!($n0)),
+                          format!("{}_vec", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           num_cpus::get(),
                           $iters,
-                          $fn::<Vec<$vty>>($param,
-                          _t));
+                          $fn::<Vec<_>>($param, _t));
             create_bench!(v2,
-                          format!("{}_avec_heap", stringify!($n0)),
+                          format!("{}_avec_heap", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           1,
                           $iters,
-                          $fn::<AVec<$vty,
-                          Heap>>($param,
-                          _t));
+                          $fn::<AVec<_, Heap>>($param, _t));
             create_bench!(v2n,
-                          format!("{}_avec_heap", stringify!($n0)),
+                          format!("{}_avec_heap", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           num_cpus::get(),
                           $iters,
-                          $fn::<AVec<$vty,
-                          Heap>>($param,
-                          _t));
+                          $fn::<AVec<_, Heap>>($param, _t));
             create_bench!(v3,
-                          format!("{}_avec_elf", stringify!($n0)),
+                          format!("{}_avec_elf", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           1,
                           $iters,
-                          $fn::<AVec<$vty,
-                          SharedAlloc>>($param,
-                          _t));
+                          $fn::<AVec<_, SharedAlloc>>($param, _t));
             create_bench!(v3n,
-                          format!("{}_avec_elf", stringify!($n0)),
+                          format!("{}_avec_elf", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           num_cpus::get(),
                           $iters,
-                          $fn::<AVec<$vty,
-                          SharedAlloc>>($param,
-                          _t));
+                          $fn::<AVec<_, SharedAlloc>>($param, _t));
 
             v3();
             v3n();
@@ -204,8 +203,11 @@ fn push_noinline<T, V: VecLike<T>>(v: &mut V, t: T) {
 /// A benchmark testing smaller-sized allocations.
 fn do_push<V: VecLike<usize> + Default>(ops: usize, _timer: &mut Timer) -> V {
     let mut v = V::default();
-    for i in 0..ops {
-        push_noinline(&mut v, i);
+    for _ in 0..8 {
+        for i in 0..ops {
+            push_noinline(&mut v, i);
+        }
+        v = V::default();
     }
     v
 }
@@ -232,12 +234,12 @@ fn do_push_large<V: VecLike<[usize; 1024]> + Default>(ops: usize, _timer: &mut T
     v
 }
 
-bench_group!(bench_push, ops ::: usize = 500, 2_000_000, do_push);
-bench_group!(bench_push_medium, ops ::: usize = 500_000, 50, do_push_medium);
-bench_group!(param [usize; 1024], bench_push_large, ops ::: usize = 1_000, 50, do_push_large);
+bench_group!(bench_push, ops ::: usize = 500, 250_000, do_push);
+bench_group!(bench_push_medium, ops ::: usize = 500_000, 100, do_push_medium);
+bench_group!(bench_push_large, ops ::: usize = 1_000, 50, do_push_large);
 
 fn main() {
     bench_push();
-    bench_push_large();
     bench_push_medium();
+    bench_push_large();
 }

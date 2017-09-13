@@ -41,13 +41,14 @@
 //! interface, we simply fell back on `mmap` directly. Now that the slab subsystem has a smaller
 //! maximum size (roughly a fourth of he slab size), we want a more scalable solution for objects
 //! that are still relatively small. These medium-sized objects are instead allocated from
-//! `PageAlloc`s directly. While this can reduce the amount of reuse among larger size classes, it
-//! also lowers fragmentation and overhead due to the slag state transitions.
+//! `BagPipe`s directly. We use a tiered system of `PageAlloc`-like structures to provide
+//! size-class specific allocation for a limited number of cached objects, falling back on a global
+//! `BagPipe` that is shared among all large size classes.
 //!
-//! *Future Work*: It is worth exploring grouping some of these size classes together. For example,
-//! one could have the 256K and 512K objects share a `PageAlloc` along with some decommit rule for
-//! the 512k objects. This would be less 32-bit friendly, but it would help facilitate further
-//! memory reuse.
+//! This means that the large size classes all share the same underlying page size, meaning that it
+//! is possible to waste some virtual memory space. The good news is that the degree to which this
+//! space is wasted is configurable. Still, more work may be required for full support of the
+//! 32-bit setting.
 //!
 //! ## Large Objects
 //!
@@ -73,13 +74,123 @@ extern crate num_cpus;
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
-use super::slag::{PageAlloc, MemorySource, Metadata, RevocablePipe, compute_metadata,
-                  CoarseAllocator};
-use super::utils::{mmap, Lazy};
+use super::slag::{PageAlloc, MemorySource, Metadata, RevocablePipe, compute_metadata, SlagPipe};
+use super::utils::{mmap, Lazy, LazyInitializable};
+use super::bagpipe::bag::WeakBag;
 
 use std::cmp;
 use std::mem;
 use std::ptr;
+
+/// A shared concurrent data-structure for caching large objects.
+///
+/// A single `PageSource` is used as a backing store for several `PageFrontend`s, each with a
+/// separate object size less than or equal to the page size of `M`. This structure allows for
+/// unused pages freed from one size class to be used to service allocations in another size class.
+///
+/// The `PageSource` can be configured to decommit a portion of memory reclaimed from object
+/// classes whose size exceeds a certain threshold.
+#[derive(Clone)]
+struct PageSource<M: MemorySource> {
+    cutoff_bytes: usize,
+    target_size: usize,
+    pages: SlagPipe<u8>,
+    source: M,
+}
+
+impl<M: MemorySource> PageSource<M> {
+    fn new(
+        cutoff_bytes: usize,
+        target_size: usize,
+        pipe_size: usize,
+        page_size: usize,
+    ) -> PageSource<M> {
+        PageSource {
+            cutoff_bytes: cutoff_bytes,
+            target_size: target_size,
+            pages: SlagPipe::new_size(pipe_size),
+            source: M::new(page_size),
+        }
+    }
+
+    unsafe fn free(&mut self, p: *mut u8, old_size: usize) {
+        if self.pages.size_guess() >= self.target_size as isize {
+            mmap::unmap(p, self.source.page_size());
+            return;
+        }
+        if old_size >= self.cutoff_bytes {
+            mmap::uncommit(
+                p.offset(self.cutoff_bytes as isize),
+                self.source.page_size() - self.cutoff_bytes,
+            );
+        }
+        self.pages.push_mut(p);
+    }
+
+    unsafe fn alloc(&mut self) -> Option<*mut u8> {
+        self.pages.pop_mut().or_else(|| {
+            const NPAGES: usize = 4;
+            self.source.carve(NPAGES).and_then(|pages| {
+                for i in 1..NPAGES {
+                    let offset = (i * self.source.page_size()) as isize;
+                    self.pages.push_mut(pages.offset(offset));
+                }
+                Some(pages)
+            })
+        })
+    }
+}
+
+
+/// An allocator used for allocating large objects.
+///
+/// A `PageFrontend` is a thin wrapper around a `BagPipe`, where additional memory is acquired from
+/// a `PageSource`.
+#[derive(Clone)]
+struct PageFrontend<M: MemorySource> {
+    parent: PageSource<M>,
+    pages: SlagPipe<u8>,
+    local_size: usize,
+    max_overhead: usize,
+}
+
+impl<M: MemorySource> PageFrontend<M> {
+    fn new(
+        size: usize,
+        max_overhead: usize,
+        pipe_size: usize,
+        parent: PageSource<M>,
+    ) -> PageFrontend<M> {
+        debug_assert!(size <= parent.source.page_size());
+        PageFrontend {
+            parent: parent,
+            pages: SlagPipe::new_size(pipe_size),
+            local_size: size,
+            max_overhead: max_overhead,
+        }
+    }
+
+    unsafe fn alloc(&mut self) -> Option<*mut u8> {
+        self.pages.pop_mut().or_else(|| self.parent.alloc())
+    }
+
+    unsafe fn free(&mut self, item: *mut u8) {
+        if self.pages.size_guess() >= self.max_overhead as isize {
+            self.parent.free(item, self.local_size);
+            return;
+        }
+        self.pages.try_push_mut(item).unwrap_or_else(|_| {
+            self.parent.free(item, self.local_size);
+        })
+    }
+}
+
+impl<M: MemorySource + Clone> LazyInitializable for PageFrontend<M> {
+    type Params = (usize, usize, usize, PageSource<M>);
+    fn init(&(size, max_overhead, pipe_size, ref parent): &Self::Params) -> Self {
+        PageFrontend::new(size, max_overhead, pipe_size, parent.clone())
+    }
+}
 
 
 /// A `MemorySource` that just calls mmap. It still maintains that all pages returned by `carve`
@@ -146,7 +257,7 @@ impl MemorySource for MmapSource {
 #[derive(Clone)]
 pub struct ElfMalloc<M: MemorySource> {
     small: Multiples<ObjectAlloc<PageAlloc<M>>>,
-    large: PowersOfTwo<Lazy<PageAlloc<M>>>,
+    large: PowersOfTwo<Lazy<PageFrontend<M>>>,
 }
 
 /// Following the structure of the `general` module, we keep the underlying `ElfMalloc` struct with
@@ -222,7 +333,10 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
                     })
                     .alloc(),
             );
-            medium Ok(self.large.get_mut(l.size()).alloc());
+            medium match self.large.get_mut(l.size()).alloc() {
+                Some(p) => Ok(p),
+                None => Err(AllocErr::Exhausted { request: l }),
+            };
             large match mmap::fallible_map(l.size()) {
                 Some(p) => Ok(p),
                 None => Err(AllocErr::Exhausted { request: l }),
@@ -242,7 +356,7 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
                         // round up to nearest MULTIPLE
                         (l.size() + (MULTIPLE - 1)) & !(MULTIPLE - 1)
                     }).free(item);
-            medium self.large.get_mut(l.size()).free(item, false);
+            medium self.large.get_mut(l.size()).free(item);
             large mmap::unmap(item, l.size());)
     }
 
@@ -286,6 +400,10 @@ pub struct ElfMallocBuilder {
     max_object_size: usize,
     small_pipe_size: usize,
     large_pipe_size: usize,
+
+    large_obj_cutoff: usize,
+    large_obj_target_size: usize,
+    target_pipe_overhead: usize,
 }
 
 impl Default for ElfMallocBuilder {
@@ -298,6 +416,9 @@ impl Default for ElfMallocBuilder {
             max_object_size: 8 << 20,
             small_pipe_size: cmp::max(1, num_cpus::get() / 4),
             large_pipe_size: cmp::max(1, num_cpus::get() / 2),
+            large_obj_cutoff: 1 << 20,
+            large_obj_target_size: 1 << 12,
+            target_pipe_overhead: 16 << 20,
         }
     }
 }
@@ -360,8 +481,17 @@ impl ElfMallocBuilder {
         let next_size_class = (small_classes.max_key() + 1).next_power_of_two();
         let max_size = self.max_object_size.next_power_of_two();
         let n_classes = max_size.trailing_zeros() - next_size_class.trailing_zeros();
+        let p_source = PageSource::<M>::new(
+            self.large_obj_cutoff,
+            self.large_obj_target_size,
+            self.large_pipe_size,
+            max_size,
+        );
         let large_classes = PowersOfTwo::init(next_size_class, n_classes as usize, |size: usize| {
-            Lazy::<PageAlloc<M>>::new((size, self.target_pa_size, self.large_pipe_size))
+            let target_size: usize = cmp::max(1, self.target_pipe_overhead / size);
+            Lazy::<PageFrontend<M>>::new(
+                (size, target_size, self.small_pipe_size, p_source.clone()),
+            )
         });
         debug_assert!(small_classes.max_key().is_power_of_two());
         ElfMalloc {
@@ -516,7 +646,7 @@ mod tests {
     #[test]
     fn basic_alloc_functionality() {
         let word_size = mem::size_of::<usize>();
-        let mut alloc = ElfMallocBuilder::default().build_owned::<SbrkSource>();
+        let mut alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
         let layouts: Vec<_> = (word_size..(8 << 10))
             .map(|size| {
                 Layout::from_size_align(size * 128, word_size).unwrap()
@@ -537,7 +667,7 @@ mod tests {
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
         const N_THREADS: usize = 64;
-        let alloc = ElfMallocBuilder::default().build_owned::<Source>();
+        let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
 
         let mut threads = Vec::new();
         for _ in 0..N_THREADS {
