@@ -85,7 +85,7 @@ unsafe fn unlikely(b: bool) -> bool {
     b
 }
 
-type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>>;
+pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>>;
 pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>>;
 
 /// A generator of chunks of memory providing an `sbrk`-like interface.
