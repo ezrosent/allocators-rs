@@ -308,7 +308,8 @@ impl MapAlloc {
         // mremap to return memory starting at null, we have to handle that case. We
         // do this by checking for null, and if we find that map has returned null, we create a
         // new mapping, and mremap all pages after the first into that region. We store the first
-        // byte of the original map (to avoid trying to read data at NULL), and set that byte in
+        // byte of the original map (to avoid trying to read data at NULL,
+        // which is Undefined Behaviour for LLVM), and set that byte in
         // the new mapping. Then memcpy the remainder of the page at NULL.
         // Finally, we tell the OS that the page at NULL is unused, but do not unmap it.
         // Since we leave the page at 0 mapped, future calls should never return null.
