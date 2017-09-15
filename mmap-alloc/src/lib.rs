@@ -469,10 +469,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         if old_size == new_size {
             return Ok(ptr);
         }
-        match self.realloc_helper(ptr, old_size, new_size) {
-            Some(ptr) => Ok(ptr),
-            None => Err(AllocErr::Exhausted { request: new_layout }),
-        }
+        self.realloc_helper(ptr, old_size, new_size).ok_or(AllocErr::Exhausted { request: new_layout })
     }
 
     #[cfg(target_os = "linux")]
