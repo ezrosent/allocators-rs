@@ -66,6 +66,7 @@
 
 extern crate crossbeam;
 extern crate num_cpus;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicIsize, Ordering, fence};
 use bag::{WeakBag, SharedWeakBag, RevocableWeakBag, Revocable, PopResult, PopStatus};
@@ -75,12 +76,47 @@ use std::mem;
 pub mod queue;
 pub mod bag;
 
-#[cfg(feature="prime_schedules")]
+#[cfg(feature = "prime_schedules")]
 mod primes;
 
 // Counters for the `size_guess` protocol.
 const THRESHOLD_DIFF: isize = 4;
 const N_COUNTERS: usize = 4;
+
+pub trait BagCleanup {
+    type Item;
+    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(&self, it: I) {
+        for bag in it {
+            while let Some(p) = bag.pop() {
+                self.cleanup(p);
+            }
+        }
+    }
+
+    fn cleanup(&self, item: Self::Item);
+}
+
+#[derive(Copy, Clone)]
+pub struct DummyCleanup<T>(PhantomData<T>);
+
+impl<T> Default for DummyCleanup<T> {
+    fn default() -> DummyCleanup<T> {
+        DummyCleanup(PhantomData)
+    }
+}
+
+impl<T> BagCleanup for DummyCleanup<T> {
+    type Item = T;
+
+    #[inline(always)]
+    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(
+        &self,
+        _it: I,
+    ) {
+    }
+    #[inline(always)]
+    fn cleanup(&self, _item: Self::Item) {}
+}
 
 /// A concurrent bag data-structure built from sharding requests over
 /// other bags.
@@ -89,8 +125,11 @@ const N_COUNTERS: usize = 4;
 /// as a `SharedWeakBag` tends to perform worse. Note that this should
 /// never be used with `Arc<BagPipe>`, which will be much slower and
 /// have an increased failure rate.
-pub struct BagPipe<B: SharedWeakBag> {
-    pipes: Arc<BagPipeState<B>>,
+pub struct BagPipe<B: SharedWeakBag, Clean>
+where
+    Clean: BagCleanup<Item = B::Item>,
+{
+    pipes: Arc<BagPipeState<B, Clean>>,
     offset: usize,
     stride: usize,
     push_failures: usize,
@@ -98,7 +137,7 @@ pub struct BagPipe<B: SharedWeakBag> {
     cur_diff: isize,
 }
 
-impl<B: SharedWeakBag> Drop for BagPipe<B> {
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Drop for BagPipe<B, Clean> {
     fn drop(&mut self) {
         if self.cur_diff != 0 {
             self.push_diff();
@@ -106,7 +145,7 @@ impl<B: SharedWeakBag> Drop for BagPipe<B> {
     }
 }
 
-impl<B: SharedWeakBag> Clone for BagPipe<B> {
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Clone for BagPipe<B, Clean> {
     fn clone(&self) -> Self {
         #[cfg(feature="prime_schedules")]
         let offset = {
@@ -128,30 +167,29 @@ impl<B: SharedWeakBag> Clone for BagPipe<B> {
     }
 }
 
-impl<B: SharedWeakBag> BagPipe<B> {
-    fn push_diff(&mut self) {
-        unsafe {
-            self.pipes
-                .counters
-                .get_unchecked(self.offset % N_COUNTERS)
-                .fetch_add(self.cur_diff, Ordering::Release);
-        }
-    }
-
-    /// Create a new `BagPipe` with `size` pipes.
-    pub fn new_size(size: usize) -> Self {
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipe<B, Clean> {
+    pub fn new_size_cleanup(size: usize, clean: Clean) -> Self {
         #[cfg(feature="prime_schedules")]
         let offset = primes::get(1);
         #[cfg(not(feature="prime_schedules"))]
         let offset = 1;
         debug_assert!(size > 0);
         BagPipe {
-            pipes: Arc::new(BagPipeState::new_size(size)),
+            pipes: Arc::new(BagPipeState::new_size(size, clean)),
             offset: offset,
             stride: offset,
             push_failures: 0,
             pop_failures: 0,
             cur_diff: 0,
+        }
+    }
+
+    fn push_diff(&mut self) {
+        unsafe {
+            self.pipes
+                .counters
+                .get_unchecked(self.offset % N_COUNTERS)
+                .fetch_add(self.cur_diff, Ordering::Release);
         }
     }
 
@@ -190,15 +228,25 @@ impl<B: SharedWeakBag> BagPipe<B> {
     }
 }
 
-impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
-    type Item = B::Item;
-    fn new() -> Self {
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> Default for BagPipe<B, Clean> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> BagPipe<B, Clean> {
+    /// Create a new `BagPipe` with `size` pipes.
+    pub fn new_size(size: usize) -> Self {
+        Self::new_size_cleanup(size, Clean::default())
+    }
+
+    pub fn new() -> Self {
         #[cfg(feature="prime_schedules")]
         let offset = primes::get(1);
         #[cfg(not(feature="prime_schedules"))]
         let offset = 1;
         BagPipe {
-            pipes: Arc::new(BagPipeState::new()),
+            pipes: Arc::new(BagPipeState::new(Clean::default())),
             offset: offset,
             stride: offset,
             push_failures: 0,
@@ -206,15 +254,19 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
             cur_diff: 0,
         }
     }
+}
 
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B, Clean> {
+    type Item = B::Item;
 
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
-        match self.pipes
-                  .try_push_internal(it,
-                                     self.offset,
-                                     self.stride,
-                                     self.push_failures + 1,
-                                     false) {
+        match self.pipes.try_push_internal(
+            it,
+            self.offset,
+            self.stride,
+            self.push_failures + 1,
+            false,
+        ) {
             Ok(_) => {
                 self.push_failures >>= 1;
                 self.propagate_diff(1);
@@ -229,8 +281,11 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
     }
 
     fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
-        let res = self.pipes
-            .try_pop_internal(self.offset, self.stride, (self.pop_failures * 2) + 1);
+        let res = self.pipes.try_pop_internal(
+            self.offset,
+            self.stride,
+            (self.pop_failures * 2) + 1,
+        );
         match res {
             Err(PopStatus::TransientFailure) => {
                 self.offset += self.stride;
@@ -251,12 +306,13 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
 
     fn push_mut(&mut self, it: Self::Item) {
         if let Err(it) = self.try_push_mut(it) {
-            match self.pipes
-                      .try_push_internal(it,
-                                         self.offset,
-                                         self.stride,
-                                         self.push_failures + 1,
-                                         true) {
+            match self.pipes.try_push_internal(
+                it,
+                self.offset,
+                self.stride,
+                self.push_failures + 1,
+                true,
+            ) {
                 Ok(true) => {
                     self.push_failures >>= 1;
                 }
@@ -296,8 +352,9 @@ impl<B: SharedWeakBag> WeakBag for BagPipe<B> {
     }
 }
 
-impl<B: RevocableWeakBag> BagPipe<B>
-    where B::Item: Revocable
+impl<B: RevocableWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipe<B, Clean>
+where
+    B::Item: Revocable,
 {
     /// Attempt to revoke `it` from membership in the `BagPipe`.
     ///
@@ -312,21 +369,30 @@ impl<B: RevocableWeakBag> BagPipe<B>
     }
 }
 
-struct BagPipeState<B: SharedWeakBag> {
+
+struct BagPipeState<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> {
     all_refs: AtomicUsize,
     counters: [CachePadded<AtomicIsize>; N_COUNTERS],
     pipes: Vec<B>,
+    clean: Clean,
 }
 
-impl<B: SharedWeakBag> BagPipeState<B> {
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Drop for BagPipeState<B, Clean> {
+    fn drop(&mut self) {
+        self.clean.cleanup_all(self.pipes.iter());
+    }
+}
+
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean> {
     // Creates a new `BagPipeState` with `sz` pipes, rounded up to the
     // next power of two.
-    pub fn new_size(sz: usize) -> Self {
+    pub fn new_size(sz: usize, clean: Clean) -> Self {
         let len = sz.next_power_of_two();
         let mut res = BagPipeState {
             all_refs: AtomicUsize::new(1),
             counters: unsafe { mem::transmute([[0 as usize; 32]; N_COUNTERS]) },
             pipes: Vec::with_capacity(len),
+            clean: clean,
         };
         for _ in 0..len {
             res.pipes.push(B::new())
@@ -336,19 +402,20 @@ impl<B: SharedWeakBag> BagPipeState<B> {
     }
 
     // Creates a new `BagPipeState` with a small number of pipes.
-    pub fn new() -> Self {
-        Self::new_size(num_cpus::get() * 2)
+    pub fn new(clean: Clean) -> Self {
+        Self::new_size(num_cpus::get() * 2, clean)
     }
 
     // Attempts to push `it` down a pipe, following a schedule specified
     // by offset, allowing for at most `max_failures` failures.
-    pub fn try_push_internal(&self,
-                             it: B::Item,
-                             offset: usize,
-                             stride: usize,
-                             max_failures: usize,
-                             succeed_final: bool)
-                             -> Result<bool, B::Item> {
+    pub fn try_push_internal(
+        &self,
+        it: B::Item,
+        offset: usize,
+        stride: usize,
+        max_failures: usize,
+        succeed_final: bool,
+    ) -> Result<bool, B::Item> {
         let mut ix = offset;
         let mut remaining = max_failures;
         let len = self.pipes.len();
@@ -374,11 +441,12 @@ impl<B: SharedWeakBag> BagPipeState<B> {
         Err(cur_item)
     }
 
-    pub fn try_pop_internal(&self,
-                            offset: usize,
-                            stride: usize,
-                            max_failures: usize)
-                            -> PopResult<B::Item> {
+    pub fn try_pop_internal(
+        &self,
+        offset: usize,
+        stride: usize,
+        max_failures: usize,
+    ) -> PopResult<B::Item> {
         let mut ix = offset;
         let mut remaining = max_failures;
         let mut empties = 0;
@@ -393,8 +461,7 @@ impl<B: SharedWeakBag> BagPipeState<B> {
                 match self.pipes.get_unchecked(ix).try_pop() {
                     Ok(it) => return Ok(it),
                     Err(PopStatus::Empty) => {
-                        #[cfg(debug_assertions)]
-                        seen.push(ix);
+                        #[cfg(debug_assertions)] seen.push(ix);
                         empties += 1
                     }
                     Err(PopStatus::TransientFailure) => empties = 0,
@@ -413,13 +480,15 @@ impl<B: SharedWeakBag> BagPipeState<B> {
                     seen.sort();
                     seen.dedup();
                     let expected: Vec<usize> = (0..len).collect();
-                    assert_eq!(seen,
-                               expected,
-                               "got {:?} but expected {:?}, with offset={} and stride={}",
-                               seen,
-                               expected,
-                               offset,
-                               stride);
+                    assert_eq!(
+                        seen,
+                        expected,
+                        "got {:?} but expected {:?}, with offset={} and stride={}",
+                        seen,
+                        expected,
+                        offset,
+                        stride
+                    );
                 }
                 return Err(PopStatus::Empty);
             }

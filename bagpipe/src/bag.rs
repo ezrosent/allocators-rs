@@ -68,10 +68,10 @@ pub trait SharedWeakBag {
         let _g = epoch::pin();
         loop {
             return match self.try_pop() {
-                       Ok(it) => Some(it),
-                       Err(PopStatus::Empty) => None,
-                       Err(PopStatus::TransientFailure) => continue,
-                   };
+                Ok(it) => Some(it),
+                Err(PopStatus::Empty) => None,
+                Err(PopStatus::TransientFailure) => continue,
+            };
         }
     }
 
@@ -88,7 +88,7 @@ pub trait SharedWeakBag {
 pub trait WeakBag: Clone {
     // TODO(ezrosent): should we keep Clone here?
     type Item;
-    fn new() -> Self;
+    // fn new() -> Self;
     fn try_push_mut(&mut self, Self::Item) -> Result<(), Self::Item>;
     fn try_pop_mut(&mut self) -> PopResult<Self::Item>;
     fn push_mut(&mut self, it: Self::Item) {
@@ -102,10 +102,10 @@ pub trait WeakBag: Clone {
         let _g = epoch::pin();
         loop {
             return match self.try_pop_mut() {
-                       Ok(it) => Some(it),
-                       Err(PopStatus::Empty) => None,
-                       Err(PopStatus::TransientFailure) => continue,
-                   };
+                Ok(it) => Some(it),
+                Err(PopStatus::Empty) => None,
+                Err(PopStatus::TransientFailure) => continue,
+            };
         }
     }
 
@@ -120,17 +120,25 @@ pub trait WeakBag: Clone {
     }
 }
 
-impl<B: SharedWeakBag> WeakBag for Arc<B> {
-    type Item = B::Item;
-    fn new() -> Self {
-        Arc::new(B::new())
-    }
+pub struct ArcLike<B>(Arc<B>);
 
+impl<B> Clone for ArcLike<B> {
+    fn clone(&self) -> Self {
+        ArcLike(self.0.clone())
+    }
+}
+
+impl<B: SharedWeakBag> Default for ArcLike<B> {
+    fn default() -> Self { ArcLike(Arc::new(B::new())) }
+}
+
+impl<B: SharedWeakBag> WeakBag for ArcLike<B> {
+    type Item = B::Item;
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
-        self.try_push(it)
+        self.0.try_push(it)
     }
     fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
-        self.try_pop()
+        self.0.try_pop()
     }
 }
 
@@ -173,7 +181,8 @@ impl<T: Revocable> Revocable for *mut T {
 
 /// A `SharedWeakBag` that can attempt to revoke `push` operations.
 pub trait RevocableWeakBag: SharedWeakBag
-    where Self::Item: Revocable
+where
+    Self::Item: Revocable,
 {
     /// Attempt to remove `it` from the bag, returning `true` if successful.
     ///
