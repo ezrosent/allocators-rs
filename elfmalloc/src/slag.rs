@@ -64,7 +64,7 @@ use super::bagpipe::{BagPipe, BagCleanup};
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
 use super::utils::{mmap, LazyInitializable, OwnedArray, likely, unlikely};
 use super::alloc_type::AllocType;
-use super::sources::{MemorySource, Creek};
+use super::sources::{MemorySource, MmapSource};
 use std::marker::PhantomData;
 use std::ptr;
 use std::cmp;
@@ -154,6 +154,8 @@ pub struct Metadata {
     /// but leave a large portion of that memory unused (with the expectation that it is
     /// uncommited).
     usable_size: usize,
+
+    ty: AllocType,
 }
 
 use self::bitset::Word;
@@ -318,6 +320,7 @@ pub fn compute_metadata(
     local_index: usize,
     cutoff_factor: f64,
     usable_size: usize,
+    ty: AllocType,
 ) -> Metadata {
     // This is by far the ugliest function in this project. It is all plumbing, heuristics, and
     // other gross things.
@@ -397,12 +400,12 @@ pub fn compute_metadata(
         debug_assert!(gran > 0);
         #[cfg_attr(feature = "cargo-clippy", allow(panic_params))]
         debug_assert!({
-                          if gran == 1 {
-                              padded_size.is_power_of_two()
-                          } else {
-                              true
-                          }
-                      });
+            if gran == 1 {
+                padded_size.is_power_of_two()
+            } else {
+                true
+            }
+        });
         // == gran
         // TODO(ezrosent): remove one of these
         let bits_per_object = padded_size >> round_up_to_shift;
@@ -447,8 +450,8 @@ pub fn compute_metadata(
         // This is takes all of the space we use in this configuration and subtracts all of
         // the "cruft" that isn't used to actually store an object.
         let bs = (total_bytes(padded_size, gran, n_objects) - n_objects * padding_per_object -
-                  bitset_bytes(n_objects, gran) -
-                  slag_size() - align_padding) as f64;
+                      bitset_bytes(n_objects, gran) - slag_size() -
+                      align_padding) as f64;
         let score = if bs > usable_size as f64 { -1.0 } else { 1.0 } * bs / (usable_size as f64);
         let header_offset = slag_size() as isize;
         let n_words = bitset_bytes(n_objects, gran) / mem::size_of::<Word>();
@@ -468,6 +471,7 @@ pub fn compute_metadata(
                 local_index: local_index,
                 cutoff_objects: cmp::max(1, (n_objects as f64 * cutoff_factor) as usize),
                 usable_size: usable_size,
+                ty: AllocType::SmallSlag,
             },
         )
     }
@@ -483,6 +487,7 @@ pub fn compute_metadata(
         local_index: 0,
         cutoff_objects: 0,
         usable_size: 0,
+        ty: AllocType::SmallSlag,
     };
 
     // now we perform an exhaustive search over these elements.
@@ -518,7 +523,9 @@ pub fn compute_metadata(
         cur_bit += bits_per_object;
     }
     meta.object_mask = mask;
+    meta.ty = ty;
     trace!("created {:?} fragmentation: {:?}", meta, frag);
+
     meta
 }
 
@@ -678,7 +685,7 @@ impl Slag {
     unsafe fn init(slag: *mut Self, meta: &Metadata) {
         let slf = slag.as_mut().unwrap();
         slf.set_metadata(meta as *const _ as *mut Metadata);
-        ptr::write(&mut slf.ty, AllocType::Slag);
+        ptr::write(&mut slf.ty, meta.ty);
         slf.rc.init(meta.n_objects);
         slf.handle.store(0, Ordering::Relaxed);
         // This is scaffolding, we perform a slush_size+bits_per_word-bit rotation to compute the
@@ -1108,12 +1115,10 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
             .pop()
             .or_else(|| self.iter.next())
             .unwrap_or_else(|| {
-                                let next_iter = self.alloc.refresh();
-                                self.iter = next_iter;
-                                self.iter
-                                    .next()
-                                    .expect("New iterator should have values")
-                            })
+                let next_iter = self.alloc.refresh();
+                self.iter = next_iter;
+                self.iter.next().expect("New iterator should have values")
+            })
     }
 }
 /// A `DirtyFn` is a callback that is called upon allocating a clean page from a `PageAlloc`. It
@@ -1137,8 +1142,13 @@ impl DirtyFn for () {
 /// The use of `BagPipe` data-structures allows the `PageAlloc` to scale to many concurrent
 /// allocating and freeing threads.
 ///
-/// TODO: implement a threshold for eager uncommit in the `SlagAllocator` and propagate that to
-/// `CoarseAllocator`
+/// To support the new `AllocType`-based semantics for `elfmalloc`, a `PageAlloc` can be passed a
+/// type `ty` along with a higher requested alignment to ensure type information is propagated
+/// correctly and can be looked up from any pointer returned from the `PageAlloc`. Using these
+/// semantics (i.e. calling `new_aligned`) with a `Creek` as the underlying source is ill-advised,
+/// as a second `Creek` will be initialized in order to service higher-alignment page allocations.
+/// TODO(ezrosent): The above issue is a wart that could be mitigated by simply allowing a
+/// CoarseAllocator to report its own page size.
 #[derive(Clone)]
 pub struct PageAlloc<C: MemorySource, D = ()>
 where
@@ -1149,38 +1159,69 @@ where
     // bagpipes of byte slices of size creek.page_size
     clean: SlagPipe<u8>,
     dirty: SlagPipe<u8>,
+    aligned_source: C,
+    pages_per: usize,
+    ty: AllocType,
     _marker: PhantomData<D>,
 }
 
 impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
-    type Params = (usize, usize, usize);
-    fn init(&(page_size, target_overhead, pipe_size): &Self::Params) -> Self {
-        Self::new(page_size, target_overhead, pipe_size)
+    type Params = (usize, usize, usize, usize, AllocType);
+    fn init(&(page_size, target_overhead, pipe_size, aligned_source, ty): &Self::Params) -> Self {
+        Self::new_aligned(page_size, target_overhead, pipe_size, aligned_source, ty)
     }
 }
 
 impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     /// Create a new `PageAlloc`.
-    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize) -> Self {
+    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize, ty: AllocType) -> Self {
+        Self::new_aligned(page_size, target_overhead, pipe_size, page_size, ty)
+    }
+
+    pub fn new_aligned(
+        page_size: usize,
+        target_overhead: usize,
+        pipe_size: usize,
+        align: usize,
+        ty: AllocType,
+    ) -> Self {
+        debug_assert!(align >= page_size);
+        debug_assert!(page_size.is_power_of_two());
+        debug_assert!(align.is_power_of_two());
+        let pages_per = align / page_size;
         let clean = PageCleanup::new(page_size);
-        let mut res = PageAlloc {
+        let creek = C::new(page_size);
+        let creek_2 = if pages_per > 1 {
+            C::new(align)
+        } else {
+            creek.clone()
+        };
+        PageAlloc {
             target_overhead: target_overhead,
-            creek: C::new(page_size),
+            creek: creek,
+            pages_per: pages_per,
+            aligned_source: creek_2,
             clean: SlagPipe::new_size_cleanup(2, clean),
             dirty: SlagPipe::new_size_cleanup(pipe_size, clean),
+            ty: ty,
             _marker: PhantomData,
-        };
-        res.refresh_pages();
-        res
+        }
     }
 
     /// Get more clean pages from the backing memory.
-    fn refresh_pages(&mut self) {
-        const N_PAGES: isize = 4;
-        let creek = &self.creek;
-        let pages = creek.carve(N_PAGES as usize).expect("out of memory!");
-        let iter = (0..N_PAGES).map(|i| unsafe { pages.offset(creek.page_size() as isize * i) });
+    fn refresh_pages(&mut self) -> *mut u8 {
+        let npages = cmp::max(self.pages_per, 2);
+        let creek = &self.aligned_source;
+        let pages = creek
+            .carve(if self.pages_per == 1 { 2 } else { 1 })
+            .expect("out of memory!");
+        let page_size = self.creek.page_size();
+        unsafe { ptr::write(pages as *mut AllocType, self.ty) };
+        let iter = (1..npages).map(|i| unsafe {
+            pages.offset(page_size as isize * (i as isize))
+        });
         self.clean.bulk_add(iter);
+        pages
     }
 }
 
@@ -1196,14 +1237,12 @@ impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
             trace_event!(grabbed_dirty);
             return ptr;
         }
-        loop {
-            if let Ok(ptr) = self.clean.try_pop_mut() {
-                trace_event!(grabbed_clean);
-                D::dirty(ptr);
-                return ptr;
-            }
-            self.refresh_pages();
+        if let Ok(ptr) = self.clean.try_pop_mut() {
+            trace_event!(grabbed_clean);
+            D::dirty(ptr);
+            return ptr;
         }
+        self.refresh_pages()
     }
 
     unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
@@ -1359,7 +1398,7 @@ impl<T> AllocBuilder<T> {
 
 macro_rules! typed_wrapper {
     ($name:ident, $wrapped:tt) => {
-        pub struct $name<T>($wrapped<PageAlloc<Creek>>, PhantomData<T>);
+        pub struct $name<T>($wrapped<PageAlloc<MmapSource>>, PhantomData<T>);
         impl<T> Clone for $name<T> {
             fn clone(&self) -> Self {
                 $name(self.0.clone(), PhantomData)
@@ -1373,7 +1412,7 @@ macro_rules! typed_wrapper {
                                   eager_decommit: usize,
                                   max_objects: usize)
                 -> Self {
-                    let pa = PageAlloc::new(page_size, target_overhead, 8);
+                    let pa = PageAlloc::new(page_size, target_overhead, 8, AllocType::SmallSlag);
                     let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
                                                   cutoff_factor, eager_decommit, pa);
                     $name($wrapped::new(slag), PhantomData)
@@ -1470,6 +1509,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             index,
             cutoff_factor,
             max_objects,
+            AllocType::SmallSlag,
         )));
         let first_slag = unsafe { pa.alloc() } as *mut Slag;
         unsafe {
@@ -1648,16 +1688,18 @@ mod tests {
     #[test]
     fn metadata_basic() {
         let _ = env_logger::init();
-        compute_metadata(8, 4096, 0, 0.8, 4);
-        compute_metadata(16, 4096, 0, 0.8, 1024);
-        compute_metadata(24, 4096, 0, 0.8, 1024);
-        compute_metadata(127, 4096, 0, 0.8, 1024);
-        compute_metadata(800, 2 << 20, 0, 0.8, 32 << 10);
-        compute_metadata(514, 4096, 0, 0.8, 1024);
-        compute_metadata(513, 2 << 20, 0, 0.8, 1024);
-        compute_metadata(768, 4096, 0, 0.8, 1024);
-        compute_metadata(800, 4096, 0, 0.8, 32 << 10);
-        compute_metadata(1025, 4096, 0, 0.8, 32 << 10);
+
+        compute_metadata(8, 4096, 0, 0.8, 4, AllocType::SmallSlag);
+        compute_metadata(16, 4096, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(24, 4096, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(127, 4096, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(800, 2 << 20, 0, 0.8, 32 << 10, AllocType::SmallSlag);
+        compute_metadata(514, 4096, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(513, 2 << 20, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(768, 4096, 0, 0.8, 1024, AllocType::SmallSlag);
+        compute_metadata(800, 4096, 0, 0.8, 32 << 10, AllocType::SmallSlag);
+        compute_metadata(1025, 4096, 0, 0.8, 32 << 10, AllocType::SmallSlag);
+
     }
 
     #[test]
@@ -1691,9 +1733,7 @@ mod tests {
     fn obj_alloc_many_pages_single_threaded<T: 'static>() {
         let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
-        let mut oa = AllocBuilder::<T>::default()
-            .page_size(4096)
-            .build_local();
+        let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local();
         assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         // stay in a local cache
         for _ in 0..N_ITEMS {

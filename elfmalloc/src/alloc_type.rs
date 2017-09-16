@@ -5,8 +5,9 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AllocType {
-    Slag,
+    SmallSlag,
+    BigSlag,
     Large,
 }
