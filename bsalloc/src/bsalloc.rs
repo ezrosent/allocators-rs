@@ -10,7 +10,7 @@ use super::core::mem;
 use super::core::ptr;
 
 use super::mmap_alloc::MapAlloc;
-use super::{Alloc, Layout};
+use super::{Alloc, Layout, AllocErr};
 
 #[derive(Copy, Clone)]
 pub struct BsAlloc;
@@ -34,16 +34,15 @@ impl GlobalAllocator {
         }
     }
 
-    pub unsafe fn alloc(&self, size: usize) -> *mut u8 {
+    pub unsafe fn alloc(&self, size: usize) -> Result<*mut u8, AllocErr> {
         let mut ma = &self.ma;
         if size < self.small_objs.object_size {
-            return self.small_objs.alloc(ma);
+            self.small_objs.alloc(ma)
+        } else if size < self.large_objs.object_size {
+            self.large_objs.alloc(ma)
+        } else {
+            ma.alloc(Layout::from_size_align(size, 1).unwrap())
         }
-        if size < self.large_objs.object_size {
-            return self.large_objs.alloc(ma);
-        }
-        ma.alloc(Layout::from_size_align(size, 1).unwrap())
-            .expect("mmap should not fail")
     }
 
     pub unsafe fn free(&self, item: *mut u8, size: usize) {
@@ -93,7 +92,7 @@ macro_rules! sized_cache {
                     res
                 }
 
-                pub unsafe fn alloc(&self, mut ma: &MapAlloc) -> *mut u8 {
+                pub unsafe fn alloc(&self, mut ma: &MapAlloc) -> Result<*mut u8, AllocErr> {
                     let start = rng();
                     let mut cur_slot = start % CACHE_SIZE;
                     let stride = cur_slot * 2 + 1;
@@ -104,9 +103,9 @@ macro_rules! sized_cache {
                             cur_slot %= CACHE_SIZE;
                             continue;
                         }
-                        return p;
+                        return Ok(p);
                     }
-                    ma.alloc(self.layout.clone()).expect("mmap should not fail")
+                    ma.alloc(self.layout.clone())
                 }
 
                 pub unsafe fn free(&self, item: *mut u8, mut ma: &MapAlloc) {
