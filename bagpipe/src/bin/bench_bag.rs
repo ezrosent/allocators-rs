@@ -10,12 +10,13 @@ extern crate crossbeam;
 extern crate num_cpus;
 use crossbeam::mem::epoch;
 use crossbeam::sync::{MsQueue, TreiberStack};
-use bagpipe::bag::{WeakBag, PopStatus};
+use bagpipe::bag::{WeakBag, SharedWeakBag, PopStatus, ArcLike};
 use bagpipe::queue::{GeneralYC, YangCrummeyQueue, FAAQueueLowLevel, FAAArrayQueue};
-use bagpipe::BagPipe;
 use std::sync::{Arc, Barrier};
 use std::time;
 use std::thread;
+
+type BagPipe<T: SharedWeakBag> = bagpipe::BagPipe<T, bagpipe::DummyCleanup<T::Item>>;
 
 struct WorkloadStats {
     nthreads: usize,
@@ -51,9 +52,9 @@ fn enqueue_dequeue_pairs_usize<W>(npairs: usize,
                                   prefill_with: usize,
                                   description: String)
                                   -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static
+    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
 {
-    let wb = W::new();
+    let wb = W::default();
     for i in 0..prefill_with {
         wb.clone().push_mut(i);
     }
@@ -80,7 +81,7 @@ fn enqueue_dequeue_pairs_usize<W>(npairs: usize,
             // warm-up period
             for i in 0..(eq_per_thread / 2) {
                 bag.push_mut(tnum * npairs + i);
-                bag.try_pop_mut();
+                let _ = bag.try_pop_mut();
             }
             let start = time::Instant::now();
             for i in 0..eq_per_thread {
@@ -112,9 +113,9 @@ fn enqueue_dequeue_pairs_strong<W>(npairs: usize,
                                    prefill_with: usize,
                                    description: String)
                                    -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static
+    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
 {
-    let wb = W::new();
+    let wb = W::default();
     for i in 0..prefill_with {
         wb.clone().push_mut(i);
     }
@@ -139,7 +140,7 @@ fn enqueue_dequeue_pairs_strong<W>(npairs: usize,
             // warm-up period
             for i in 0..(eq_per_thread / 2) {
                 bag.push_mut(tnum * npairs + i);
-                bag.try_pop_mut();
+                let _ = bag.try_pop_mut();
             }
             let start = time::Instant::now();
             for i in 0..eq_per_thread {
@@ -167,9 +168,9 @@ fn producer_consumer_strong<W>(npairs: usize,
                                prefill_with: usize,
                                description: String)
                                -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static
+    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
 {
-    let wb = W::new();
+    let wb = W::default();
     for i in 0..prefill_with {
         wb.clone().push_mut(i);
     }
@@ -208,7 +209,7 @@ fn producer_consumer_strong<W>(npairs: usize,
             let _g = epoch::pin();
             lbar.wait();
             for _ in 0..(ops_per_thread / 2) {
-                bag.try_pop_mut();
+                let _ = bag.try_pop_mut();
             }
             let start = time::Instant::now();
             for _ in 0..ops_per_thread {
@@ -237,9 +238,9 @@ fn enqueue_dequeue_usize<W>(npairs: usize,
                             prefill_with: usize,
                             description: String)
                             -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static
+    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
 {
-    let wb = W::new();
+    let wb = W::default();
     for i in 0..prefill_with {
         wb.clone().push_mut(i);
     }
@@ -282,7 +283,7 @@ fn enqueue_dequeue_usize<W>(npairs: usize,
             let mut failures = 0;
             lbar.wait();
             for _ in 0..(ops_per_thread / 2) {
-                bag.try_pop_mut();
+                let _ = bag.try_pop_mut();
             }
             let start = time::Instant::now();
             for _ in 0..ops_per_thread {
@@ -334,7 +335,7 @@ macro_rules! print_bench {
         {
             let _g = epoch::pin();
             let _pref = $prefill;
-            $bench::<Arc<$ds<usize>>>(num_cpus::get()/2, $ops, _pref,
+            $bench::<ArcLike<$ds<usize>>>(num_cpus::get()/2, $ops, _pref,
             stringify!($ds).to_string()).print();
         }
     };
@@ -412,8 +413,8 @@ fn eq_prefill() {
                  1 << 10,
                  enqueue_dequeue_pairs_usize);
     print_bench!(GeneralYC, 1 << 20, 1 << 10, enqueue_dequeue_pairs_usize);
-    print_bench!(TreiberStack, 1 << 20, 1 << 10, enqueue_dequeue_pairs_usize);
-    print_bench!(MsQueue, 1 << 20, 1 << 10, enqueue_dequeue_pairs_usize);
+    // print_bench!(TreiberStack, 1 << 20, 1 << 10, enqueue_dequeue_pairs_usize);
+    // print_bench!(MsQueue, 1 << 20, 1 << 10, enqueue_dequeue_pairs_usize);
 
 }
 
@@ -426,8 +427,8 @@ fn prod_consume() {
     print_bench!(FAAArrayQueue, 1 << 20, producer_consumer_strong);
     print_bench!(YangCrummeyQueue, 1 << 20, producer_consumer_strong);
     print_bench!(GeneralYC, 1 << 20, producer_consumer_strong);
-    print_bench!(TreiberStack, 1 << 20, producer_consumer_strong);
-    print_bench!(MsQueue, 1 << 20, producer_consumer_strong);
+    // print_bench!(TreiberStack, 1 << 20, producer_consumer_strong);
+    // print_bench!(MsQueue, 1 << 20, producer_consumer_strong);
 
 
 
@@ -438,8 +439,8 @@ fn prod_consume() {
     print_bench!(FAAArrayQueue, 1 << 20, enqueue_dequeue_usize);
     print_bench!(YangCrummeyQueue, 1 << 20, enqueue_dequeue_usize);
     print_bench!(GeneralYC, 1 << 20, enqueue_dequeue_usize);
-    print_bench!(TreiberStack, 1 << 20, enqueue_dequeue_usize);
-    print_bench!(MsQueue, 1 << 20, enqueue_dequeue_usize);
+    // print_bench!(TreiberStack, 1 << 20, enqueue_dequeue_usize);
+    // print_bench!(MsQueue, 1 << 20, enqueue_dequeue_usize);
 
     println!("\nProducer-Consumer Prefilling\n");
     print_bench!(bp,
@@ -456,8 +457,8 @@ fn prod_consume() {
     print_bench!(FAAArrayQueue, 1 << 20, 1 << 10, enqueue_dequeue_usize);
     print_bench!(YangCrummeyQueue, 1 << 20, 1 << 10, enqueue_dequeue_usize);
     print_bench!(GeneralYC, 1 << 20, 1 << 10, enqueue_dequeue_usize);
-    print_bench!(TreiberStack, 1 << 20, 1 << 10, enqueue_dequeue_usize);
-    print_bench!(MsQueue, 1 << 20, 1 << 10, enqueue_dequeue_usize);
+    // print_bench!(TreiberStack, 1 << 20, 1 << 10, enqueue_dequeue_usize);
+    // print_bench!(MsQueue, 1 << 20, 1 << 10, enqueue_dequeue_usize);
 }
 
 fn main() {

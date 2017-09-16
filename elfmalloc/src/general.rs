@@ -50,7 +50,7 @@ use std::mem;
 use super::sources::{MemorySource, MmapSource};
 #[allow(unused_imports)]
 use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache,
-                  Metadata, PageAlloc, RevocablePipe, Slag};
+                  Metadata, PageAlloc, RevocablePipe, Slag, PageCleanup};
 use super::utils::{mmap, Lazy, TypedArray, unlikely, likely};
 use super::alloc_type::AllocType;
 
@@ -836,11 +836,11 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                                             cutoff_factor,
                                             u_size));
             }
-
+            let clean = PageCleanup::new(pa.backing_memory().page_size());
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
-            let params = (m_ptr, 1 << 20, pa.clone(), RevocablePipe::new_size(8));
+            let params = (m_ptr, 1 << 20, pa.clone(), RevocablePipe::new_size_cleanup(8, clean));
             ObjectAlloc::new(params)
         });
         let max_size = am.max_key();

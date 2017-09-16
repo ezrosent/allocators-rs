@@ -75,7 +75,7 @@ extern crate num_cpus;
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
-use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe};
+use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe, PageCleanup};
 use super::utils::{mmap, Lazy, LazyInitializable};
 use super::sources::MemorySource;
 use super::bagpipe::bag::WeakBag;
@@ -108,11 +108,12 @@ impl<M: MemorySource> PageSource<M> {
         pipe_size: usize,
         page_size: usize,
     ) -> PageSource<M> {
+        let m = M::new(page_size);
         PageSource {
             cutoff_bytes: cutoff_bytes,
             target_size: target_size,
-            pages: SlagPipe::new_size(pipe_size),
-            source: M::new(page_size),
+            pages: SlagPipe::new_size_cleanup(pipe_size, PageCleanup::new(m.page_size())),
+            source: m,
         }
     }
 
@@ -165,9 +166,10 @@ impl<M: MemorySource> PageFrontend<M> {
         parent: PageSource<M>,
     ) -> PageFrontend<M> {
         debug_assert!(size <= parent.source.page_size());
+        debug_assert!(size.is_power_of_two());
         PageFrontend {
             parent: parent,
-            pages: SlagPipe::new_size(pipe_size),
+            pages: SlagPipe::new_size_cleanup(pipe_size, PageCleanup::new(size)),
             local_size: size,
             max_overhead: max_overhead,
         }
@@ -417,7 +419,7 @@ impl ElfMallocBuilder {
                 meta,
                 usize::max_value(), /* no eager decommit */
                 pa.clone(),
-                RevocablePipe::new_size(self.small_pipe_size),
+                RevocablePipe::new_size_cleanup(self.small_pipe_size, PageCleanup::new(self.page_size)),
             );
             ObjectAlloc::new(params)
         });

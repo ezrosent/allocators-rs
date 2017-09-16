@@ -60,7 +60,7 @@
 use std::mem;
 use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
 use super::bagpipe::bag::{Revocable, WeakBag};
-use super::bagpipe::BagPipe;
+use super::bagpipe::{BagPipe, BagCleanup};
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
 use super::utils::{mmap, LazyInitializable, OwnedArray, likely, unlikely};
 use super::alloc_type::AllocType;
@@ -69,8 +69,27 @@ use std::marker::PhantomData;
 use std::ptr;
 use std::cmp;
 
-pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>>;
-pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>>;
+pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>, PageCleanup<T>>;
+pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>, PageCleanup<T>>;
+
+#[derive(Copy, Clone)]
+pub struct PageCleanup<T>(usize, PhantomData<T>);
+
+impl<T> PageCleanup<T> {
+    pub fn new(page_size: usize) -> PageCleanup<T> {
+        PageCleanup(page_size, PhantomData)
+    }
+}
+
+impl<T> BagCleanup for PageCleanup<T> {
+    type Item = *mut T;
+    fn cleanup(&self, it: *mut T) {
+        unsafe {
+            mmap::unmap(it as *mut u8, self.0);
+        }
+    }
+}
+
 
 /// An allocator that allocates objects at the granularity of the page size of the underlying
 /// `MemorySource`.
@@ -1143,11 +1162,12 @@ impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
 impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     /// Create a new `PageAlloc`.
     pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize) -> Self {
+        let clean = PageCleanup::new(page_size);
         let mut res = PageAlloc {
             target_overhead: target_overhead,
             creek: C::new(page_size),
-            clean: SlagPipe::new_size(2),
-            dirty: SlagPipe::new_size(pipe_size),
+            clean: SlagPipe::new_size_cleanup(2, clean),
+            dirty: SlagPipe::new_size_cleanup(pipe_size, clean),
             _marker: PhantomData,
         };
         res.refresh_pages();
@@ -1455,11 +1475,12 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         unsafe {
             Slag::init(first_slag, meta.as_ref().unwrap());
         };
+        let cleanup = PageCleanup::new(pa.backing_memory().page_size());
         SlagAllocator {
             m: meta,
             slag: first_slag,
             pages: pa,
-            available: RevocablePipe::new(),
+            available: RevocablePipe::new_size_cleanup(8, cleanup),
             eager_decommit_threshold: eager_decommit,
         }
     }
