@@ -54,12 +54,19 @@ pub mod mmap {
 // we use the unlikely intrinsic if it is available.
 
 #[cfg(feature = "nightly")]
-use std::intrinsics::unlikely;
+pub use std::intrinsics::{likely, unlikely};
 
 #[cfg(not(feature = "nightly"))]
 #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
 unsafe fn unlikely(b: bool) -> bool {
+    b
+}
+
+#[cfg(not(feature = "nightly"))]
+#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
+#[inline(always)]
+unsafe fn likely(b: bool) -> bool {
     b
 }
 

@@ -75,9 +75,11 @@ extern crate num_cpus;
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
-use super::slag::{PageAlloc, MemorySource, Metadata, RevocablePipe, compute_metadata, SlagPipe};
+use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe};
 use super::utils::{mmap, Lazy, LazyInitializable};
+use super::sources::MemorySource;
 use super::bagpipe::bag::WeakBag;
+use super::sources::MmapSource;
 
 use std::cmp;
 use std::mem;
@@ -190,66 +192,6 @@ impl<M: MemorySource + Clone> LazyInitializable for PageFrontend<M> {
     type Params = (usize, usize, usize, PageSource<M>);
     fn init(&(size, max_overhead, pipe_size, ref parent): &Self::Params) -> Self {
         PageFrontend::new(size, max_overhead, pipe_size, parent.clone())
-    }
-}
-
-
-/// A `MemorySource` that just calls mmap. It still maintains that all pages returned by `carve`
-/// are aligned to their size.
-#[derive(Copy, Clone)]
-pub struct MmapSource {
-    page_size: usize,
-}
-
-unsafe impl Send for MmapSource {}
-
-impl MemorySource for MmapSource {
-    fn new(page_size: usize) -> MmapSource {
-        MmapSource { page_size: page_size.next_power_of_two() }
-    }
-    fn page_size(&self) -> usize {
-        self.page_size
-    }
-
-    fn carve(&self, npages: usize) -> Option<*mut u8> {
-        trace!("carve({:?})", npages);
-        // faster mod for power-of-2 sizes.
-        fn mod_size(x: usize, n: usize) -> usize {
-            x & (n - 1)
-        }
-
-        // There is a faster path available when our local page size is less than or equal to the
-        // system one.
-        let system_page_size = mmap::page_size();
-        if self.page_size <= system_page_size {
-            return mmap::fallible_map(npages * self.page_size);
-        }
-        // We want to return pages aligned to our page size, which is larger than the
-        // system page size. As a result, we want to allocate an extra page to guarantee a slice of
-        // the memory that is aligned to the larger page size.
-        let target_size = npages * self.page_size;
-        let req_size = target_size + self.page_size;
-        mmap::fallible_map(req_size).and_then(|mem| {
-            let mem_num = mem as usize;
-
-            debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
-
-            // region at the end that is not needed.
-            let rem1 = mod_size(mem_num, self.page_size);
-            // region at the beginning that is not needed.
-            let rem2 = self.page_size - rem1;
-            unsafe {
-                let res = mem.offset(rem2 as isize);
-                debug_assert_eq!(mod_size(res as usize, self.page_size), 0);
-                if rem1 > 0 {
-                    mmap::unmap(res.offset(target_size as isize), rem1);
-                }
-                if rem2 > 0 {
-                    mmap::unmap(mem, rem2);
-                }
-                Some(res)
-            }
-        })
     }
 }
 

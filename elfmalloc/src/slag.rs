@@ -58,56 +58,19 @@
 //!
 //! [1]: https://arxiv.org/abs/1503.09006
 use std::mem;
-use std::sync::Arc;
 use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
 use super::bagpipe::bag::{Revocable, WeakBag};
 use super::bagpipe::BagPipe;
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
-use super::utils::{mmap, LazyInitializable, OwnedArray};
+use super::utils::{mmap, LazyInitializable, OwnedArray, likely, unlikely};
+use super::alloc_type::AllocType;
+use super::sources::{MemorySource, Creek};
 use std::marker::PhantomData;
 use std::ptr;
 use std::cmp;
 
-#[cfg(feature = "nightly")]
-use std::intrinsics::{likely, unlikely};
-
-#[cfg(not(feature = "nightly"))]
-#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-#[inline(always)]
-unsafe fn likely(b: bool) -> bool {
-    b
-}
-
-#[cfg(not(feature = "nightly"))]
-#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-#[inline(always)]
-unsafe fn unlikely(b: bool) -> bool {
-    b
-}
-
 pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>>;
 pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>>;
-
-/// A generator of chunks of memory providing an `sbrk`-like interface.
-pub trait MemorySource
-where
-    Self: Clone,
-{
-    fn new(page_size: usize) -> Self;
-    /// The smallest unit of memory that can be `carve`d.
-    fn page_size(&self) -> usize;
-    /// Return `npages` fresh pages from the `Creek`.
-    ///
-    /// Currently, there is code in this module (see the `Coalescer`) that relies on fresh pages
-    /// returned from `carve` to be filled with zeros.
-    fn carve(&self, npages: usize) -> Option<*mut u8>;
-}
-
-/// A `MemorySource` that can tell which pointers lie in a region returned by `carve`.
-pub trait MemoryBlock: MemorySource {
-    /// Is `it` a pointer to somewhere in the block of memory.
-    fn contains(&self, it: *mut u8) -> bool;
-}
 
 /// An allocator that allocates objects at the granularity of the page size of the underlying
 /// `MemorySource`.
@@ -302,14 +265,20 @@ mod ref_count {
 /// are available, along with the objects themselves. For a `Slag` `s`, the bitset corresponds to
 /// `s.meta.n_bitset_words` words in memory starting at `s.meta.bitset_offset` bytes from `s`.
 /// Similarly, `s.meta.n_objects` are stored contiguously starting at `s.meta.objects_offset`.
+#[repr(C)]
 pub struct Slag {
     /// Metadata describing how many objects are stored in the `Slag`, the page size, and the
     /// structure of the bitset.
+    ty: AllocType,
     meta: AtomicPtr<Metadata>,
     rc: RefCount,
     // for BagPipe revocation.
     handle: AtomicUsize,
-    _padding: [usize; 5],
+}
+
+#[inline]
+fn slag_size() -> usize {
+    cmp::max(mem::size_of::<Slag>(), 64)
 }
 
 impl Revocable for Slag {
@@ -354,7 +323,7 @@ pub fn compute_metadata(
     /// `alignment` bytes, given `n_objects` objects and `gran` bits per object in the bit-set.
     fn align_padding(alignment: usize, n_objects: usize, gran: usize) -> usize {
         debug_assert!(alignment.is_power_of_two());
-        let header_size = mem::size_of::<Slag>();
+        let header_size = slag_size();
         let h_bitset_size = header_size + bitset_bytes(n_objects, gran);
         let rounded = (h_bitset_size + (alignment - 1)) & !(alignment - 1);
         rounded - h_bitset_size
@@ -364,7 +333,7 @@ pub fn compute_metadata(
     /// by `gran` bits in the bit-set. This function includes the heuristic that all power-of-two
     /// sizes are aligned to their size, inserting padding accordingly.
     fn total_bytes(size: usize, gran: usize, n_objects: usize) -> usize {
-        let header_size = mem::size_of::<Slag>();
+        let header_size = slag_size();
         let padding = if size.is_power_of_two() {
             align_padding(size, n_objects, gran)
         } else {
@@ -459,10 +428,10 @@ pub fn compute_metadata(
         // This is takes all of the space we use in this configuration and subtracts all of
         // the "cruft" that isn't used to actually store an object.
         let bs = (total_bytes(padded_size, gran, n_objects) - n_objects * padding_per_object -
-                      bitset_bytes(n_objects, gran) -
-                      mem::size_of::<Slag>() - align_padding) as f64;
+                  bitset_bytes(n_objects, gran) -
+                  slag_size() - align_padding) as f64;
         let score = if bs > usable_size as f64 { -1.0 } else { 1.0 } * bs / (usable_size as f64);
-        let header_offset = mem::size_of::<Slag>() as isize;
+        let header_offset = slag_size() as isize;
         let n_words = bitset_bytes(n_objects, gran) / mem::size_of::<Word>();
         (
             score * mult,
@@ -690,6 +659,7 @@ impl Slag {
     unsafe fn init(slag: *mut Self, meta: &Metadata) {
         let slf = slag.as_mut().unwrap();
         slf.set_metadata(meta as *const _ as *mut Metadata);
+        ptr::write(&mut slf.ty, AllocType::Slag);
         slf.rc.init(meta.n_objects);
         slf.handle.store(0, Ordering::Relaxed);
         // This is scaffolding, we perform a slush_size+bits_per_word-bit rotation to compute the
@@ -1127,159 +1097,6 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
                             })
     }
 }
-
-/// Base address and size of a memory map.
-///
-/// This could also just be a `*mut [u8]`, but having two fields is more explicit. We need a new
-/// type because the `Drop` implementation calls `unmap`.
-#[derive(Debug)]
-struct MapAddr(*mut u8, usize);
-
-impl Drop for MapAddr {
-    fn drop(&mut self) {
-        use self::mmap::unmap;
-        unsafe {
-            unmap(self.0, self.1);
-        }
-    }
-}
-
-/// A large, contiguous, memory-mapped region of memory.
-///
-/// A `Creek` can be seen as a very basic memory allocator that can hand back multiples of its
-/// `page_size`. While it does not implement `free`, the programmer can still call `uncommit` or
-/// `unmap` on pages that are returned from a `Creek`. In this module, the `Creek` is used to
-/// manage the (thread-safe) introduction of fresh (clean) pages into the rest of the allocator to
-/// be used.
-///
-/// `Creek`s are initialized with a maximum size and never grow beyond that size. They are made
-/// with a particular idiom in mind in which a larger-than-physical-memory mapping is requested for
-/// the `Creek`, only a fraction of which is ever used by the running program (hence, ever backed
-/// by physical page frames).
-#[derive(Debug)]
-pub struct Creek {
-    page_size: usize,
-    /// We use a `clone`-based interface in order to facilitate passing across threads and
-    /// leveraging `Arc` to call `unmap`.
-    map_info: Arc<MapAddr>,
-    base: *mut u8,
-    bump: AtomicPtr<AtomicUsize>,
-}
-
-unsafe impl Send for MapAddr {}
-unsafe impl Sync for MapAddr {}
-unsafe impl Send for Creek {}
-unsafe impl Sync for Creek {}
-
-macro_rules! check_bump {
-    ($slf:expr) => {
-        #[cfg(debug_assertions)]
-        {
-            let bump = $slf.bump.load(Ordering::Relaxed);
-            debug_assert!(!bump.is_null());
-        }
-    };
-}
-
-impl MemorySource for Creek {
-    #[inline]
-    fn page_size(&self) -> usize {
-        check_bump!(self);
-        self.page_size
-    }
-
-    fn carve(&self, npages: usize) -> Option<*mut u8> {
-        check_bump!(self);
-        unsafe {
-            let new_bump = self.bump
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .fetch_add(npages, Ordering::Relaxed);
-            if likely((new_bump + npages) * self.page_size < self.map_info.1) {
-                Some(self.base.offset((new_bump * self.page_size) as isize))
-            } else {
-                None
-            }
-        }
-    }
-
-
-    /// Create a new `Creek` with pages of size `page_size` total heap size of `heap_size`,
-    /// optionally backed by huge pages.
-    ///
-    /// Page size and heap size should be powers of two. The allocator may want to reserve some
-    /// pages for itself (or for alignment reasons), as a result it is a good idea to have
-    /// heap_size be much larger than page_size.
-    fn new(page_size: usize) -> Self {
-        use self::mmap::fallible_map;
-        let get_heap = || {
-            let mut heap_size: usize = 2 << 40;
-            while heap_size > (1 << 30) {
-                if let Some(heap) = fallible_map(heap_size) {
-                    return (heap, heap_size);
-                }
-                heap_size /= 2;
-            }
-            panic!("unable to map heap")
-        };
-        // lots of stuff breaks if this isn't true
-        assert!(page_size.is_power_of_two());
-        assert!(page_size > mem::size_of::<usize>());
-        // first, let's grab some memory;
-        let (orig_base, heap_size) = get_heap();
-        info!("created heap of size {}", heap_size);
-        let orig_addr = orig_base as usize;
-        let (slush_addr, real_addr) = {
-            // allocate some `slush` space at the beginning of the creek. This gives us space to
-            // store the `bump` pointer. In the future, we may store more things in this slush
-            // space as well.
-            //
-            // In addition, we must ensure that pages are aligned to their size.
-            let base = if orig_addr == 0 {
-                // this is a real possibility if we are calling `mmap` directly.
-                // However, `MmapAlloc` currently handles `mmap` returning null, so this is
-                // technically a redundant check.
-                orig_addr + page_size
-            } else if orig_addr % page_size != 0 {
-                let rem = orig_addr % page_size;
-                orig_addr + (page_size - rem)
-            } else {
-                orig_addr
-            };
-            (base as *mut u8, (base + page_size) as *mut u8)
-        };
-        Creek {
-            page_size: page_size,
-            map_info: Arc::new(MapAddr(orig_base, heap_size)),
-            base: real_addr,
-            bump: AtomicPtr::new(slush_addr as *mut AtomicUsize),
-        }
-    }
-}
-
-impl MemoryBlock for Creek {
-    fn contains(&self, it: *mut u8) -> bool {
-        check_bump!(self);
-        let it_num = it as usize;
-        let base_num = self.base as usize;
-        it_num >= base_num && it_num < base_num + self.map_info.1
-    }
-}
-
-impl Clone for Creek {
-    fn clone(&self) -> Self {
-        let bump = self.bump.load(Ordering::Relaxed);
-        debug_assert!(!bump.is_null());
-        Creek {
-            page_size: self.page_size,
-            map_info: self.map_info.clone(),
-            base: self.base,
-            bump: AtomicPtr::new(bump),
-        }
-    }
-}
-
 /// A `DirtyFn` is a callback that is called upon allocating a clean page from a `PageAlloc`. It
 /// generally does nothing, but its presence in `PageAlloc` allows us to inject other callbacks for
 /// debugging or performance analysis.
