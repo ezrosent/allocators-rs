@@ -27,6 +27,8 @@ extern crate lazy_static;
 #[macro_use]
 extern crate log;
 
+mod sources;
+mod alloc_type;
 mod utils;
 #[macro_use]
 mod stats;

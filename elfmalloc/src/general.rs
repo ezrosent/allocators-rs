@@ -47,20 +47,14 @@ use std::mem;
 
 // One of MagazineCache and LocalCache is unused, depending on whether the 'local_cache' feature is
 // enabled.
+use super::sources::{MemorySource, MmapSource};
 #[allow(unused_imports)]
-use super::slag::{compute_metadata, CoarseAllocator, Creek, DirtyFn, LocalCache, MagazineCache,
-                  MemoryBlock, Metadata, PageAlloc, RevocablePipe, Slag};
-use super::utils::{mmap, Lazy, TypedArray};
+use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache,
+                  Metadata, PageAlloc, RevocablePipe, Slag};
+use super::utils::{mmap, Lazy, TypedArray, unlikely, likely};
+use super::alloc_type::AllocType;
 
-#[cfg(feature = "nightly")]
-use std::intrinsics::likely;
-
-#[cfg(not(feature = "nightly"))]
-#[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-#[inline(always)]
-fn likely(b: bool) -> bool {
-    b
-}
+type Source = MmapSource;
 
 pub mod global {
     //! A global malloc-style interface to interact with a `DynamicAllocator`. All of these
@@ -93,8 +87,8 @@ pub mod global {
     //! indicates if the current thread's value has been initialized. If this value is false, a
     //! slower fallback algorithm is used.
     #[allow(unused_imports)]
-    use super::{CoarseAllocator, Creek, DirtyFn, ElfMalloc, MemoryBlock, ObjectAlloc, PageAlloc,
-                TieredSizeClasses, TypedArray};
+    use super::{CoarseAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc, PageAlloc,
+                TieredSizeClasses, TypedArray, AllocType, get_type, Source};
     #[cfg(feature = "nightly")]
     use super::likely;
     use std::ptr;
@@ -106,12 +100,11 @@ pub mod global {
     use std::sync::Mutex;
     use std::thread;
 
-    type Block = Creek;
-    type PA = PageAlloc<Block, ()>;
+    type PA = PageAlloc<Source, ()>;
     // For debugging purposes: run a callback to eagerly dirty several pages. This is generally bad
     // for performance.
     //
-    // type PA = PageAlloc<Block, BackgroundDirty>;
+    // type PA = PageAlloc<Source, BackgroundDirty>;
 
     unsafe fn dirty_slag(mem: *mut u8) {
         trace!("dirtying {:?}", mem);
@@ -407,12 +400,15 @@ pub mod global {
             }
             LOCAL_ELF_HEAP
                 .try_with(|h| (*h.get()).inner.free(item))
-                .unwrap_or_else(|_| if !ELF_HEAP.inner.pages.backing_memory().contains(item) {
-                                    super::large_alloc::free(item);
-                                } else {
-                                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                                    let _ = chan.send(Husk::Ptr(item));
-                                })
+                .unwrap_or_else(|_| match get_type(item) {
+                    AllocType::Large => {
+                        super::large_alloc::free(item);
+                    },
+                    AllocType::Slag => {
+                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                        let _ = chan.send(Husk::Ptr(item));
+                    },
+                });
         }
         #[cfg(not(feature = "nightly"))]
         {
@@ -694,8 +690,8 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// A Dynamic memory allocator, instantiated with sane defaults for various `ElfMalloc` type
 /// parameters.
 #[derive(Clone)]
-pub struct DynamicAllocator(ElfMalloc<PageAlloc<Creek>,
-                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Creek>>>>);
+pub struct DynamicAllocator(ElfMalloc<PageAlloc<Source>,
+                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Source>>>>);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -755,15 +751,32 @@ impl Default for DynamicAllocator {
     }
 }
 
-impl<M: MemoryBlock, D: DirtyFn> ElfMalloc<PageAlloc<M, D>,
-                                           TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
+// TODO(ezrosent): move this to a type parameter when const generics are in.
+const ELFMALLOC_PAGE_SIZE: usize = 2 << 20;
+
+impl<M: MemorySource, D: DirtyFn>
+    ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
-        let pa = PageAlloc::new(1 << 21, 1 << 20, 8);
+        let pa = PageAlloc::new(ELFMALLOC_PAGE_SIZE, 1 << 20, 8);
         Self::new_internal(128 << 10, 0.6, pa, 8, 25)
     }
 }
 
-impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> Clone
+#[inline]
+unsafe fn round_to_page<T>(item: *mut T) -> *mut T {
+    ((item as usize) & !(ELFMALLOC_PAGE_SIZE-1)) as *mut T
+}
+
+#[inline]
+unsafe fn get_type(item: *mut u8) -> AllocType {
+    if unlikely(round_to_page(item) == item) {
+        AllocType::Large
+    } else {
+        *round_to_page(item as *mut AllocType)
+    }
+}
+
+impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> Clone
     for ElfMalloc<PageAlloc<M, D>, AM> {
     fn clone(&self) -> Self {
         let new_map = AM::init(self.start_from, self.n_classes, |size: usize| unsafe {
@@ -780,26 +793,24 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
 }
 
 
-unsafe fn elfmalloc_get_layout<M: MemoryBlock>(m_block: &M, item: *mut u8) -> (usize, usize) {
-    if likely(m_block.contains(item)) {
-        let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
-        (meta.object_size,
-         if meta.object_size.is_power_of_two() {
-             meta.object_size
-         } else {
-             mem::size_of::<usize>()
-         })
-    } else {
-        let (stored_size, _) = large_alloc::get_commitment(item);
-        let page_size = large_alloc::PAGE_SIZE as usize;
-        // the size stored using large_alloc is the total size of the mapping, which includes the
-        // padding page. We want to return the size usable by the caller, so we subtract the
-        // padding space.
-        (stored_size - page_size, page_size)
+unsafe fn elfmalloc_get_layout<M: MemorySource>(m_block: &M, item: *mut u8) -> (usize, usize) {
+    match get_type(item) {
+        AllocType::Slag => {
+            let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
+            (meta.object_size,
+             if meta.object_size.is_power_of_two() {
+                 meta.object_size
+             } else {
+                 mem::size_of::<usize>()
+             })
+        },
+        AllocType::Large => {
+            (large_alloc::get_size(item), mmap::page_size())
+        },
     }
 }
 
-impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
+impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>>
     ElfMalloc<PageAlloc<M, D>, AM> {
     fn new_internal(usable_size: usize,
                     cutoff_factor: f64,
@@ -862,41 +873,46 @@ impl<M: MemoryBlock, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key 
             self.free(item);
             return ptr::null_mut();
         }
-        if likely(self.pages.backing_memory().contains(item)) {
-            let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
-            let meta = slag.get_metadata();
-            let old_size = meta.object_size;
-            if old_size.is_power_of_two() && new_size <= old_size {
-                return item;
-            }
-            if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
-               new_size <= self.max_size {
-                new_size = new_size.next_power_of_two();
-            }
-            let new_memory = self.alloc(new_size);
-            ptr::copy_nonoverlapping(item, new_memory, meta.object_size);
-            self.free(item);
-            new_memory
-        } else {
-            let (size, _) = large_alloc::get_commitment(item);
-            if size >= new_size {
-                return item;
-            }
-            let new_memory = self.alloc(new_size);
-            ptr::copy_nonoverlapping(item, new_memory, size);
-            new_memory
+        match get_type(item) {
+            AllocType::Slag => {
+                let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
+                let meta = slag.get_metadata();
+                let old_size = meta.object_size;
+                if old_size.is_power_of_two() && new_size <= old_size {
+                    return item;
+                }
+                if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
+                    new_size <= self.max_size
+                    {
+                        new_size = new_size.next_power_of_two();
+                    }
+                let new_memory = self.alloc(new_size);
+                ptr::copy_nonoverlapping(item, new_memory, meta.object_size);
+                self.free(item);
+                new_memory
+            },
+            AllocType::Large => {
+                let size = large_alloc::get_size(item);
+                if size >= new_size {
+                    return item;
+                }
+                let new_memory = self.alloc(new_size);
+                ptr::copy_nonoverlapping(item, new_memory, size);
+                new_memory
+            },
         }
     }
 
     unsafe fn free(&mut self, item: *mut u8) {
-        if likely(self.pages.backing_memory().contains(item)) {
-            let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
-            self.allocs
-                .get_mut(slag.get_metadata().object_size)
-                .free(item)
-        } else {
-            large_alloc::free(item)
-        }
+        match get_type(item) {
+            AllocType::Slag => {
+                let slag = &*Slag::find(item, self.pages.backing_memory().page_size());
+                self.allocs.get_mut(slag.get_metadata().object_size).free(item)
+            },
+            AllocType::Large => {
+                large_alloc::free(item)
+            },
+        };
     }
 }
 
@@ -910,6 +926,9 @@ mod large_alloc {
     use std::collections::HashMap;
     #[cfg(test)]
     use std::cell::RefCell;
+    use std::ptr;
+    use super::{ELFMALLOC_PAGE_SIZE, round_to_page};
+    use super::super::alloc_type::AllocType;
 
     // For debugging, we keep around a thread-local map of pointers to lengths. This helps us
     // scrutinize if various header data is getting propagated correctly.
@@ -918,44 +937,51 @@ mod large_alloc {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
     use super::mmap::{map, unmap};
-    // TODO(ezrosent): sysconf
-    pub const PAGE_SIZE: isize = 4096;
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct AllocInfo {
+        ty: AllocType,
+        base: *mut u8,
+        region_size: usize,
+    }
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
-        let mem = map(size + PAGE_SIZE as usize);
-        *(mem as *mut usize) = size + PAGE_SIZE as usize;
-        let res = mem.offset(PAGE_SIZE);
+        // TODO(ezrosent) round up to page size
+        let region_size = size + ELFMALLOC_PAGE_SIZE;
+        let mem = map(region_size);
+        let res = mem.offset(ELFMALLOC_PAGE_SIZE as isize);
+        let addr = get_commitment_mut(res);
+        ptr::write(addr, AllocInfo {
+            ty: AllocType::Large,
+            base: mem,
+            region_size: region_size,
+        });
 
         // begin extra debugging information
         debug_assert!(!mem.is_null());
-        let upage = PAGE_SIZE as usize;
+        let upage: usize = 4096;
         debug_assert_eq!(mem as usize % upage, 0);
         debug_assert_eq!(res as usize % upage, 0);
-#[cfg(test)]        SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, size + PAGE_SIZE as usize));
+        #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, region_size));
         // end extra debugging information
-
         res
     }
 
     pub unsafe fn free(item: *mut u8) {
-        let base_ptr = item.offset(-PAGE_SIZE);
+        let (size, base_ptr) = get_commitment(item);
 
         // begin extra debugging information:
         #[cfg(debug_assertions)]
         {
-            use std::ptr;
             ptr::write_volatile(item, 10);
         }
-        let upage = PAGE_SIZE as usize;
-        debug_assert_eq!(item as usize % upage, 0);
-        debug_assert_eq!(base_ptr as usize % upage, 0);
         #[cfg(test)]
         {
             SEEN_PTRS.with(|hm| {
                 let mut hmap = hm.borrow_mut();
                 {
                     if let Some(len) = hmap.get(&base_ptr) {
-                        let size = *(base_ptr as *mut usize);
                         assert_eq!(*len, size);
                     }
                 }
@@ -963,14 +989,23 @@ mod large_alloc {
             });
         }
         // end extra debugging information
-
-        let size = *(base_ptr as *mut usize);
         unmap(base_ptr, size);
     }
 
-    pub unsafe fn get_commitment(item: *mut u8) -> (usize, *mut u8) {
-        let base_ptr = item.offset(-PAGE_SIZE) as *mut usize;
-        (*base_ptr, base_ptr as *mut u8)
+    pub unsafe fn get_size(item: *mut u8) -> usize {
+        let (size, _) = get_commitment(item);
+        size - ELFMALLOC_PAGE_SIZE
+    }
+
+    unsafe fn get_commitment(item: *mut u8) -> (usize, *mut u8) {
+        let meta_addr = get_commitment_mut(item);
+        let base_ptr = (*meta_addr).base;
+        let size = (*meta_addr).region_size;
+        (size, base_ptr)
+    }
+
+    unsafe fn get_commitment_mut(item: *mut u8) -> *mut AllocInfo {
+        round_to_page(item.offset(-1) as *mut AllocInfo)
     }
 }
 
@@ -999,7 +1034,7 @@ mod tests {
         });
         test_and_free(512, |size, align| assert_eq!((size, align), (512, 512)));
         test_and_free(4 << 20, |size, align| {
-            assert_eq!((size, align), (4 << 20, large_alloc::PAGE_SIZE as usize))
+            assert_eq!((size, align), (4 << 20, mmap::page_size()))
         });
     }
 
