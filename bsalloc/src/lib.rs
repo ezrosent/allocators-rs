@@ -31,7 +31,7 @@ static GLOBAL: BsAlloc = BsAlloc;
 
 unsafe impl<'a> Alloc for &'a BsAlloc {
     unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
-        Ok((*ALLOC).alloc(l.size()))
+        (*ALLOC).alloc(l.size())
     }
 
     unsafe fn dealloc(&mut self, item: *mut u8, l: Layout) {
