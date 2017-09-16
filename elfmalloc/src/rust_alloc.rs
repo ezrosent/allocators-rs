@@ -80,6 +80,7 @@ use super::utils::{mmap, Lazy, LazyInitializable};
 use super::sources::MemorySource;
 use super::bagpipe::bag::WeakBag;
 use super::sources::MmapSource;
+use super::alloc_type::AllocType;
 
 use std::cmp;
 use std::mem;
@@ -133,9 +134,9 @@ impl<M: MemorySource> PageSource<M> {
 
     unsafe fn alloc(&mut self) -> Option<*mut u8> {
         self.pages.pop_mut().or_else(|| {
-            const NPAGES: usize = 4;
-            self.source.carve(NPAGES).and_then(|pages| {
-                for i in 1..NPAGES {
+            let npages = 4;
+            self.source.carve(npages).and_then(|pages| {
+                for i in 1..npages {
                     let offset = (i * self.source.page_size()) as isize;
                     self.pages.push_mut(pages.offset(offset));
                 }
@@ -395,7 +396,7 @@ impl ElfMallocBuilder {
     }
 
     pub fn build<M: MemorySource>(&self) -> ElfMalloc<M> {
-        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size);
+        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size, AllocType::SmallSlag);
         let n_small_classes = (self.page_size / 4) / MULTIPLE;
         assert!(n_small_classes > 0);
         let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes) as
@@ -412,6 +413,7 @@ impl ElfMallocBuilder {
                         0,
                         self.reuse_threshold,
                         self.page_size,
+                        AllocType::SmallSlag,
                     ),
                 );
             }
