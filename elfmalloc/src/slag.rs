@@ -1209,13 +1209,22 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     }
 
     /// Get more clean pages from the backing memory.
+    ///
+    /// One of these pages is returned to the caller for allocation. The rest are added to the
+    /// clean `BagPipe`.
     fn refresh_pages(&mut self) -> *mut u8 {
+        // If we are using a higher alignment, just allocate a single higher-aligned page. If not,
+        // allocate two pages.
         let npages = cmp::max(self.pages_per, 2);
         let creek = &self.aligned_source;
         let pages = creek
             .carve(if self.pages_per == 1 { 2 } else { 1 })
             .expect("out of memory!");
         let page_size = self.creek.page_size();
+        // Write the required AllocType to the aligned boundary. In some settings this is
+        // unnecessary, but refresh_pages is not called in the hot path and the cost of writing
+        // additional values is trivial compared with synchronization from the BagPipe. As such, it
+        // makes sense to perform this write unconditionally.
         unsafe { ptr::write(pages as *mut AllocType, self.ty) };
         let iter = (1..npages).map(|i| unsafe {
             pages.offset(page_size as isize * (i as isize))

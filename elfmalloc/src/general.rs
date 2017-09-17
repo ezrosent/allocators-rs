@@ -51,7 +51,7 @@ use super::sources::{MemorySource, MmapSource};
 #[allow(unused_imports)]
 use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache,
                   Metadata, PageAlloc, RevocablePipe, Slag, PageCleanup};
-use super::utils::{mmap, Lazy, TypedArray, unlikely, likely};
+use super::utils::{mmap, Lazy, TypedArray, likely};
 use super::alloc_type::AllocType;
 
 type Source = MmapSource;
@@ -737,8 +737,9 @@ pub type ObjectAlloc<CA> = Lazy<LocalCache<CA>>;
 /// delgating to the `large_alloc` module for large allocations. Most of the logic occurs in its
 /// type parameters.
 struct ElfMalloc<CA: CoarseAllocator, AM: AllocMap<ObjectAlloc<CA>>> {
-    /// A global cache of pages, shared by all size classes in `allocs`.
+    /// A cache of pages for all small allocations.
     small_pages: CA,
+    /// A cache of pages for all medium allocations.
     large_pages: CA,
     /// An `AllocMap` of size classes of individual fixed-size object allocator.
     allocs: AM,
@@ -763,6 +764,9 @@ impl<M: MemorySource, D: DirtyFn>
     ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
     fn new() -> Self {
         let pa_large = PageAlloc::new(ELFMALLOC_PAGE_SIZE, 1 << 20, 8, AllocType::BigSlag);
+        // The small pages are allocated in groups where the first page is aligned to
+        // ELFMALLOC_PAGE_SIZE; this page will be stamped with AllocType::SmallSlag, allowing type
+        // lookups to work as expected.
         let pa_small = PageAlloc::new_aligned(128 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
         Self::new_internal(0.6, pa_small, pa_large, 8, 25)
     }
@@ -773,13 +777,16 @@ unsafe fn round_to_page<T>(item: *mut T) -> *mut T {
     ((item as usize) & !(ELFMALLOC_PAGE_SIZE-1)) as *mut T
 }
 
+/// We ensure that for every pointer returned from a call to `alloc`, rounding that pointer down to
+/// a 2MiB boundary yields the location of an `AllocType`. This is enforced separately in the
+/// `PageAlloc` code, the `large_alloc` code, and the `Slag` code.
+///
+/// All of this allows us to run elfmalloc with a full malloc-style interface without resorting to
+/// any sort of global ownership check on the underlying `MemorySource`. This method thus breaks
+/// our dependency on the `Creek`.
 #[inline]
 unsafe fn get_type(item: *mut u8) -> AllocType {
-    if unlikely(round_to_page(item) == item) {
-        AllocType::Large
-    } else {
-        *round_to_page(item as *mut AllocType)
-    }
+    *round_to_page(item.offset(-1) as *mut AllocType)
 }
 
 impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key = usize>> Clone

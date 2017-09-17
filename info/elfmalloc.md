@@ -25,36 +25,57 @@ indebted to various other memory allocators:
 Elfmalloc is built out of a few key abstractions. We begin with the
 lower-level aspects of memory management.
 
-### Creek
-Elfmalloc starts off by mapping a large (i.e. many terabytes) region of memory.
-It is divided into fixed-size pages. In `elfmalloc` these pages are 2 megabytes
-by default, though smaller object classes only use a small fraction of this.
+### Memory Sources
+
+Elfmalloc is parameterized on a low-level interface for acquiring memory
+from the system (e.g. Linux). This interface is called a `MemorySource`:
+
+```rust
+trait MemorySource where Self: Clone {
+    fn new(page_size: usize) -> Self;
+    /// The smallest unit of memory that can be `carve`d.
+    fn page_size(&self) -> usize;
+    /// Return `npages` fresh pages from the `Creek`, aligned to the
+    /// current source's page size.
+    fn carve(&self, npages: usize) -> Option<*mut u8>;
+}
+```
+
+Note that the source's "page size" is permitted to be larger than the underlying
+operating system's page size (4KiB on Linux). A `MemorySource` implementation
+may have to do additional work to ensure that this higher alignment is
+guaranteed.
+
+So what implements `MemorySource`? The simplest example is the `MmapSource`,
+which simply calls `mmap` under the hood, allocating sufficient slack space to
+ensure some sub-span of the returned memory is aligned to the page size.
+
+#### The Creek
+
+An older version of elfmalloc relied on a `MemorySource` that could also test
+*ownership*: one that also has a `contains` method for testing whether or not a
+pointer was allocated from that source. Doing this efficiently with the
+`MmapSource` is tough because there is no way to enforce that all pages returned
+from the source are returned from a contiguous chunk of memory. Without that
+guarantee,  some form of global bookkeeping is required to keep track of which
+regions were and were not returned from the source.
+
+We used a different solution to implement this interface: the Creek.
+
+At initialization time, a creek maps a large (i.e. many terabytes) region of
+memory.  It is divided into fixed-size pages. In `elfmalloc` these pages are 2
+megabytes by default, though smaller object classes only use a small fraction of
+this.
 
 All of this scaffolding relies on the fact that the virtual address space is
 quite large on 64-bit machines, and that memory-mapped memory can be lazily
 initialized.
 
-We encapsulate the current signature of the `Creek` within the `MemoryBlock`
-trait.
-
-```rust
-pub trait MemoryBlock
-    where Self: Clone
-{
-    fn new(page_size: usize) -> Self;
-    fn page_size(&self) -> usize;
-    fn contains(&self, it: *mut u8) -> bool;
-    fn carve(&self) -> *mut u8;
-}
-```
-
-Crucially, we need need the `contains` method to differentiate pages from the
+We required he `contains` method to differentiate pages from the
 `Creek` from ones that correspond to objects larger than the page size, which
 are `mmap`-ed directly. For the `Creek`, this is just a membership check using
-the base and maximum address of the `Creek`.
-
-*Room for Growth* One thing to explore is alternative implementations of
-`MemoryBlock` that are suitable for 32-bit machines.
+the base and maximum address of the `Creek`. We have since found a way around
+such an ownership check (see below).
 
 ### The `PageAlloc`
 
@@ -86,21 +107,23 @@ understood to be stand-ins for the machine word size):
 
 ```
  --------------------------------------------------------------------------------------------------------------------------------
-| header (192 bits) | (padding bits) | bit-set (ceil(bits per object * n_objects / 64) bits) | objects (n_objects * object_size) |
+| header (256 bits) | (padding bits) | bit-set (ceil(bits per object * n_objects / 64) bits) | objects (n_objects * object_size) |
  --------------------------------------------------------------------------------------------------------------------------------
 ```
 
-The header itself has the following layout. This header is actually a Rust
-`struct` that does not have `repr(C)`, so these can be in an arbitrary order
-(except for `claimed` and `reference count` which have a packed representation).
+The header itself has the following layout:
 
 ```
- --------------------------------------------------------------------------------------------------------
-| claimed (1 bit) | reference count (63 bits) | Metadata pointer (64 bits) | Revocation handle (64 bits) |
- --------------------------------------------------------------------------------------------------------
+ -------------------------------------------------------------------------------------------------------------------------------
+| alloc type (64 bits) | claimed (1 bit) | reference count (63 bits) | Metadata pointer (64 bits) | Revocation handle (64 bits) |
+ -------------------------------------------------------------------------------------------------------------------------------
 ```
 
 We explain each of these in turn.
+
+**The alloc type** is used to distinguish between different allocation
+subsystems in elfmalloc. This part of the algorithm is explained in greater
+detail later in this document.
 
 **The claimed bit** indicates if the slab is currently owned by a thread. Slabs
 that are owned by a particular thread cannot be inserted or removed from any of
@@ -108,7 +131,7 @@ the allocator's global data-structures. A given thread can own one slab at a
 time: it uses that slab to service allocations.
 
 **The reference count** indicates how many objects are available within the
-slab. joshlf@ has pointed out that these semantics mean this is not a reference
+slab. @joshlf has pointed out that these semantics mean this is not a reference
 count *per se*; when this reference count is 0 it means that the maximum number
 of references to this slab are held! An important detail here is that the
 claimed bit and the reference count are held in the same machine word. As a
@@ -229,8 +252,71 @@ more information on the performance trade-offs of these two approaches.
 ## General Allocation
 
 To support full generic allocation, we simply have an array of size-specific
-allocators. Each size class has its own available `Bagpipe`, but they all share
-a single page allocator. Check out `elfmalloc/src/general.rs` for more of the
-details on how we get this to work. They are not particularly interesting from
-an algorithmic perspective, but they may be helpful for someone trying to do
-something similar in Rust.
+allocators. Each size class has its own available `Bagpipe`; there are two
+over-arching `PageAlloc`s that cache pages for small and medium objects.
+Allocations that are larger than the maximum medium-sized object fall back on
+`mmap` (see the `large_alloc` module in `general.rs`). Small objects and medium
+objects have two different page sizes: this is to avoid holding megabytes of
+memory hostage if a thread is only allocating a small number of 8-byte objects.
+
+Check out `elfmalloc/src/general.rs` for more of the details on how we get this
+to work. They are not particularly interesting from an algorithmic perspective,
+but they may be helpful for someone trying to do something similar in Rust. We
+conclude with more information about allocation type metadata.
+
+### Determining Allocation Source During Deallocation
+
+Between the small, medium and large objects  there are 3 different paths that a
+call to `free` can take depending on on the object being deallocated.
+
+1. For small objects, round down to the small objects' page size and read slab
+   metadata for object size information, etc.
+2. For medium objects, do the same operation as (1), but for the medium objects'
+   page size.
+3. For large objects, look up the size of the allocation in padding.
+
+Of course, we only get a pointer when someone calls `free`. We have to figure
+out which of these paths to take. Our solution is to stash metadata about which
+path to take aligned to the medium objects' page size. Here is our metadata
+type:
+
+```rust
+pub enum AllocType {
+    // Small objects
+    SmallSlag,
+    // Medium objects
+    BigSlag,
+    // Large objects
+    Large,
+}
+```
+
+To illustrate, we will use a worked example: let the small page size be 128KiB
+and the large page size be 2MiB, with `mmap` guaranteeing allocations aligned to
+4KiB.
+
+The algorithm for looking up the free path for a pointer `p: *mut u8` is to
+round `p.offset(-1)` (`p-1` if this were C) down to the nearest 2MiB address. We
+guarantee that this address holds a pointer to the object's corresponding
+`AllocType`.
+
+
+#### How do we ensure the types are present?
+
+1. For small objects, we allocate pages in groups of 16 (1 medium-object page)
+   using a 2MiB `MemorySource` to ensure the first of these pages is aligned to
+   the proper size. We then set the beginning of this region to `SmallSlag`
+   before adding the extra pages to the `PageAlloc`'s clean `BagPipe`. We
+   declare the slab header as `repr(C)` to ensure that the slab's `AllocType`
+   field is stored first. This prevents slab initialization from clobbering the
+   alloc type field.
+
+2. Medium objects are easy: the slab initialization process will automatically
+   place an `AllocType` on the 2MiB boundary required by the protocol
+
+3. For large objects, we simply allocate an additional 2MiB of space, return
+   2MiB into the region from `malloc`, and round that address down to 2MiB to
+   store type information. It is of course possible that the returned address
+   will be 2MiB-aligned. In that case, the metadata is stored at the very start
+   of the allocated region. This edge case is the reason why we take
+   `offset(-1)` from the pointer before rounding down to the 2MiB boundary.
