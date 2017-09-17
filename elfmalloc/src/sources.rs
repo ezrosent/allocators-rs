@@ -12,10 +12,11 @@ where
     fn new(page_size: usize) -> Self;
     /// The smallest unit of memory that can be `carve`d.
     fn page_size(&self) -> usize;
-    /// Return `npages` fresh pages from the `Creek`.
+    /// Return `npages` fresh pages from the `Creek`. Each of these pages is aligned to
+    /// `page_size`.
     ///
-    /// Currently, there is code in this module (see the `Coalescer`) that relies on fresh pages
-    /// returned from `carve` to be filled with zeros.
+    /// Currently, there is code (see the `Coalescer` in the `slag` module) that relies on fresh
+    /// pages returned from `carve` to be filled with zeros.
     fn carve(&self, npages: usize) -> Option<*mut u8>;
 }
 
