@@ -1609,6 +1609,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     unsafe fn transition_full(&mut self, slag: *mut Slag, meta: &Metadata) {
         let real_size = meta.usable_size;
         if RevocablePipe::revoke(&slag) {
+            (*slag).handle.store(0, Ordering::Release);
             trace_event!(transition_full);
             self.pages.free(
                 slag as *mut u8,
