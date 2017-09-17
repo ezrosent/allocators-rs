@@ -317,6 +317,8 @@ impl MapAlloc {
         // physical memory.
         #[cold]
         unsafe fn fix_null(allocator: &MapAlloc, size: usize, first_byte: u8) ->  *mut u8 {
+            use core::cmp;
+
             // First create a mapping that will serve as the destination of the remap
             let new_ptr = map(size, perms::PROT_WRITE, false, allocator.huge_pagesize)
                 .expect("Not enough virtual memory to make new mapping");
@@ -339,7 +341,11 @@ impl MapAlloc {
             }
 
             *new_ptr = first_byte;
-            ptr::copy_nonoverlapping(ptr::null().offset(1), new_ptr.offset(1), allocator.pagesize - 1);
+            ptr::copy_nonoverlapping(
+                ptr::null().offset(1),
+                new_ptr.offset(1),
+                cmp::min(allocator.pagesize - 1, size - 1)
+            );
             // a) Make it more likely that the kernel will not keep the page backed by physical
             // memory and, b) make it so that an access to that range will result in a segfault to
             // make other bugs easier to detect.
@@ -468,7 +474,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         if old_size == new_size {
             return Ok(ptr);
         }
-        self.realloc_helper(ptr, old_size, new_size).ok_or(AllocErr::Exhausted { request: new_layout })
+        self.realloc_helper(ptr, old_size, new_layout.size()).ok_or(AllocErr::Exhausted { request: new_layout })
     }
 
     #[cfg(target_os = "linux")]
