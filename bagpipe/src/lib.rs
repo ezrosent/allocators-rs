@@ -147,6 +147,13 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Drop for BagPipe<B, Cl
 
 impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Clone for BagPipe<B, Clean> {
     fn clone(&self) -> Self {
+        // We want to ensure that a cloned Bagpipe has initialized crossbeam's TLS before it is
+        // created. This is important to avoid a reentrancy bug in elfmalloc wherein the elfmalloc
+        // TLS handle is initialized without actually calling pin() in any Bagpipe code. Once the
+        // handle for elfmalloc is initialized, reentrancy guards are no longer checked; this
+        // forces later calls to elfmalloc that require EBMR to initialize TLS, and call malloc:
+        // resulting in a recursive malloc call that blows out the stack.
+        let _ = crossbeam::mem::epoch::pin();
         #[cfg(feature="prime_schedules")]
         let offset = {
             primes::get(self.pipes.all_refs.fetch_add(1, Ordering::Relaxed) + 1)
