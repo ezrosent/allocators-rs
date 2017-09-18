@@ -59,14 +59,14 @@ pub use std::intrinsics::{likely, unlikely};
 #[cfg(not(feature = "nightly"))]
 #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
-unsafe fn unlikely(b: bool) -> bool {
+pub unsafe fn unlikely(b: bool) -> bool {
     b
 }
 
 #[cfg(not(feature = "nightly"))]
 #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
 #[inline(always)]
-unsafe fn likely(b: bool) -> bool {
+pub unsafe fn likely(b: bool) -> bool {
     b
 }
 
@@ -155,15 +155,14 @@ pub struct TypedArray<T> {
     mapped: usize,
 }
 
-pub const PAGE_SIZE: usize = 4096;
-
 impl<T> TypedArray<T> {
     pub fn new(size: usize) -> TypedArray<T> {
         use std::mem::size_of;
+        let page_size = mmap::page_size();
         let bytes = size_of::<T>() * size;
-        let rem = bytes % PAGE_SIZE;
-        let n_pages = bytes / PAGE_SIZE + cmp::min(1, rem);
-        let region_size = n_pages * PAGE_SIZE;
+        let rem = bytes % page_size;
+        let n_pages = bytes / page_size + cmp::min(1, rem);
+        let region_size = n_pages * page_size;
         let mem = mmap::map(region_size);
         TypedArray {
             data: mem as *mut T,

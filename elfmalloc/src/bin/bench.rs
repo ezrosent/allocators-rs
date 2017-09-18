@@ -427,6 +427,8 @@ macro_rules! run_bench_inner {
     ($bench:tt, $nthreads:expr, $iters:expr) => {
         let iters = $iters;
         let nthreads = $nthreads;
+        println!("global malloc");
+        $bench::<DefaultMalloc<BenchItem>>(nthreads, iters);
         println!("global slag allocator");
         $bench::<ElfGlobal<BenchItem>>(nthreads, iters);
         println!("clone-based slag allocator");
