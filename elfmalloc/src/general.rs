@@ -87,8 +87,8 @@ pub mod global {
     //! indicates if the current thread's value has been initialized. If this value is false, a
     //! slower fallback algorithm is used.
     #[allow(unused_imports)]
-    use super::{CoarseAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc, PageAlloc,
-                TieredSizeClasses, TypedArray, AllocType, get_type, Source};
+    use super::{CoarseAllocator, DynamicAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc, PageAlloc,
+                TieredSizeClasses, TypedArray, AllocType, get_type, Source, AllocMap};
     #[cfg(feature = "nightly")]
     use super::likely;
     use std::ptr;
@@ -209,116 +209,112 @@ pub mod global {
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
     struct GlobalAllocator {
-        inner: ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>,
+        inner: Option<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
     }
 
+
     unsafe impl Send for GlobalAllocator {}
+
+    struct GlobalAllocProvider {
+        inner: Option<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
+    }
+
     // We need sync to have the global allocator reference live for new threads to clone. This is
     // safe only because ElfMalloc (and PageAlloc, and TieredSizeClasses) have thread-safe clone
     // methods.
-    unsafe impl Sync for GlobalAllocator {}
-    impl GlobalAllocator {
-        fn new() -> GlobalAllocator {
-            GlobalAllocator { inner: ElfMalloc::new() }
+    unsafe impl Sync for GlobalAllocProvider {}
+    impl GlobalAllocProvider {
+        fn new() -> GlobalAllocProvider {
+            GlobalAllocProvider { inner: Some(ElfMalloc::new()) }
         }
     }
 
     /// The type for messages sent to the background thread. These can either be arrays of size
     /// classes to be cleaned up (in the case of thread destruction) or pointers to be freed (in
     /// the case of a recursive call to `free`).
-    enum Husk<T> {
-        Array(TypedArray<T>),
-        Obj(T),
+    enum Husk {
+        Array(ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>),
         #[allow(dead_code)]
         Ptr(*mut u8),
         #[allow(dead_code)]
         Slag(*mut u8),
     }
 
-    unsafe impl<T> Send for Husk<T> {}
+    unsafe impl Send for Husk {}
 
     impl Drop for GlobalAllocator {
         fn drop(&mut self) {
-            init_begin();
-            #[cfg(not(feature = "nightly"))]
-            {
-                let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                unsafe {
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.small_objs.classes)));
-                    let _ =
-                        chan.send(Husk::Array(ptr::read(&self.inner.allocs.medium_objs.classes)));
-                    let sc = Husk::Obj(self.inner.allocs.word_objs.take().unwrap());
-                    let _ = chan.send(sc);
-                }
-            }
-            #[cfg(feature = "nightly")]
-            {
-                #[cfg(target_thread_local)]
+            fn with_chan<F: FnMut(&Sender<Husk>)>(mut f: F) {
+                #[cfg(feature = "nightly")]
                 {
-                    unsafe {
-                        PTR = ptr::null_mut();
+                    #[cfg(target_thread_local)]
+                    {
+                        unsafe { PTR = ptr::null_mut() };
                     }
-                }
-                LOCAL_DESTRUCTOR_CHAN
-                    .try_with(|chan| unsafe {
-                        let _ = chan.send(Husk::Array(
-                            ptr::read(&self.inner.allocs.small_objs.classes),
-                        ));
-                        let _ = chan.send(Husk::Array(
-                            ptr::read(&self.inner.allocs.medium_objs.classes),
-                        ));
-                        #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
-                        let _ = chan.send(Husk::Obj(self.inner.allocs.word_objs.take().unwrap()));
-                    })
-                    .unwrap_or_else(|_| unsafe {
+                    LOCAL_DESTRUCTOR_CHAN.try_with(|chan| { f(chan) }).unwrap_or_else(|_| {
                         let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        let _ = chan.send(Husk::Array(
-                            ptr::read(&self.inner.allocs.small_objs.classes),
-                        ));
-                        let _ = chan.send(Husk::Array(
-                            ptr::read(&self.inner.allocs.medium_objs.classes),
-                        ));
-                        #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
-                        let _ = chan.send(Husk::Obj(self.inner.allocs.word_objs.take().unwrap()));
+                        f(&chan);
                     })
+                }
+                #[cfg(not(feature = "nightly"))]
+                {
+                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                    f(&chan);
+                }
             }
+            if self.inner.is_none() {
+                return;
+            }
+            unsafe {
+                with_chan(|chan| { 
+                    let dyn = ptr::read(self.inner.as_ref().unwrap());
+                    let _ = chan.send(Husk::Array(dyn));
+                });
+                ptr::write(&mut self.inner, None);
+            };
         }
     }
 
     pub unsafe fn get_layout(item: *mut u8) -> (usize /* size */, usize /* alignment */) {
         let m_block = match get_type(item) {
             // TODO(ezrosent): this duplicates some work..
-            AllocType::SmallSlag | AllocType::Large => ELF_HEAP.inner.small_pages.backing_memory(),
-            AllocType::BigSlag => ELF_HEAP.inner.large_pages.backing_memory(),
+            AllocType::SmallSlag | AllocType::Large => LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_ref().unwrap().small_pages.backing_memory()),
+            AllocType::BigSlag => LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_ref().unwrap().large_pages.backing_memory()),
         };
         super::elfmalloc_get_layout(m_block, item)
     }
 
+    fn new_handle() -> GlobalAllocator {
+        GlobalAllocator {
+            inner: Some(ELF_HEAP.inner.as_ref().expect("heap uninitialized").clone()),
+        }
+    }
+
+    impl Drop for GlobalAllocProvider {
+        fn drop(&mut self) {
+            mem::forget(self.inner.take());
+        }
+    }
+
     lazy_static! {
-        static ref ELF_HEAP: GlobalAllocator = GlobalAllocator::new();
-        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk<ObjectAlloc<PA>>>> = {
+        static ref ELF_HEAP: GlobalAllocProvider = GlobalAllocProvider::new();
+        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk>> = {
             // Background thread code: block on a channel waiting for memory reclamation messages
             // (Husks).
             let (sender, receiver) = channel();
             thread::spawn(move || unsafe {
-                let mut local_alloc = ELF_HEAP.clone();
+                let mut local_alloc = new_handle();
                 loop {
                     if let Ok(msg) = receiver.recv() {
-                        let msg: Husk<_> = msg;
+                        let msg: Husk = msg;
                         match msg {
-                            Husk::Array(tarray) => {
-                                for p in tarray.iter() {
-                                    ptr::drop_in_place(p);
-                                }
-                                tarray.destroy();
-                            },
-                            Husk::Ptr(p) => local_alloc.inner.free(p),
+                            Husk::Array(alloc) => mem::drop(DynamicAllocator(alloc)),
+                            Husk::Ptr(p) => local_alloc.inner.as_mut().unwrap().free(p),
                             Husk::Slag(s) => dirty_slag(s),
-                            Husk::Obj(t) => mem::drop(t),
                         }
                         continue
                     }
+                    mem::forget(local_alloc);
                     return;
                 }
             });
@@ -333,9 +329,9 @@ pub mod global {
     }
 
     thread_local! {
-        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk<ObjectAlloc<PA>>> =
+        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk> =
             DESTRUCTOR_CHAN.lock().unwrap().clone();
-        static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(ELF_HEAP.clone());
+        static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(new_handle());
     }
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
@@ -361,16 +357,16 @@ pub mod global {
         {
             LOCAL_ELF_HEAP
                 .try_with(|h| {
-                              let res = (*h.get()).inner.alloc(size);
-                              PTR = &mut (*h.get()).inner as *mut _;
-                              res
-                          })
+                    let res = (*h.get()).inner.as_mut().unwrap().alloc(size);
+                    PTR = (*h.get()).inner.as_mut().unwrap() as *const _ as *mut _;
+                    res
+                })
                 .unwrap_or_else(|_| super::large_alloc::alloc(size))
         }
 
         #[cfg(not(feature = "nightly"))]
         {
-            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.alloc(size))
+            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().alloc(size))
         }
     }
 
@@ -387,7 +383,7 @@ pub mod global {
         }
         assert!(!is_initializing(), "realloc can't be called recursively");
         init_begin();
-        let res = LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.realloc(item, new_size, new_alignment));
+        let res = LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().realloc(item, new_size, new_alignment));
         init_end();
         res
     }
@@ -403,7 +399,7 @@ pub mod global {
                 }
             }
             LOCAL_ELF_HEAP
-                .try_with(|h| (*h.get()).inner.free(item))
+                .try_with(|h| (*h.get()).inner.as_mut().unwrap().free(item))
                 .unwrap_or_else(|_| match get_type(item) {
                     AllocType::Large => {
                         super::large_alloc::free(item);
@@ -416,7 +412,7 @@ pub mod global {
         }
         #[cfg(not(feature = "nightly"))]
         {
-            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.free(item))
+            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().free(item))
         }
     }
 }
@@ -538,6 +534,9 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
     }
 
     fn foreach<F: Fn(*mut T)>(&self, f: F) {
+        if let Some(r) = self.word_objs.as_ref() {
+            f(r as *const _ as *mut T);
+        }
         self.small_objs.foreach(&f);
         self.medium_objs.foreach(f);
     }
@@ -635,6 +634,7 @@ impl Drop for DynamicAllocator {
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
+            ptr::write(&mut self.0.allocs.word_objs, None);
         }
     }
 }
@@ -767,7 +767,8 @@ impl<M: MemorySource, D: DirtyFn>
         // The small pages are allocated in groups where the first page is aligned to
         // ELFMALLOC_PAGE_SIZE; this page will be stamped with AllocType::SmallSlag, allowing type
         // lookups to work as expected.
-        let pa_small = PageAlloc::new_aligned(128 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
+        // let pa_small = PageAlloc::new_aligned(128 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
+        let pa_small = PageAlloc::new_aligned(256 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
         Self::new_internal(0.6, pa_small, pa_large, 8, 25)
     }
 }
@@ -862,7 +863,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
-            let params = (m_ptr, 1 << 20, pa, RevocablePipe::new_size_cleanup(8, clean));
+            let params = (m_ptr, 1 << 20, pa, RevocablePipe::new_size_cleanup(16, clean));
             ObjectAlloc::new(params)
         });
         let max_size = am.max_key();

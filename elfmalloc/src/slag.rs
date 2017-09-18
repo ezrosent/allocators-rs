@@ -59,7 +59,7 @@
 //! [1]: https://arxiv.org/abs/1503.09006
 use std::mem;
 use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
-use super::bagpipe::bag::{Revocable, WeakBag};
+use super::bagpipe::bag::{Revocable, WeakBag, SharedWeakBag};
 use super::bagpipe::{BagPipe, BagCleanup};
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
 use super::utils::{mmap, LazyInitializable, OwnedArray, likely, unlikely};
@@ -83,6 +83,11 @@ impl<T> PageCleanup<T> {
 
 impl<T> BagCleanup for PageCleanup<T> {
     type Item = *mut T;
+    // XXX: this line essentially means that no pages will be unmapped at shutdown. That is fine
+    // when using elfmalloc as a global allocator. It leaks memory when used in a local/clone-based
+    // context.
+    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(&self, _it: I) {}
+
     fn cleanup(&self, it: *mut T) {
         unsafe {
             mmap::unmap(it as *mut u8, self.0);
@@ -652,7 +657,7 @@ macro_rules! or_slag_word {
                     // go to the bitset we want
                     .offset(word as isize)
                     .as_ref()
-                    .unwrap()
+                    .expect("slag word null")
                     .store($mask, Ordering::Relaxed);
             }
 
@@ -683,7 +688,7 @@ impl Slag {
     /// the `Slag` data-structures. In order to work in complete generality, the bit-set
     /// initialization is a bit subtle.
     unsafe fn init(slag: *mut Self, meta: &Metadata) {
-        let slf = slag.as_mut().unwrap();
+        let slf = slag.as_mut().expect("null slag");
         slf.set_metadata(meta as *const _ as *mut Metadata);
         ptr::write(&mut slf.ty, meta.ty);
         slf.rc.init(meta.n_objects);
@@ -697,9 +702,10 @@ impl Slag {
         // this is enforced in compute_metadata
         debug_assert!(
             bits_per_word >= slush_size,
-            "bpw={}, slush_size={}",
+            "bpw={}, slush_size={} {:?}",
             bits_per_word,
-            slush_size
+            slush_size,
+            meta
         );
         let end_slush_shift = bits_per_word - slush_size;
         let mut cur_slush = 0;
@@ -982,11 +988,14 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
 
     pub fn new(alloc: SlagAllocator<CA>) -> Self {
         use std::cmp;
-        unsafe {
-            const DEFAULT_MAGAZINE_BYTES: usize = 512 << 10;
-            let sz = DEFAULT_MAGAZINE_BYTES / (*alloc.m).object_size;
-            Self::new_sized(alloc, cmp::max(1, sz))
-        }
+        let object_size = unsafe { (*alloc.m).object_size };
+        const CUTOFF: usize = 32 << 10;
+        let magazine_size = match object_size {
+            0 ... 512 => 1 << 16,
+            513 ... CUTOFF => 512 << 10 / object_size,
+            _ => 1 << 20 / object_size,
+        };
+        Self::new_sized(alloc, cmp::max(1, magazine_size))
     }
 
     /// Allocate memory from the current owned `Slag`.
@@ -1492,7 +1501,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     ) -> Self {
         let first_slag = unsafe { pa.alloc() } as *mut Slag;
         unsafe {
-            Slag::init(first_slag, meta.as_ref().unwrap());
+            Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
         SlagAllocator {
             m: meta,
@@ -1522,7 +1531,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         )));
         let first_slag = unsafe { pa.alloc() } as *mut Slag;
         unsafe {
-            Slag::init(first_slag, meta.as_ref().unwrap());
+            Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
         let cleanup = PageCleanup::new(pa.backing_memory().page_size());
         SlagAllocator {
@@ -1632,9 +1641,10 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         debug_assert_eq!(
             before & mask,
             0,
-            "Invalid mask: transitioned\n{:064b} with \n{:064b}",
+            "\nInvalid mask (obj size {:?}): transitioned\n{:064b} with \n{:064b}",
+            meta.object_size,
             before,
-            mask
+            mask,
         );
         let now = was + n_ones;
         if !claimed {
@@ -1651,7 +1661,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         trace_event!(remote_free);
         let meta = &*self.m;
         let it_slag = Slag::find(item, meta.total_bytes);
-        match it_slag.as_ref().unwrap().free(item) {
+        match it_slag.as_ref().expect("found invalid slag").free(item) {
             Transition::Null => return,
             Transition::Available => self.transition_available(it_slag),
             Transition::Full => self.transition_full(it_slag, meta),
@@ -1661,7 +1671,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     /// Test if `it` is an element of the current `Slag`.
     fn contains(&self, it: *mut u8) -> bool {
         unsafe {
-            let meta = self.m.as_ref().unwrap();
+            let meta = self.m.as_ref().expect("[contains] null metadata");
             let it_slag = Slag::find(it, meta.total_bytes);
             it_slag == self.slag
         }
@@ -1673,7 +1683,7 @@ impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
         let mut new_page_handle = self.pages.clone();
         let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
         unsafe {
-            Slag::init(first_slag, self.m.as_ref().unwrap());
+            Slag::init(first_slag, self.m.as_ref().expect("[SlagAllocator::clone] null metadata"));
         };
         SlagAllocator {
             m: self.m,
