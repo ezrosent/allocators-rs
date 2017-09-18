@@ -343,7 +343,7 @@ impl MapAlloc {
 
             *new_ptr = first_byte;
             ptr::copy_nonoverlapping(
-                ptr::null().offset(1),
+                1 as *const _,
                 new_ptr.offset(1),
                 cmp::min(allocator.pagesize - 1, size - 1)
             );
