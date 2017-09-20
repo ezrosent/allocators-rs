@@ -616,6 +616,8 @@ unsafe fn map(size: usize,
     // TODO: Figure out when it's safe to pass MAP_UNINITIALIZED (it's not defined in all
     // versions of libc). Be careful about not invalidating alloc_zeroed.
 
+	debug_assert!(size > 0, "map failed: size must greater than 0");
+
     // MAP_HUGE_SHIFT isn't used on all kernel versions, but I assume it must be
     // backwards-compatible. The only way for it to not be backwards-compatible would be for
     // there to be bits in the range [26, 31] (in the 'flags' argument) that used to be
@@ -660,6 +662,7 @@ unsafe fn map(size: usize,
               -> Option<*mut u8> {
     use libc::{MAP_ANON, MAP_PRIVATE, MAP_FAILED, ENOMEM};
 
+    debug_assert!(size > 0, "map failed: size must greater than 0");
     debug_assert!(!commit);
 
     // TODO: Support superpages (see MAP_ANON description in mmap manpage)
