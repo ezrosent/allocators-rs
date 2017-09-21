@@ -27,7 +27,7 @@ pub mod mmap {
     pub fn fallible_map(size: usize) -> Option<*mut u8> {
         unsafe {
             if let Ok(s) = MapAllocBuilder::default()
-                   .exec()
+                   .exec(true)
                    .build()
                    .alloc(Layout::from_size_align(size, 1).unwrap()) {
                 Some(s)
@@ -38,13 +38,13 @@ pub mod mmap {
     }
 
     pub unsafe fn unmap(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec().build().dealloc(
+        MapAllocBuilder::default().exec(true).build().dealloc(
             p,
             Layout::from_size_align(len, 1).unwrap(),
         )
     }
     pub unsafe fn uncommit(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec().build().uncommit(
+        MapAllocBuilder::default().exec(true).build().uncommit(
             p,
             Layout::from_size_align(len, 1).unwrap(),
         )

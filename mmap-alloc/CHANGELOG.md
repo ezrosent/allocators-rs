@@ -18,11 +18,24 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Added `commit` and `uncommit` methods on Windows
 - Added the ability to configure whether `alloc` commits memory
 - Added documentation about instruction cache incoherency
-- Added support for full Alloc API (`shrink_in_place`, `grow_in_place`, `realloc`)
-    - In Linux, these functions can use `mremap` to grow/shrink beyond the size of a the pagesize
+- Added support for full Alloc API (`shrink_in_place`, `grow_in_place`,
+  `realloc`)
+    - In Linux, these functions can use `mremap` to grow/shrink beyond the size
+      of a the pagesize
+- Added tests for memory permissions on Linux (by parsing `/proc/<pid>/maps`)
+  and Windows (by using the `VirtualQuery` function)
 
 ### Removed
 - Removed `commit` method on on Linux and Mac
+- Removed tests for `mmap`s at NULL on Linux and Mac, as it turns out they are
+  guaranteed not to happen
+- Removed `test-no-std` feature
+
+### Changed
+- Changed the way boolean configuration methods on `MapAllocBuilder` work
+  (previously, for each configuration option, there was a pair of methods to
+  enable and disable that option; now, there's a single method that accepts a
+  boolean indicating whether the option should be enabled)
 
 ### Fixed
 - Fixed a bug that prevented compilation on 32-bit Windows
