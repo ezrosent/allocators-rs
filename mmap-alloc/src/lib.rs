@@ -393,6 +393,7 @@ impl MapAlloc {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit, but will VirtualFree handle them
         // properly?
+        debug_assert!(layout.size() > 0, "commit: size of layout must bigger than 0");
         #[cfg(debug_assertions)]
         self.debug_verify_ptr(ptr, layout.clone());
         commit(ptr, layout.size(), self.perms);
@@ -413,6 +414,7 @@ impl MapAlloc {
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
+        debug_assert!(layout.size() > 0, "uncommit: size of layout must bigger than 0");
         #[cfg(debug_assertions)]
         self.debug_verify_ptr(ptr, layout.clone());
         uncommit(ptr, layout.size());
@@ -441,6 +443,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
+        debug_assert!(layout.size() > 0, "alloc: size of layout must bigger than 0");
         if layout.align() > self.pagesize {
             return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
         }
@@ -450,15 +453,18 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        debug_assert!(layout.size() > 0, "dealloc: size of layout must bigger than 0");
         unmap(ptr, layout.size());
     }
 
     fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        debug_assert!(layout.size() > 0, "usable_size: size of layout must bigger than 0");
         let max_size = next_multiple(layout.size(), self.pagesize);
         (max_size - self.pagesize + 1, max_size)
     }
 
     unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        debug_assert!(layout.size() > 0, "alloc_zeroed: size of layout must bigger than 0");
         <&'a MapAlloc as Alloc>::alloc(self, layout)
     }
 
@@ -469,6 +475,8 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         if new_layout.align() > self.pagesize {
             return Err(AllocErr::invalid_input("cannot support alignment greater than a page"));
         }
+        debug_assert!(layout.size() > 0 && new_layout.size() > 0,
+            "usable_size: size of layout and new_layout must bigger than 0");
 
         let old_size = next_multiple(layout.size(), self.pagesize);
         let new_size = next_multiple(new_layout.size(), self.pagesize);
@@ -485,6 +493,8 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         if new_layout.align() > self.pagesize {
             return Err(CannotReallocInPlace);
         }
+        debug_assert!(layout.size() > 0 && new_layout.size() > 0,
+            "grow_in_place: size of layout and new_layout must bigger than 0");
 
         let old_size = next_multiple(layout.size(), self.pagesize);
         let new_size = next_multiple(new_layout.size(), self.pagesize);
