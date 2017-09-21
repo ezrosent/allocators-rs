@@ -49,8 +49,8 @@ use std::mem;
 // enabled.
 use super::sources::{MemorySource, MmapSource};
 #[allow(unused_imports)]
-use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache,
-                  Metadata, PageAlloc, RevocablePipe, Slag, PageCleanup};
+use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache, Metadata,
+                  PageAlloc, RevocablePipe, Slag, PageCleanup};
 use super::utils::{mmap, Lazy, TypedArray, likely};
 use super::alloc_type::AllocType;
 
@@ -87,8 +87,8 @@ pub mod global {
     //! indicates if the current thread's value has been initialized. If this value is false, a
     //! slower fallback algorithm is used.
     #[allow(unused_imports)]
-    use super::{CoarseAllocator, DynamicAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc, PageAlloc,
-                TieredSizeClasses, TypedArray, AllocType, get_type, Source, AllocMap};
+    use super::{CoarseAllocator, DynamicAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc,
+                PageAlloc, TieredSizeClasses, TypedArray, AllocType, get_type, Source, AllocMap};
     #[cfg(feature = "nightly")]
     use super::likely;
     use std::ptr;
@@ -211,10 +211,11 @@ pub mod global {
     struct GlobalAllocator {
         inner: Option<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
     }
-
-
     unsafe impl Send for GlobalAllocator {}
 
+    /// The type of the global instance of the allocator.
+    ///
+    /// This is used to create handles for TLS-stored `GlobalAllocator`s.
     struct GlobalAllocProvider {
         inner: Option<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
     }
@@ -251,10 +252,12 @@ pub mod global {
                     {
                         unsafe { PTR = ptr::null_mut() };
                     }
-                    LOCAL_DESTRUCTOR_CHAN.try_with(|chan| { f(chan) }).unwrap_or_else(|_| {
-                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        f(&chan);
-                    })
+                    LOCAL_DESTRUCTOR_CHAN
+                        .try_with(|chan| f(chan))
+                        .unwrap_or_else(|_| {
+                            let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                            f(&chan);
+                        })
                 }
                 #[cfg(not(feature = "nightly"))]
                 {
@@ -262,11 +265,18 @@ pub mod global {
                     f(&chan);
                 }
             }
+            // XXX: Why this check?
+            //
+            // We have found that for some reason, this destructor can be called more than once on
+            // the same value. This could be a peculiarity of the TLS implementation, or it could
+            // be a bug in the code here. Regardless; without this check there are some cases in
+            // which this benchmark drops Arc-backed data-structures multiple times, leading to
+            // segfaults either here or in the background thread.
             if self.inner.is_none() {
                 return;
             }
             unsafe {
-                with_chan(|chan| { 
+                with_chan(|chan| {
                     let dyn = ptr::read(self.inner.as_ref().unwrap());
                     let _ = chan.send(Husk::Array(dyn));
                 });
@@ -278,8 +288,26 @@ pub mod global {
     pub unsafe fn get_layout(item: *mut u8) -> (usize /* size */, usize /* alignment */) {
         let m_block = match get_type(item) {
             // TODO(ezrosent): this duplicates some work..
-            AllocType::SmallSlag | AllocType::Large => LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_ref().unwrap().small_pages.backing_memory()),
-            AllocType::BigSlag => LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_ref().unwrap().large_pages.backing_memory()),
+            AllocType::SmallSlag | AllocType::Large => {
+                LOCAL_ELF_HEAP.with(|h| {
+                    (*h.get())
+                        .inner
+                        .as_ref()
+                        .unwrap()
+                        .small_pages
+                        .backing_memory()
+                })
+            }
+            AllocType::BigSlag => {
+                LOCAL_ELF_HEAP.with(|h| {
+                    (*h.get())
+                        .inner
+                        .as_ref()
+                        .unwrap()
+                        .large_pages
+                        .backing_memory()
+                })
+            }
         };
         super::elfmalloc_get_layout(m_block, item)
     }
@@ -322,10 +350,10 @@ pub mod global {
         };
     }
 
-    #[allow(dead_code)]
     lazy_static!{
         // only used on stable nightly or targets where thread-local is not supported
-        static ref INITIALIZING: AtomicUsize = AtomicUsize::new(0);
+        #[allow(unused_variables)]
+        pub static ref INITIALIZING: AtomicUsize = AtomicUsize::new(0);
     }
 
     thread_local! {
@@ -383,7 +411,13 @@ pub mod global {
         }
         assert!(!is_initializing(), "realloc can't be called recursively");
         init_begin();
-        let res = LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().realloc(item, new_size, new_alignment));
+        let res = LOCAL_ELF_HEAP.with(|h| {
+            (*h.get()).inner.as_mut().unwrap().realloc(
+                item,
+                new_size,
+                new_alignment,
+            )
+        });
         init_end();
         res
     }
@@ -403,11 +437,11 @@ pub mod global {
                 .unwrap_or_else(|_| match get_type(item) {
                     AllocType::Large => {
                         super::large_alloc::free(item);
-                    },
+                    }
                     AllocType::SmallSlag | AllocType::BigSlag => {
                         let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
                         let _ = chan.send(Husk::Ptr(item));
-                    },
+                    }
                 });
         }
         #[cfg(not(feature = "nightly"))]
@@ -628,9 +662,7 @@ impl<T: Clone> Clone for PowersOfTwo<T> {
 
 impl Drop for DynamicAllocator {
     fn drop(&mut self) {
-        self.0
-            .allocs
-            .foreach(|x| unsafe { ptr::drop_in_place(x) });
+        self.0.allocs.foreach(|x| unsafe { ptr::drop_in_place(x) });
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
@@ -694,8 +726,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
 /// A Dynamic memory allocator, instantiated with sane defaults for various `ElfMalloc` type
 /// parameters.
 #[derive(Clone)]
-pub struct DynamicAllocator(ElfMalloc<PageAlloc<Source>,
-                                       TieredSizeClasses<ObjectAlloc<PageAlloc<Source>>>>);
+pub struct DynamicAllocator(ElfMalloc<PageAlloc<Source>, TieredSizeClasses<ObjectAlloc<PageAlloc<Source>>>>);
 
 unsafe impl Send for DynamicAllocator {}
 
@@ -768,14 +799,20 @@ impl<M: MemorySource, D: DirtyFn>
         // ELFMALLOC_PAGE_SIZE; this page will be stamped with AllocType::SmallSlag, allowing type
         // lookups to work as expected.
         // let pa_small = PageAlloc::new_aligned(128 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
-        let pa_small = PageAlloc::new_aligned(256 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
+        let pa_small = PageAlloc::new_aligned(
+            256 << 10,
+            1 << 20,
+            8,
+            ELFMALLOC_PAGE_SIZE,
+            AllocType::SmallSlag,
+        );
         Self::new_internal(0.6, pa_small, pa_large, 8, 25)
     }
 }
 
 #[inline]
 unsafe fn round_to_page<T>(item: *mut T) -> *mut T {
-    ((item as usize) & !(ELFMALLOC_PAGE_SIZE-1)) as *mut T
+    ((item as usize) & !(ELFMALLOC_PAGE_SIZE - 1)) as *mut T
 }
 
 /// We ensure that for every pointer returned from a call to `alloc`, rounding that pointer down to
@@ -812,16 +849,16 @@ unsafe fn elfmalloc_get_layout<M: MemorySource>(m_block: &M, item: *mut u8) -> (
     match get_type(item) {
         AllocType::SmallSlag | AllocType::BigSlag => {
             let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
-            (meta.object_size,
-             if meta.object_size.is_power_of_two() {
-                 meta.object_size
-             } else {
-                 mem::size_of::<usize>()
-             })
-        },
-        AllocType::Large => {
-            (large_alloc::get_size(item), mmap::page_size())
-        },
+            (
+                meta.object_size,
+                if meta.object_size.is_power_of_two() {
+                    meta.object_size
+                } else {
+                    mem::size_of::<usize>()
+                },
+            )
+        }
+        AllocType::Large => (large_alloc::get_size(item), mmap::page_size()),
     }
 }
 
@@ -842,7 +879,11 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
             let (u_size, pa, ty) = if size < small_page_size / 4 {
                 (small_page_size, pa_small.clone(), AllocType::SmallSlag)
             } else {
-                (pa_large.backing_memory().page_size(), pa_large.clone(), AllocType::BigSlag)
+                (
+                    pa_large.backing_memory().page_size(),
+                    pa_large.clone(),
+                    AllocType::BigSlag,
+                )
             };
             let m_ptr = meta_pointer;
             unsafe {
@@ -863,7 +904,12 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
-            let params = (m_ptr, 1 << 20, pa, RevocablePipe::new_size_cleanup(16, clean));
+            let params = (
+                m_ptr,
+                1 << 20,
+                pa,
+                RevocablePipe::new_size_cleanup(16, clean),
+            );
             ObjectAlloc::new(params)
         });
         let max_size = am.max_key();
@@ -915,14 +961,14 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                 }
                 if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
                     new_size <= self.max_size
-                    {
-                        new_size = new_size.next_power_of_two();
-                    }
+                {
+                    new_size = new_size.next_power_of_two();
+                }
                 let new_memory = self.alloc(new_size);
                 ptr::copy_nonoverlapping(item, new_memory, meta.object_size);
                 self.free(item);
                 new_memory
-            },
+            }
             None => {
                 let size = large_alloc::get_size(item);
                 if size >= new_size {
@@ -931,7 +977,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                 let new_memory = self.alloc(new_size);
                 ptr::copy_nonoverlapping(item, new_memory, size);
                 new_memory
-            },
+            }
         }
     }
 
@@ -939,8 +985,10 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         match self.get_page_size(item) {
             Some(page_size) => {
                 let slag = &*Slag::find(item, page_size);
-                self.allocs.get_mut(slag.get_metadata().object_size).free(item)
-            },
+                self.allocs.get_mut(slag.get_metadata().object_size).free(
+                    item,
+                )
+            }
             None => large_alloc::free(item),
         };
     }
@@ -982,11 +1030,14 @@ mod large_alloc {
         let mem = map(region_size);
         let res = mem.offset(ELFMALLOC_PAGE_SIZE as isize);
         let addr = get_commitment_mut(res);
-        ptr::write(addr, AllocInfo {
-            ty: AllocType::Large,
-            base: mem,
-            region_size: region_size,
-        });
+        ptr::write(
+            addr,
+            AllocInfo {
+                ty: AllocType::Large,
+                base: mem,
+                region_size: region_size,
+            },
+        );
 
         // begin extra debugging information
         debug_assert!(!mem.is_null());
