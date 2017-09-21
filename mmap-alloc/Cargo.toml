@@ -21,10 +21,6 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/mmap-alloc"
 
 exclude = ["travis.sh"]
 
-[features]
-# By default, test builds are not no_std. This feature makes test builds no_std.
-test-no-std = []
-
 [dependencies]
 errno = "0.2"
 kernel32-sys = "0.2"

@@ -14,6 +14,8 @@ if [ "$RUST_NIGHTLY" != "1" ]; then
   exit 0
 fi
 
+export RUST_TEST_THREADS=1
+
 cargo build
 RUST_BACKTRACE=1 cargo test
 for feature in test-no-std; do

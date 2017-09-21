@@ -10,6 +10,8 @@
 set -x
 set -e
 
+export RUST_TEST_THREADS=1
+
 travis-cargo --only nightly build
 RUST_BACKTRACE=1 travis-cargo --only nightly test
 for feature in test-no-std; do
