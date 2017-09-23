@@ -59,7 +59,7 @@
 //! [1]: https://arxiv.org/abs/1503.09006
 use std::mem;
 use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
-use super::bagpipe::bag::{Revocable, WeakBag, SharedWeakBag};
+use super::bagpipe::bag::{Revocable, WeakBag};
 use super::bagpipe::{BagPipe, BagCleanup};
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
 use super::utils::{mmap, LazyInitializable, OwnedArray, likely, unlikely};
@@ -83,11 +83,6 @@ impl<T> PageCleanup<T> {
 
 impl<T> BagCleanup for PageCleanup<T> {
     type Item = *mut T;
-    // XXX: this line essentially means that no pages will be unmapped at shutdown. That is fine
-    // when using elfmalloc as a global allocator. It leaks memory when used in a local/clone-based
-    // context.
-    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(&self, _it: I) {}
-
     fn cleanup(&self, it: *mut T) {
         unsafe {
             mmap::unmap(it as *mut u8, self.0);
