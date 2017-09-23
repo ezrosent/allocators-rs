@@ -31,7 +31,8 @@ mod alloc_type;
 mod utils;
 #[macro_use]
 mod stats;
-pub mod slag;
+mod slag;
+pub mod frontends;
 pub mod general;
 
 #[cfg(feature = "nightly")]
