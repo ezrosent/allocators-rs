@@ -406,7 +406,7 @@ pub mod global {
         #[cfg(feature = "nightly")]
         {
             if likely(!PTR.is_null()) {
-                (*PTR).realloc(item, new_size, new_alignment);
+                return (*PTR).realloc(item, new_size, new_alignment);
             }
         }
         assert!(!is_initializing(), "realloc can't be called recursively");
@@ -790,6 +790,7 @@ impl Default for DynamicAllocator {
 
 // TODO(ezrosent): move this to a type parameter when const generics are in.
 const ELFMALLOC_PAGE_SIZE: usize = 2 << 20;
+const ELFMALLOC_SMALL_PAGE_SIZE: usize = 256 << 10;
 
 impl<M: MemorySource, D: DirtyFn>
     ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
@@ -798,9 +799,8 @@ impl<M: MemorySource, D: DirtyFn>
         // The small pages are allocated in groups where the first page is aligned to
         // ELFMALLOC_PAGE_SIZE; this page will be stamped with AllocType::SmallSlag, allowing type
         // lookups to work as expected.
-        // let pa_small = PageAlloc::new_aligned(128 << 10, 1 << 20, 8, ELFMALLOC_PAGE_SIZE, AllocType::SmallSlag);
         let pa_small = PageAlloc::new_aligned(
-            256 << 10,
+            ELFMALLOC_SMALL_PAGE_SIZE,
             1 << 20,
             8,
             ELFMALLOC_PAGE_SIZE,
@@ -810,7 +810,7 @@ impl<M: MemorySource, D: DirtyFn>
     }
 }
 
-#[inline]
+#[inline(always)]
 unsafe fn round_to_page<T>(item: *mut T) -> *mut T {
     ((item as usize) & !(ELFMALLOC_PAGE_SIZE - 1)) as *mut T
 }
@@ -822,7 +822,7 @@ unsafe fn round_to_page<T>(item: *mut T) -> *mut T {
 /// All of this allows us to run elfmalloc with a full malloc-style interface without resorting to
 /// any sort of global ownership check on the underlying `MemorySource`. This method thus breaks
 /// our dependency on the `Creek`.
-#[inline]
+#[inline(always)]
 unsafe fn get_type(item: *mut u8) -> AllocType {
     *round_to_page(item.offset(-1) as *mut AllocType)
 }
@@ -923,10 +923,13 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
     }
 
+    #[inline(always)]
     unsafe fn get_page_size(&self, item: *mut u8) -> Option<usize> {
         match get_type(item) {
-            AllocType::SmallSlag => Some(self.small_pages.backing_memory().page_size()),
-            AllocType::BigSlag => Some(self.large_pages.backing_memory().page_size()),
+            // AllocType::SmallSlag => Some(self.small_pages.backing_memory().page_size()),
+            AllocType::SmallSlag => Some(ELFMALLOC_SMALL_PAGE_SIZE),
+            // AllocType::BigSlag => Some(self.large_pages.backing_memory().page_size()),
+            AllocType::BigSlag => Some(ELFMALLOC_PAGE_SIZE),
             AllocType::Large => None,
         }
     }
