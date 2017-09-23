@@ -14,14 +14,19 @@
 //! This module also implements additional traits from the `malloc-bind` crate.
 
 extern crate alloc;
+#[cfg(feature = "c-api")]
 extern crate malloc_bind;
+#[cfg(feature = "c-api")]
 extern crate libc;
 use self::alloc::allocator::{Alloc, AllocErr, Layout};
+#[cfg(feature = "c-api")]
 use self::malloc_bind::{LayoutFinder, Malloc, MIN_ALIGN};
 use super::general::global;
 use std::mem;
+#[cfg(feature = "c-api")]
 use std::intrinsics::unlikely;
 
+#[cfg(feature = "c-api")]
 use self::libc::{size_t, c_void};
 
 /// A zero-sized type used for implementing `Alloc` and `LayoutFinder` for the global instance of
