@@ -48,9 +48,10 @@ use std::mem;
 // One of MagazineCache and LocalCache is unused, depending on whether the 'local_cache' feature is
 // enabled.
 use super::sources::{MemorySource, MmapSource};
-#[allow(unused_imports)]
-use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, LocalCache, MagazineCache, Metadata,
+use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, Metadata,
                   PageAlloc, RevocablePipe, Slag, PageCleanup};
+#[allow(unused_imports)]
+use super::frontends::{MagazineCache, LocalCache};
 use super::utils::{mmap, Lazy, TypedArray, likely};
 use super::alloc_type::AllocType;
 
