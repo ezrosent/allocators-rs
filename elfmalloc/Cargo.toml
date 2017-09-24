@@ -36,6 +36,7 @@ nightly = []
 local_cache = []
 use_default_allocator = []
 print_stats = ["nightly"]
+magazine_layer = []
 # Implement the C allocation API (malloc, free, etc) by implementing the
 # malloc-bind crate's Malloc trait. This feature will enable certain
 # optimizations that will make the C API faster but result in worse memory

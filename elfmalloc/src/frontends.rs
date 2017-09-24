@@ -7,12 +7,17 @@
 //! latter task is implemented in the `general` module.
 use super::slag::*;
 use super::sources::MmapSource;
-use super::utils::{likely, OwnedArray, LazyInitializable};
+use super::utils::{likely, OwnedArray, LazyInitializable, mmap};
 use super::alloc_type::AllocType;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
 use std::cmp;
+
+pub trait Frontend: LazyInitializable + Clone {
+    unsafe fn alloc(&mut self) -> *mut u8;
+    unsafe fn free(&mut self, item: *mut u8);
+}
 
 /// A `LocalCache` provides thread-local data on top of a `SlagAllocator`.
 ///
@@ -61,8 +66,10 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
             }
         }
     }
+}
 
-    pub unsafe fn free(&mut self, it: *mut u8) {
+impl<CA: CoarseAllocator> Frontend for LocalCache<CA> {
+    unsafe fn free(&mut self, it: *mut u8) {
         if self.alloc.contains(it) {
             self.vals.push(it);
         } else {
@@ -70,7 +77,7 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
         }
     }
 
-    pub unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe fn alloc(&mut self) -> *mut u8 {
         self.vals
             .pop()
             .or_else(|| self.iter.next())
@@ -81,6 +88,8 @@ impl<CA: CoarseAllocator> LocalCache<CA> {
             })
     }
 }
+
+
 
 /// A different approach to caching to `LocalCache` inspired by Bonwick-style magazines.
 ///
@@ -181,26 +190,6 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
         )
     }
 
-    pub unsafe fn alloc(&mut self) -> *mut u8 {
-        if let Some(ptr) = self.s.pop() {
-            trace_event!(cache_alloc);
-            ptr
-        } else {
-            trace_event!(slag_alloc);
-            self.slag_alloc()
-        }
-    }
-
-    pub unsafe fn free(&mut self, item: *mut u8) {
-        trace_event!(local_free);
-        if likely(self.s.top < self.stack_size) {
-            self.s.push(item);
-            return;
-        }
-        self.return_memory();
-        self.s.push(item);
-    }
-
     /// Perform the bulk-level frees for the `Coalescer`.
     unsafe fn return_memory(&mut self) {
         debug_assert_eq!(self.s.top as usize, self.stack_size);
@@ -225,6 +214,28 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
             ptr::write(cell, RemoteFreeCell::default());
         }
         self.coalescer.1.top = 0;
+    }
+}
+
+impl<CA: CoarseAllocator> Frontend for MagazineCache<CA> {
+    unsafe fn alloc(&mut self) -> *mut u8 {
+        if let Some(ptr) = self.s.pop() {
+            trace_event!(cache_alloc);
+            ptr
+        } else {
+            trace_event!(slag_alloc);
+            self.slag_alloc()
+        }
+    }
+
+    unsafe fn free(&mut self, item: *mut u8) {
+        trace_event!(local_free);
+        if likely(self.s.top < self.stack_size) {
+            self.s.push(item);
+            return;
+        }
+        self.return_memory();
+        self.s.push(item);
     }
 }
 
@@ -351,6 +362,355 @@ impl PtrStack {
     #[inline]
     fn empty(&self) -> bool {
         self.top == 0
+    }
+}
+
+pub use self::magazine::{Depot, DepotCache};
+
+mod magazine {
+    //! A more direct port of
+    //! [Bonwick et al.'s "Magazine" algorithm](https://www.usenix.org/legacy/event/usenix01/full_papers/bonwick/bonwick.pdf)
+    //! used in the Solaris slab allocator. Adding a magazine layer can be used to improve
+    //! allocation and deallocation speeds at the cost of reduced locality and higher memory
+    //! overhead when used for smaller objects.
+    //!
+    //! # Overview
+    //! Briefly, a `DepotCache` is a generic caching layer implemented in terms of a pre-existing
+    //! `Frontend` implementation. This layer consists of `BagPipe`s of `Magazine`s. Each
+    //! `Magazine` is a fixed-size stack of pointers to objects of a particular size. Each thread
+    //! has two `Magazine`s (`m1` and `m2`).
+    //!
+    //! ## Allocation
+    //! To allocate memory, a thread first attempts to pop an object from `m1`. If this fails, `m1`
+    //! and `m2` are swapped, and allocation is retried. If this fails for a second time it means
+    //! that both magazines are empty. At this point, `m1` is exchanged for a new (full) `Magazine`
+    //! using the `Depot` and allocation is retried. If this latter step fails, `m1` is re-filled
+    //! using the underlying `Frontend`. Note that the presence of two `Magazine`s ensures that the
+    //! `Depot` is only accessed at a minimum of every *k* allocations, where *k* is the size of a
+    //! given `Magazine`.
+    //!
+    //! ## Deallocation
+    //! Deallocation works in a symmetric fashion, where `m1` is returned to the `Depot` if both
+    //! `Magazine`s are full, and `m1` is freed back to the underlying `Frontend` if the `Depot`
+    //! cannot accept any new `Magzine`s.
+    //!
+    //! ## Difference from Original.
+    //! The main difference here is that we do not allow magazines to grow dynamically. This is
+    //! because we implement the `Depot` using a `BagPipe`; as a result, the `Depot` should not be
+    //! a source of contention except in the case where magazines are quite small.
+
+    use super::*;
+    use super::super::bagpipe::bag::WeakBag;
+    use super::super::bagpipe::{BagPipe, BagCleanup};
+    use super::super::bagpipe::queue::FAAQueueLowLevel;
+
+    /// A Custom destructor for Magazines in a `BagPipe`.
+    #[derive(Copy, Clone, Default)]
+    struct MagazineCleanup;
+    impl BagCleanup for MagazineCleanup {
+        type Item = *mut Magazine;
+        fn cleanup(&self, it: *mut Magazine) {
+            unsafe { Magazine::destroy(it) }
+        }
+    }
+
+    type MagPipe = BagPipe<FAAQueueLowLevel<*mut Magazine>, MagazineCleanup>;
+
+    /// A fixed-size stack backed by `mmap`.
+    ///
+    /// A `Magazine` is a lot like a `PtrStack`. The primary difference is that a `Magazine` stores
+    /// its data inline, whereas the `PtrStack` has data intended to be allocated on the stack, or
+    /// as part of thread-local storage.
+    struct Magazine {
+        top: usize,
+        cap: usize,
+        mapped: usize,
+        base: *mut u8,
+    }
+
+    impl Magazine {
+        unsafe fn new(size: usize) -> *mut Magazine {
+            let page_size = mmap::page_size();
+            debug_assert!(page_size.is_power_of_two());
+            let bytes = mem::size_of::<Magazine>() + mem::size_of::<*mut u8>() * size;
+            let rem = bytes & (page_size - 1);
+            let n_pages = (bytes >> page_size.trailing_zeros()) + cmp::min(1, rem);
+            let region_size = n_pages * page_size;
+            debug_assert!(bytes <= region_size);
+            let mem = mmap::map(region_size) as *mut Magazine;
+            ptr::write(
+                mem,
+                Magazine {
+                    top: 0,
+                    cap: size,
+                    mapped: region_size,
+                    base: mem.offset(1) as *mut u8,
+                },
+            );
+            mem
+        }
+
+        unsafe fn default() -> *mut Magazine {
+            let res = Magazine::new(508);
+            #[cfg(debug_assertions)]
+            {
+                if mmap::page_size() == 4096 {
+                    debug_assert_eq!((*res).mapped, 4096);
+                }
+            }
+            res
+        }
+
+        /// Unmap the memory associated with the `Magazine`.
+        ///
+        /// This function does not free the memory associated with the stack's contents if it is
+        /// nonempty.
+        unsafe fn destroy(slf: *mut Magazine) {
+            debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
+            debug_assert_eq!(slf as usize % mmap::page_size(), 0);
+            mmap::unmap(slf as *mut u8, (*slf).mapped)
+        }
+
+        fn push(&mut self, item: *mut u8) -> bool {
+            debug_assert!(!item.is_null());
+            if self.top == self.cap {
+                return false;
+            }
+            unsafe {
+                let addr = (self.base as *mut *mut u8).offset(self.top as isize);
+                debug_assert!((addr as isize - self.base as isize) < self.mapped as isize);
+                ptr::write(addr, item);
+            }
+            self.top += 1;
+            true
+        }
+
+        fn pop(&mut self) -> Option<*mut u8> {
+            if self.top == 0 {
+                return None;
+            }
+            unsafe {
+                self.top -= 1;
+                let res = ptr::read((self.base as *mut *mut u8).offset(self.top as isize));
+                debug_assert!(!res.is_null());
+                Some(res)
+            }
+        }
+    }
+
+    /// A global cache for empty and full `Magazine`s.
+    #[derive(Clone)]
+    pub struct Depot {
+        max_size: isize,
+        empty: MagPipe,
+        full: MagPipe,
+    }
+
+    impl Default for Depot {
+        fn default() -> Depot {
+            Depot::new()
+        }
+    }
+
+    impl<FE: Frontend> Drop for DepotCache<FE> {
+        fn drop(&mut self) {
+            for m in &[self.m1, self.m2] {
+                let m_raw: *mut Magazine = *m;
+                unsafe {
+                    while let Some(p) = (*m_raw).pop() {
+                        self.backing.free(p);
+                    }
+                    self.depot.free_empty(m_raw);
+                }
+            }
+        }
+    }
+
+    impl Depot {
+        fn new_size(max_size: usize, empty: usize, full: usize) -> Depot {
+            assert!(max_size < (isize::max_value() as usize));
+            Depot {
+                max_size: max_size as isize,
+                empty: MagPipe::new_size(empty),
+                full: MagPipe::new_size(full),
+            }
+        }
+
+        fn new() -> Depot {
+            use super::super::num_cpus;
+            Depot::new_size(1 << 10, num_cpus::get(), num_cpus::get())
+        }
+
+        /// Return an empty `Magazine` to the `Depot`.
+        ///
+        /// If the `Depot` is at capacity, the `Magazine`'s memory is unmapped.
+        unsafe fn free_empty(&mut self, m: *mut Magazine) {
+            debug_assert_eq!((*m).top, 0);
+            if self.empty.size_guess() >= self.max_size {
+                Magazine::destroy(m);
+            } else {
+                self.empty.push_mut(m)
+            }
+        }
+
+        /// Return a full `Magazine` to the `Depot`.
+        ///
+        /// If the `Depot` is at capacity, the `Magazine` is not added to the `Depot` and this
+        /// method returns `false`.
+        fn free_full(&mut self, m: *mut Magazine) -> bool {
+            unsafe {
+                debug_assert_eq!((*m).top, (*m).cap)
+            };
+            if self.full.size_guess() >= self.max_size {
+                false
+            } else {
+                self.full.push_mut(m);
+                true
+            }
+        }
+
+        /// Allocate a full `Magazine` from the `Depot` if one is present.
+        fn alloc_full(&mut self) -> Option<*mut Magazine> {
+            self.full.pop_mut().and_then(|r| {
+                unsafe {
+                    debug_assert_eq!((*r).top, (*r).cap)
+                };
+                Some(r)
+            })
+        }
+
+        /// Allocate a full `Magazine` from the `Depot`, constructing a new one if none are
+        /// present.
+        fn alloc_empty(&mut self) -> *mut Magazine {
+            let res = self.empty.pop_mut().unwrap_or_else(|| {
+                unsafe {
+                    Magazine::default()
+                }
+            });
+            unsafe {
+                debug_assert_eq!((*res).top, 0)
+            };
+            res
+        }
+
+        /// Swap out an empty `Magazine` for a full one.
+        ///
+        /// If a full `Magazine` is unavailable, `None` is returned and `m` is not freed.
+        fn swap_empty(&mut self, m: *mut Magazine) -> Option<*mut Magazine> {
+            self.alloc_full().and_then(|new_m| {
+                unsafe {
+                    self.free_empty(m)
+                };
+                Some(new_m)
+            })
+        }
+
+        /// Swap out a full `Magazine` for an empty one.
+        ///
+        /// If the `Depot` is at capacity, `None` is returned and `m` is not freed.
+        fn swap_full(&mut self, m: *mut Magazine) -> Option<*mut Magazine> {
+            if self.free_full(m) {
+                Some(self.alloc_empty())
+            } else {
+                None
+            }
+        }
+    }
+
+    /// A magazine caching layer on top of a given `Frontend`.
+    ///
+    /// See module comments for more details on this algorithm.
+    #[derive(Clone)]
+    pub struct DepotCache<FE: Frontend> {
+        backing: FE,
+        depot: Depot,
+        m1: *mut Magazine,
+        m2: *mut Magazine,
+    }
+
+    impl<FE: Frontend> LazyInitializable for DepotCache<FE> {
+        type Params = (FE::Params, Depot);
+        fn init(&(ref backing, ref depot): &(FE::Params, Depot)) -> DepotCache<FE> {
+            Self::new(FE::init(backing.clone()), depot.clone())
+        }
+    }
+
+    impl<FE: Frontend> DepotCache<FE> {
+        fn new(backing: FE, mut depot: Depot) -> DepotCache<FE> {
+            let m1 = depot.alloc_full().unwrap_or_else(|| depot.alloc_empty());
+            let m2 = depot.alloc_empty();
+            DepotCache {
+                backing: backing,
+                depot: depot,
+                m1: m1,
+                m2: m2,
+            }
+        }
+    }
+
+    impl<FE: Frontend> Frontend for DepotCache<FE> {
+        unsafe fn alloc(&mut self) -> *mut u8 {
+            if let Some(p) = (*self.m1).pop() {
+                return p;
+            }
+            mem::swap(&mut self.m1, &mut self.m2);
+            if let Some(p) = (*self.m1).pop() {
+                return p;
+            }
+
+            if let Some(m) = self.depot.swap_empty(self.m1) {
+                self.m1 = m;
+            } else {
+                let cap = (*self.m1).cap;
+                for _ in 0..cap {
+                    let _r = (*self.m1).push(self.backing.alloc());
+                    debug_assert!(_r);
+                }
+            }
+            (*self.m1).pop().expect("new full magazine is empty")
+        }
+
+        unsafe fn free(&mut self, item: *mut u8) {
+            if (*self.m1).push(item) {
+                return;
+            }
+            mem::swap(&mut self.m1, &mut self.m2);
+
+            if (*self.m1).push(item) {
+                return;
+            }
+            match self.depot.swap_full(self.m1) {
+                Some(m) => self.m1 = m,
+                None => {
+                    while let Some(x) = (*self.m1).pop() {
+                        self.backing.free(x)
+                    }
+                },
+            };
+            let _r = (*self.m1).push(item);
+            debug_assert!(_r);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn magazine_stack() {
+            unsafe {
+                let m = Magazine::default();
+                let m_ref = &mut*m;
+                let goal = m_ref.cap;
+                for i in 0..goal {
+                    assert!(m_ref.push(i as *mut u8));
+                }
+                assert!(!m_ref.push(8 as *mut u8));
+                assert_eq!(m_ref.pop(), Some((m_ref.cap-1) as *mut u8));
+                assert!(m_ref.push(8 as *mut u8));
+                Magazine::destroy(m);
+            }
+        }
     }
 }
 

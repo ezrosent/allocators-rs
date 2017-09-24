@@ -76,6 +76,8 @@ extern crate num_cpus;
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
 use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe, PageCleanup};
+#[allow(unused_imports)]
+use super::frontends::{Depot, Frontend};
 use super::utils::{mmap, Lazy, LazyInitializable};
 use super::sources::MemorySource;
 use super::bagpipe::bag::WeakBag;
@@ -423,7 +425,14 @@ impl ElfMallocBuilder {
                 pa.clone(),
                 RevocablePipe::new_size_cleanup(self.small_pipe_size, PageCleanup::new(self.page_size)),
             );
-            ObjectAlloc::new(params)
+            #[cfg(not(feature = "magazine_layer"))]
+            {
+                ObjectAlloc::new(params)
+            }
+            #[cfg(feature = "magazine_layer")]
+            {
+                ObjectAlloc::new((params, Depot::default()))
+            }
         });
         let next_size_class = (small_classes.max_key() + 1).next_power_of_two();
         let max_size = self.max_object_size.next_power_of_two();
