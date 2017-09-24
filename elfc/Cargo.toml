@@ -21,6 +21,7 @@ crate-type = ["cdylib"]
 [features]
 nightly = ["elfmalloc/nightly"]
 local_cache = ["elfmalloc/local_cache"]
+magazine_layer = ["elfmalloc/magazine_layer"]
 logging = ["elfmalloc/print_stats"]
 
 [dependencies]

@@ -48,10 +48,10 @@ use std::mem;
 // One of MagazineCache and LocalCache is unused, depending on whether the 'local_cache' feature is
 // enabled.
 use super::sources::{MemorySource, MmapSource};
-use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, Metadata,
-                  PageAlloc, RevocablePipe, Slag, PageCleanup};
+use super::slag::{compute_metadata, CoarseAllocator, DirtyFn, Metadata, PageAlloc, RevocablePipe,
+                  Slag, PageCleanup};
 #[allow(unused_imports)]
-use super::frontends::{MagazineCache, LocalCache};
+use super::frontends::{MagazineCache, LocalCache, DepotCache, Depot, Frontend};
 use super::utils::{mmap, Lazy, TypedArray, likely};
 use super::alloc_type::AllocType;
 
@@ -454,7 +454,8 @@ pub mod global {
 
 /// A trait encapsulating the notion of an array of size classes for an allocator.
 pub trait AllocMap<T>
-    where Self: Sized
+where
+    Self: Sized,
 {
     /// The type used to index size classes.
     type Key;
@@ -465,10 +466,11 @@ pub trait AllocMap<T>
     }
 
     /// Create and initialize the map, handing back ownership of the constructor.
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: Self::Key,
-                                               n_classes: usize,
-                                               f: F)
-                                               -> (F, Self);
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: Self::Key,
+        n_classes: usize,
+        f: F,
+    ) -> (F, Self);
 
     /// Get an unchecked raw pointer to the class corresponding to `k`.
     unsafe fn get_raw(&self, k: Self::Key) -> *mut T;
@@ -515,7 +517,8 @@ pub trait AllocMap<T>
 /// The larger classes are powers of two.
 struct TieredSizeClasses<T> {
     // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
-    #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
+    #[cfg(any(not(feature = "c-api"),
+                not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
     word_objs: Option<T>,
     small_objs: Multiples<T>,
     medium_objs: PowersOfTwo<T>,
@@ -530,19 +533,26 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
         let (mut f3, medium_classes) =
             PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
         let word_objs = f3(8);
-        (f3,
-         TieredSizeClasses {
-             // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
+        (
+            f3,
+            TieredSizeClasses {
+                // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
                 #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
-             word_objs: Some(word_objs),
-             small_objs: small_classes,
-             medium_objs: medium_classes,
-         })
+                #[cfg(any(not(feature = "c-api"),
+                            not(any(target_os = "macos",
+                                        all(windows, target_pointer_width = "64")))))]
+                word_objs: Some(word_objs),
+                small_objs: small_classes,
+                medium_objs: medium_classes,
+            },
+        )
     }
 
     unsafe fn get_raw(&self, n: usize) -> *mut T {
         // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
-        #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
+        #[cfg(any(not(feature = "c-api"),
+                    not(any(target_os = "macos",
+                                all(windows, target_pointer_width = "64")))))]
         {
             if n <= 8 {
                 self.word_objs.as_ref().unwrap() as *const _ as *mut T
@@ -553,7 +563,8 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
             }
         }
 
-        #[cfg(all(feature = "c-api", any(target_os = "macos", all(windows, target_pointer_width = "64"))))]
+        #[cfg(all(feature = "c-api",
+                    any(target_os = "macos", all(windows, target_pointer_width = "64"))))]
         {
             if n <= self.small_objs.max_key() {
                 self.small_objs.get_raw(n)
@@ -589,9 +600,9 @@ pub struct Multiples<T> {
 
 impl<T: Clone> Clone for Multiples<T> {
     fn clone(&self) -> Self {
-        Multiples::init(self.starting_size,
-                        self.classes.len(),
-                        |size| unsafe { self.get(size).clone() })
+        Multiples::init(self.starting_size, self.classes.len(), |size| unsafe {
+            self.get(size).clone()
+        })
     }
 }
 
@@ -627,8 +638,9 @@ impl<T> AllocMap<T> for Multiples<T> {
     unsafe fn get_raw(&self, n: usize) -> *mut T {
         let class = round_up(n);
         debug_assert!(class <= self.max_size);
-        self.classes
-            .get((round_up(n) - self.starting_size) / MULTIPLE)
+        self.classes.get(
+            (round_up(n) - self.starting_size) / MULTIPLE,
+        )
     }
 
     #[inline]
@@ -655,9 +667,9 @@ pub struct PowersOfTwo<T> {
 
 impl<T: Clone> Clone for PowersOfTwo<T> {
     fn clone(&self) -> Self {
-        PowersOfTwo::init(self.starting_size,
-                          self.classes.len(),
-                          |size| unsafe { self.get(size).clone() })
+        PowersOfTwo::init(self.starting_size, self.classes.len(), |size| unsafe {
+            self.get(size).clone()
+        })
     }
 }
 
@@ -684,10 +696,11 @@ impl<T> PowersOfTwo<T> {
 
 impl<T> AllocMap<T> for PowersOfTwo<T> {
     type Key = usize;
-    fn init_conserve<F: FnMut(Self::Key) -> T>(start: usize,
-                                               n_classes: usize,
-                                               mut f: F)
-                                               -> (F, Self) {
+    fn init_conserve<F: FnMut(Self::Key) -> T>(
+        start: usize,
+        n_classes: usize,
+        mut f: F,
+    ) -> (F, Self) {
         let mut res = Self::new(start, n_classes);
         let mut cur_size = res.starting_size;
         unsafe {
@@ -705,11 +718,13 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
     unsafe fn get_raw(&self, k: usize) -> *mut T {
         debug_assert!(k <= self.max_size);
         let log = (k.next_power_of_two().trailing_zeros() -
-                   self.starting_size.trailing_zeros()) as usize;
-        debug_assert!(log < self.classes.len(),
-                      "log={} len={}",
-                      log,
-                      self.classes.len());
+            self.starting_size.trailing_zeros()) as usize;
+        debug_assert!(
+            log < self.classes.len(),
+            "log={} len={}",
+            log,
+            self.classes.len()
+        );
         self.classes.get(log)
     }
 
@@ -746,21 +761,29 @@ impl DynamicAllocator {
         self.0.realloc(item, new_size, mem::size_of::<usize>())
     }
 
-    pub unsafe fn aligned_realloc(&mut self,
-                                  item: *mut u8,
-                                  new_size: usize,
-                                  new_alignment: usize)
-                                  -> *mut u8 {
+    pub unsafe fn aligned_realloc(
+        &mut self,
+        item: *mut u8,
+        new_size: usize,
+        new_alignment: usize,
+    ) -> *mut u8 {
         self.0.realloc(item, new_size, new_alignment)
     }
 }
 
-// we default to using the `MagazineCache` here, as it performs better in general. There are some
-// settings in which the `LocalCache` frontend is superior. Hence, we feature-gate this.
+
+// Frontends are currently feature-gated in the following fashion:
+
 #[cfg(not(feature = "local_cache"))]
-pub type ObjectAlloc<CA> = Lazy<MagazineCache<CA>>;
+type Inner<CA> = MagazineCache<CA>;
 #[cfg(feature = "local_cache")]
-pub type ObjectAlloc<CA> = Lazy<LocalCache<CA>>;
+type Inner<CA> = LocalCache<CA>;
+
+#[cfg(not(feature = "magazine_layer"))]
+pub type ObjectAlloc<CA> = Lazy<Inner<CA>>;
+#[cfg(feature = "magazine_layer")]
+pub type ObjectAlloc<CA> = Lazy<DepotCache<Inner<CA>>>;
+
 
 /// A Dynamic memory allocator, parmetrized on a particular `ObjectAlloc`, `CourseAllocator` and
 /// `AllocMap`.
@@ -911,7 +934,14 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                 pa,
                 RevocablePipe::new_size_cleanup(16, clean),
             );
-            ObjectAlloc::new(params)
+            #[cfg(not(feature = "magazine_layer"))]
+            {
+                ObjectAlloc::new(params)
+            }
+            #[cfg(feature = "magazine_layer")]
+            {
+                ObjectAlloc::new((params, Depot::default()))
+            }
         });
         let max_size = am.max_key();
         ElfMalloc {
@@ -927,62 +957,60 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
     #[inline(always)]
     unsafe fn get_page_size(&self, item: *mut u8) -> Option<usize> {
         match get_type(item) {
-            // AllocType::SmallSlag => Some(self.small_pages.backing_memory().page_size()),
-            AllocType::SmallSlag => Some(ELFMALLOC_SMALL_PAGE_SIZE),
-            // AllocType::BigSlag => Some(self.large_pages.backing_memory().page_size()),
-            AllocType::BigSlag => Some(ELFMALLOC_PAGE_SIZE),
+            AllocType::SmallSlag => {
+                debug_assert_eq!(self.small_pages.backing_memory().page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
+                Some(ELFMALLOC_SMALL_PAGE_SIZE)
+            },
+            AllocType::BigSlag => {
+                debug_assert_eq!(self.large_pages.backing_memory().page_size(), ELFMALLOC_PAGE_SIZE);
+                Some(ELFMALLOC_PAGE_SIZE)
+            },
             AllocType::Large => None,
         }
     }
 
     unsafe fn alloc(&mut self, bytes: usize) -> *mut u8 {
-        if likely(bytes < self.max_size) {
+        if likely(bytes <= self.max_size) {
             self.allocs.get_mut(bytes).alloc()
         } else {
             large_alloc::alloc(bytes)
         }
     }
 
-    unsafe fn realloc(&mut self,
-                      item: *mut u8,
-                      mut new_size: usize,
-                      new_alignment: usize)
-                      -> *mut u8 {
+    unsafe fn realloc(
+        &mut self,
+        item: *mut u8,
+        mut new_size: usize,
+        new_alignment: usize,
+    ) -> *mut u8 {
         if item.is_null() {
-            return self.alloc(new_size);
+            let alloc_size = if new_alignment <= mem::size_of::<usize>() {
+                new_size
+            } else {
+                new_size.next_power_of_two()
+            };
+            return self.alloc(alloc_size);
         }
         if new_size == 0 {
             self.free(item);
             return ptr::null_mut();
         }
-        match self.get_page_size(item) {
-            Some(page_size) => {
-                let slag = &*Slag::find(item, page_size);
-                let meta = slag.get_metadata();
-                let old_size = meta.object_size;
-                if old_size.is_power_of_two() && new_size <= old_size {
-                    return item;
-                }
-                if new_alignment > mem::size_of::<usize>() && !new_size.is_power_of_two() &&
-                    new_size <= self.max_size
-                {
-                    new_size = new_size.next_power_of_two();
-                }
-                let new_memory = self.alloc(new_size);
-                ptr::copy_nonoverlapping(item, new_memory, meta.object_size);
-                self.free(item);
-                new_memory
-            }
-            None => {
-                let size = large_alloc::get_size(item);
-                if size >= new_size {
-                    return item;
-                }
-                let new_memory = self.alloc(new_size);
-                ptr::copy_nonoverlapping(item, new_memory, size);
-                new_memory
-            }
+        let (old_size, old_alignment) = global::get_layout(item);
+        if old_alignment >= new_alignment && old_size >= new_size {
+            return item;
         }
+        if new_alignment > mem::size_of::<usize>() {
+            new_size = new_size.next_power_of_two();
+        }
+        let new_mem = self.alloc(new_size);
+        ptr::copy_nonoverlapping(item, new_mem, ::std::cmp::min(old_size, new_size));
+        self.free(item);
+        #[cfg(debug_assertions)]
+        {
+            let (size, _) = global::get_layout(new_mem);
+            debug_assert!(new_size <= size, "Realloc for {} got memory with size {}", new_size, size);
+        }
+        new_mem
     }
 
     unsafe fn free(&mut self, item: *mut u8) {
@@ -1018,7 +1046,7 @@ mod large_alloc {
     thread_local! {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
-    use super::mmap::{map, unmap};
+    use super::mmap::{map, unmap, page_size};
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -1055,11 +1083,12 @@ mod large_alloc {
 
     pub unsafe fn free(item: *mut u8) {
         let (size, base_ptr) = get_commitment(item);
-
+        trace!("size={}, base_ptr={:?}", size, base_ptr);
         // begin extra debugging information:
         #[cfg(debug_assertions)]
         {
             ptr::write_volatile(item, 10);
+            debug_assert_eq!(base_ptr as usize % page_size(), 0);
         }
         #[cfg(test)]
         {
@@ -1157,22 +1186,24 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
-                    unsafe {
-                        let item = global::alloc(size * 8);
-                        write_volatile(item, 10);
-                        global::free(item);
-                    }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = global::alloc(size * 8);
+                                write_volatile(item, 10);
+                                global::free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1188,17 +1219,20 @@ mod tests {
         const N_THREADS: usize = 32;
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || unsafe {
-                for _ in 0..2 {
-                    let ptrs: Vec<*mut u8> = (0..(1 << 20)).map(|_| global::alloc(8)).collect();
-                    for p in ptrs {
-                        global::free(p);
-                    }
-                }
-            })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || unsafe {
+                        for _ in 0..2 {
+                            let ptrs: Vec<*mut u8> =
+                                (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                            for p in ptrs {
+                                global::free(p);
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
@@ -1210,37 +1244,42 @@ mod tests {
     fn realloc_basic() {
         let _ = env_logger::init();
         use std::thread;
-        const N_THREADS: usize = 32;
+        const N_THREADS: usize = 8;
         let alloc = DynamicAllocator::new();
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || for size in 1..(1 << 13) {
-                                        unsafe {
-                                            let item = da.alloc(size * 8);
-                                            write_bytes(item, 0xFF, size * 8);
-                                            let new_item =
-                                                da.aligned_realloc(item,
-                                                                   size * 16,
-                                                                   if size % 2 == 0 {
-                                                                       8
-                                                                   } else {
-                                                                       size.next_power_of_two()
-                                                                   });
-                                            write_bytes(item.offset(size as isize * 8),
-                                                        0xFE,
-                                                        size * 8);
-                                            da.free(new_item);
-                                        }
-                                        if size * 8 >= (1 << 20) {
-                                            return;
-                                        }
-                                    })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || for size in 1..(1 << 13) {
+                        const N_ITERS: usize = 8;
+                        let mut v1 = Vec::with_capacity(N_ITERS);
+                        let alloc_size = size * 8;
+                        if alloc_size >= (1 << 20) {
+                            return;
+                        }
+                        unsafe {
+                            for _ in 0..N_ITERS {
+                                let item = da.alloc(alloc_size);
+                                write_bytes(item, 0xFF, alloc_size);
+                                v1.push(item);
+                            }
+                            for i in 0..N_ITERS {
+                                let item = v1[i];
+                                let new_item = da.aligned_realloc(
+                                    item, alloc_size * 2, if size % 2 == 0 {
+                                        8
+                                    } else {
+                                        (alloc_size * 2).next_power_of_two()
+                                    });
+                                write_bytes(new_item.offset(alloc_size as isize), 0xFE, alloc_size);
+                                da.free(new_item);
+                            }
+                        }
+                    }).unwrap(),
+            );
         }
-
         for t in threads {
             t.join().expect("threads should exit successfully")
         }
@@ -1256,22 +1295,24 @@ mod tests {
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
-            threads.push(thread::Builder::new()
-                             .name(t.to_string())
-                             .spawn(move || {
-                for size in 1..(1 << 13) {
-                    // ((1 << 9) + 1)..((1 << 18) + 1) {
-                    unsafe {
-                        let item = da.alloc(size * 8);
-                        write_bytes(item, 0xFF, size * 8);
-                        da.free(item);
-                    }
-                    if size * 8 >= (1 << 20) {
-                        return;
-                    }
-                }
-            })
-                             .unwrap());
+            threads.push(
+                thread::Builder::new()
+                    .name(t.to_string())
+                    .spawn(move || {
+                        for size in 1..(1 << 13) {
+                            // ((1 << 9) + 1)..((1 << 18) + 1) {
+                            unsafe {
+                                let item = da.alloc(size * 8);
+                                write_bytes(item, 0xFF, size * 8);
+                                da.free(item);
+                            }
+                            if size * 8 >= (1 << 20) {
+                                return;
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         for t in threads {
