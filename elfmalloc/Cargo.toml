@@ -40,7 +40,7 @@ c-api = ["nightly"]
 [dependencies]
 bagpipe = "0.1.0"
 bsalloc = "0.1.0"
-lazy_static = "0.2"
+lazy_static = "0.2.9"
 libc = "0.2"
 log = "0.3.8"
 malloc-bind = { path = "../malloc-bind" }
