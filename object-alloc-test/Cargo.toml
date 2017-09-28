@@ -23,7 +23,7 @@ exclude = ["travis.sh"]
 
 [dependencies]
 interpolate_idents = "0.1"
-lazy_static = "0.2"
+lazy_static = "0.2.9"
 libc = "0.2"
 object-alloc = "0.1.0"
 quickcheck = "0.4"

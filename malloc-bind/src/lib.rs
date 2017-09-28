@@ -31,6 +31,7 @@
 #![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(const_fn)]
+#![feature(const_size_of)]
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("malloc-bind only supports Linux, and Mac, and Windows");

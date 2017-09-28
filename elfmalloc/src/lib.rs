@@ -13,6 +13,7 @@
 #![cfg_attr(feature = "nightly", feature(const_fn))]
 #![cfg_attr(feature = "nightly", feature(cfg_target_thread_local))]
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
+#![cfg_attr(feature = "nightly", feature(const_ptr_null_mut))]
 extern crate alloc;
 extern crate bagpipe;
 
