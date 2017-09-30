@@ -42,6 +42,7 @@
 //! instead want something more specialized, such as the `LocalAllocator` and `MagazineAllocator`
 //! object-specific allocators.
 
+use std::cmp;
 use std::ptr;
 use std::mem;
 
@@ -527,7 +528,7 @@ struct TieredSizeClasses<T> {
 impl<T> AllocMap<T> for TieredSizeClasses<T> {
     type Key = usize;
     fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, f: F) -> (F, Self) {
-        let n_small_classes = n_classes / 2;
+        let n_small_classes = cmp::min((ELFMALLOC_SMALL_CUTOFF / MULTIPLE) - (start / MULTIPLE), n_classes / 2);
         let n_medium_classes = n_classes - n_small_classes;
         let (f2, small_classes) = Multiples::init_conserve(start, n_small_classes, f);
         let (mut f3, medium_classes) =
@@ -815,6 +816,7 @@ impl Default for DynamicAllocator {
 // TODO(ezrosent): move this to a type parameter when const generics are in.
 const ELFMALLOC_PAGE_SIZE: usize = 2 << 20;
 const ELFMALLOC_SMALL_PAGE_SIZE: usize = 256 << 10;
+const ELFMALLOC_SMALL_CUTOFF: usize = ELFMALLOC_SMALL_PAGE_SIZE / 4;
 
 impl<M: MemorySource, D: DirtyFn>
     ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
@@ -900,7 +902,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes) as *mut Metadata;
         let small_page_size = pa_small.backing_memory().page_size();
         let am = AM::init(start_from, n_classes, |size: usize| {
-            let (u_size, pa, ty) = if size < small_page_size / 4 {
+            let (u_size, pa, ty) = if size < ELFMALLOC_SMALL_CUTOFF {
                 (small_page_size, pa_small.clone(), AllocType::SmallSlag)
             } else {
                 (
@@ -954,8 +956,19 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn get_page_size(&self, item: *mut u8) -> Option<usize> {
+        // We have carfeully orchestrated things so that allocation sizes above the cutoff are
+        // aligned to at least that cutoff:
+        // - Medium objects are powers of two, all of which are aligned to their size.
+        // - Large objects are allocated using an MmapSource with page size equivalent to the
+        //   cutoff.
+        // As a result, we do not have to dereference an extra pointer for small objects that are
+        // not aligned to the small cutoff (this is going to be most of them). This netted
+        // small-but-noticeable performance gains.
+        if (item as usize) % ELFMALLOC_SMALL_CUTOFF != 0 {
+            return Some(ELFMALLOC_SMALL_PAGE_SIZE);
+        }
         match get_type(item) {
             AllocType::SmallSlag => {
                 debug_assert_eq!(self.small_pages.backing_memory().page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
@@ -1036,8 +1049,10 @@ mod large_alloc {
     use std::collections::HashMap;
     #[cfg(test)]
     use std::cell::RefCell;
+    use std::cmp;
     use std::ptr;
-    use super::{ELFMALLOC_PAGE_SIZE, round_to_page};
+    use super::super::sources::{MemorySource, MmapSource};
+    use super::{ELFMALLOC_PAGE_SIZE, ELFMALLOC_SMALL_CUTOFF, round_to_page};
     use super::super::alloc_type::AllocType;
 
     // For debugging, we keep around a thread-local map of pointers to lengths. This helps us
@@ -1046,7 +1061,9 @@ mod large_alloc {
     thread_local! {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
-    use super::mmap::{map, unmap, page_size};
+    use super::mmap::unmap;
+    #[cfg(debug_assertions)]
+    use super::mmap::page_size;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -1059,7 +1076,11 @@ mod large_alloc {
     pub unsafe fn alloc(size: usize) -> *mut u8 {
         // TODO(ezrosent) round up to page size
         let region_size = size + ELFMALLOC_PAGE_SIZE;
-        let mem = map(region_size);
+        // We need a pointer aligned to the SMALL_CUTOFF, so we use an `MmapSource` to map the
+        // memory. See the comment in get_page_size.
+        let src = MmapSource::new(ELFMALLOC_SMALL_CUTOFF);
+        let n_pages = region_size / ELFMALLOC_SMALL_CUTOFF + cmp::min(1, region_size % ELFMALLOC_SMALL_CUTOFF);
+        let mem = src.carve(n_pages).expect("[lage_alloc::alloc] mmap failed");
         let res = mem.offset(ELFMALLOC_PAGE_SIZE as isize);
         let addr = get_commitment_mut(res);
         ptr::write(

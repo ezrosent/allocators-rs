@@ -25,14 +25,10 @@ different allocators' thread-local cache sizes.
 
 In addition to a standard version (called simply `elfmalloc`), we provide the
 variant `elfmalloc-l`. The `-l` refers to the use of the `LocalCache` front-end
-for the allocator, as opposed to the `MagazineCache` frontend used in the
+for the allocator, as opposed to the `MagazineCache` front-end used in the
 default configuration. While `elfmalloc` is almost always superior in terms of
-both throughput and memory usage, `elfmalloc-l` provides better performance in
-the producer-consumer benchmark.
-
-While we are still working on improving the default to have the advantages of
-both frontends, we report the performance numbers of both allocators for the
-time being.
+both throughput and memory usage, `elfmalloc-l` is useful for performance
+evaluation as it provides a "no-cache" baseline for allocator performance.
 
 ## Benchmarks
 
@@ -55,18 +51,33 @@ encourage anyone curious to examine Section 7 of that paper.
     varying object lifetimes. Our understanding is that this benchmark is due to
     [Larson et al](https://pdfs.semanticscholar.org/e41a/d0406628edf82712d16cf4c6d7e486f26f9f.pdf).
 
+  * *rpmalloc-benchmark*: This benchmark performs a (somewhat unrealistic)
+    workload of randomly-distributed allocation sizes. This benchmark is
+    included because it can be configured to provide a succinct
+    producer-consumer workload: one where objects are allocated and freed in
+    different threads. This is the configuration we use in the measurements
+    below.
+
+  <!-- 
+
+  NOTE: we no longer report results from this workload, as I do not believe the
+  original numbers were reported correctly. We will look into how scalloc
+  reports results from this benchmark and potentially re-add them in the future.
+
   * *ACDC Producer-Consumer Workload*: This benchmark involves each
     thread sending a portion of its allocated objects to other threads
     participating in the benchmark. Those threads (not the allocating
     thread) are the ones that ultimately free those objects. The [ACDC
     framework](https://github.com/cksystemsgroup/ACDC) was developed by
     the scalloc authors.
+  -->
 
 The data here were gathered using a version of the [`scalloc`
 artifact](https://github.com/cksystemsgroup/scalloc-artifact).  The only
-modifications to the artifact were ones that allowed it to run on our testing
-setup. These involve tweaking some benchmark parameters to cope with how
-Windows Subsystem for Linux (WSL) handles overcommit.
+modifications to the artifact were tweaks of object sizes (for the "large
+object" variants) and iteration counts to reduce variance and test robustness
+for larger workloads. The rpmalloc benchmark is not included in the artifact, so
+we adapted it to output similar results.
 
 These benchmarks were conducted on a 16-core 32-thread workstation with
 2 Xeon E5-2620v4 CPUs on the WSL. We benchmark these workloads at 1,
@@ -97,13 +108,20 @@ getting to run on WSL due to some `mmap`-related issues).
     numbers represent performance for ptmalloc version 2.19; the default
     present from the version of glibc in use.
 
+  * `rpmalloc`: [link](https://github.com/rampantpixels/rpmalloc) for more
+     information.
+
 ## Measurements
 
-We provide measurements of both memory consumption throughput for the 3
-workloads described above. A common theme among these results is that `llalloc`
-provides substantially higher throughput compared to `jemalloc`, at the cost of
-much higher memory consumption. By contrast, `elfmalloc` often provides better
-performance than `llalloc` while using a similar amount of memory to `jemalloc`.
+We provide measurements of both memory consumption and throughput for the 3
+workloads described above. A common theme here is that `elfmalloc` provides
+consistently high throughput, sometimes at the cost of increased memory usage.
+By the same token, if you see an allocator failing to scale up it is worth
+looking at heap growth for the same workload. Some allocators like `rpmalloc`
+return memory to the OS more aggressively than `elfmalloc`, effectively trading
+off improved memory efficiency for reduced throughput. We are still working on
+tuning `elfmalloc` to be less profligate with memory under certain
+circumstances.
 
 In order to make the graphs at all readable, we express throughput in terms of a
 multiple over the performance of `ptmalloc2`, which is consistently the slowest
@@ -113,9 +131,9 @@ better; for memory consumption less is better.
 
 ### Threadtest
 
-Threadtest shows `elfmalloc` almost splitting the difference between `jemalloc`
-and `llalloc`: both in terms of memory usage and throughput. `elfmalloc-l` has
-disappointing memory performance that we are still looking into.
+Threadtest shows `elfmalloc` having the highest throughput (except for 32
+threads, where it is a bit behind `jemalloc`), at the cost of a noticeable
+increase in memory usage.
 
 *Threadtest Throughput (Small Objects)*
 
@@ -125,10 +143,14 @@ disappointing memory performance that we are still looking into.
 
 ![Threadtest Memory](elfmalloc-data/threadtest-small-mem.png?raw=true)
 
-For larger objects, `elfmalloc` gets closer in terms of throughput to `llalloc`
-while exceeding the memory efficiency of `jemalloc` at higher thread-counts.
-Both object sizes show an odd spike of memory usage at 4 and 8 threads: we are
-still looking into why this occurs.
+For larger objects, `elfmalloc` comes out on top in terms of throughput for 32
+threads. Unlike the case of smaller objects, `elfmalloc` has memory usage
+roughly in line with that of `jemalloc`. One interesting point here is the
+memory usage of `elfmalloc-l`. Here we see the counter-intuitive result that
+increased thread-local cache sizes can lead to *lower* memory consumption. We
+suspect that this is because `threadtest` includes long stretches of allocation
+followed by relatively limited deallocation, limiting the re-use of allocated
+pages.
 
 *Threadtest Throughput (Medium Objects)*
 
@@ -142,13 +164,14 @@ still looking into why this occurs.
 
 For `shbench`, `elfmalloc` out-performs all competition in terms of both memory
 and throughput for higher core-counts, though it lags behind `llalloc` early
-on.. `elfmalloc-l` performs similarly well, though slightly worse on average.
-It provides very good memory performance across the board, sometimes better
-than `jemalloc`.
+on.. `elfmalloc-l` performs similarly well, though slightly worse on average for
+smaller objects, and slightly better for larger objects.  `elfmalloc` also
+provides very good memory performance across the board, sometimes better than
+`jemalloc`.
 
-Also of note is the memory consumption of `ptmalloc2` and `llalloc`: something
-about the varying lifetimes of objects seems to trip these allocators up here,
-as they use over an order of magnitude more memory than `jemalloc` and
+Also of note is the memory consumption of `ptmalloc2`, `llalloc` and `rpmalloc`:
+something about the varying lifetimes of objects seems to trip these allocators
+up here, as they use over an order of magnitude more memory than `jemalloc` and
 `elfmalloc`.
 
 *Shbench Throughput (Small Objects)*
@@ -171,10 +194,8 @@ We see a similar improvement for shebench on larger objects.
 
 ### Producer-Consumer
 
-As mentioned above, the producer-consumer benchmark shows `elfmalloc-l`
-outperforming the other allocators in terms of throughput, while using memory
-at a level between those of `llalloc` and `jemalloc`. `elfmalloc` performs
-similarly, though it often falls behind `jemalloc` in terms of throughput.
+Like threadtest, `elfmalloc` has the highest throughput in this workload at the
+cost of increased memory consumption.
 
 *Producer-Consumer Throughput*
 
