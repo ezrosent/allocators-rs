@@ -15,3 +15,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Added this changelog
+- Bagpipes can now call drop on their elements when they are dropped. This does
+  not happen automatically, but there is a new trait to inject cleanup callbacks
+  to `BagPipe` shutdown.
+
+### Fixed
+- Fixed a bug where crossbeam TLS would remain uninitialized upon cloning a
+  `BagPipe`, resulting in stack overflow in `elfmalloc`.

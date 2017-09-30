@@ -17,7 +17,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Added this changelog
 - Implemented `Alloc` trait
 - Implemented `malloc-bind`'s `LayoutFinder` and `Malloc` traits
+- Added new metadata management mechanism that eliminates dependency on the `Creek`
+  and overcommit more generally
+- Substantial refactoring of the code into separate traits/modules.
+- Added experimental magazine/depot-style frontend. Currently still
+  experimental; it is almost always slower than `LocalCache` and
+  `MagazineCache`.
 
 ### Fixed
 - Fixed a bug preventing non-nightly builds from compiling
 - Fixed an integer multiplication overflow bug
+- Added workaround to avoid double-drop behavior in certain `malloc` workloads.
+- Fixed "recursive `malloc`" bug caused by failing to initialize the `crossbeam`
+  TLS early enough.
