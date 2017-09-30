@@ -10,7 +10,9 @@
 set -x
 set -e
 
-# Skip elfmalloc tests until we can get them working.
+# Skip elfmalloc tests until we can get them working (still build so we can
+# detect compilation failures).
+travis-cargo --only nightly build
 exit 0
 
 travis-cargo --only nightly build
