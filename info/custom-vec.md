@@ -47,16 +47,17 @@ design could be improved or simplified if it *only* had to implement that trait.
 The end result is a similar design that differs from the original in two chief
 ways:
 
-* We no longer rely on mapping a huge segment of memory at startup: when a
-  thread needs fresh memory from the OS, it just calls `mmap` for a few more
-  pages.
+* We do not require complex metadata management to differentiate allocation
+  subsystems (see "Determining Allocation Source..." at the bottom of the
+  [elfmalloc doc](https://github.com/ezrosent/allocators-rs/blob/master/info/elfmalloc.md))
 
-* We only use the slab subsystem for relatively small objects. Medium-sized
-  objects are now allocated directly from `PageAlloc` structures. This cuts down
-  on metadata management and fragmentation for larger objects.
+* We only use the slab subsystem for relatively small
+  objects. Medium-sized objects are now allocated directly from
+  `PageAlloc`-like structures. This cuts down on metadata management and
+  fragmentation for larger objects.
 
-<!-- TODO(ezrosent): fill in this link once pushed to master -->
-For more information on this design, check out the documentation.
+For more information on this design, check out [the
+code](https://github.com/ezrosent/allocators-rs/blob/master/elfmalloc/src/rust_alloc.rs).
 
 ## Using a Custom `Vec`
 
