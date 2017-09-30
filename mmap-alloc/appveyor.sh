@@ -18,6 +18,3 @@ export RUST_TEST_THREADS=1
 
 cargo build
 RUST_BACKTRACE=1 cargo test
-for feature in test-no-std; do
-  RUST_BACKTRACE=1 cargo test --features "$feature"
-done
