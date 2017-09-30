@@ -451,13 +451,7 @@ mod magazine {
         }
 
         unsafe fn default() -> *mut Magazine {
-            let res = Magazine::new(508);
-            #[cfg(debug_assertions)]
-            {
-                if mmap::page_size() == 4096 {
-                    debug_assert_eq!((*res).mapped, 4096);
-                }
-            }
+            let res = Magazine::new(3068);
             res
         }
 
@@ -538,7 +532,7 @@ mod magazine {
 
         fn new() -> Depot {
             use super::super::num_cpus;
-            Depot::new_size(1 << 10, num_cpus::get(), num_cpus::get())
+            Depot::new_size(1 << 20, num_cpus::get(), num_cpus::get())
         }
 
         /// Return an empty `Magazine` to the `Depot`.
