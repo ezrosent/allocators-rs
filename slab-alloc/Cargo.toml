@@ -39,10 +39,10 @@ hashmap-no-resize = []
 hashmap-no-coalesce = []
 
 [dependencies]
-interpolate_idents = "0.1"
+interpolate_idents = "0.1.8"
 lazy_static = { version = "0.2.9", features = ["spin_no_std"] }
 mmap-alloc = "0.1.0"
 object-alloc = "0.1.0"
-object-alloc-test = "0.1.0"
+object-alloc-test = { path = "../object-alloc-test" }
 rand = "0.3"
 sysconf = "0.3.1"

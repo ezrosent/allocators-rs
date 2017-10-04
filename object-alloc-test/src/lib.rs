@@ -9,6 +9,7 @@
 #![feature(allocator_api)]
 #![feature(test)]
 #![feature(const_fn)]
+#![feature(const_size_of)]
 #![feature(plugin)]
 
 #![plugin(interpolate_idents)]

@@ -22,7 +22,7 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc
 exclude = ["travis.sh"]
 
 [dependencies]
-interpolate_idents = "0.1"
+interpolate_idents = "0.1.8"
 lazy_static = "0.2.9"
 libc = "0.2"
 object-alloc = "0.1.0"
