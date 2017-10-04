@@ -585,6 +585,7 @@ pub unsafe trait Malloc: LayoutFinder
     /// - If there is not sufficient memory to satisfy the request, `_aligned_malloc` sets `errno`
     ///   to `ENOMEM` and returns `NULL`.
     #[cfg(windows)]
+    #[allow(non_snake_case)]
     unsafe fn c__aligned_malloc(&self, size: size_t, alignment: size_t) -> *mut c_void {
         // See https://msdn.microsoft.com/en-us/library/8z34s9c6.aspx
 
@@ -601,7 +602,8 @@ pub unsafe trait Malloc: LayoutFinder
         // think they have a smaller memory region than they actually do.
         let size = roundup(size, alignment);
         let layout = layout_from_size_align(size as usize, alignment);
-        match self.alloc(layout.clone()) {
+        let mut slf = self;
+        match (&mut slf).alloc(layout.clone()) {
             Ok(ptr) => {
                 self.insert_layout(ptr, layout);
                 ptr as *mut c_void
