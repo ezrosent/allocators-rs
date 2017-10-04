@@ -703,11 +703,12 @@ mod magazine {
                 let m = Magazine::default();
                 let m_ref = &mut*m;
                 let goal = m_ref.cap;
-                for i in 0..goal {
+                // start at 1 because we debug_assert that the pointer is non-null
+                for i in 1..(goal + 1) {
                     assert!(m_ref.push(i as *mut u8));
                 }
                 assert!(!m_ref.push(8 as *mut u8));
-                assert_eq!(m_ref.pop(), Some((m_ref.cap-1) as *mut u8));
+                assert_eq!(m_ref.pop(), Some(m_ref.cap as *mut u8));
                 assert!(m_ref.push(8 as *mut u8));
                 Magazine::destroy(m);
             }
