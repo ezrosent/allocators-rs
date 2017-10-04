@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   and Windows (by using the `VirtualQuery` function)
 
 ### Removed
+- Removed huge page support
 - Removed `commit` method on on Linux and Mac
 - Removed tests for `mmap`s at NULL on Linux and Mac, as it turns out they are
   guaranteed not to happen

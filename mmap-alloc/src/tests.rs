@@ -67,7 +67,7 @@ fn test_map() {
         // - The returned pointer is page-aligned
         // - The page is zero-filled (on Windows, after the page is committed)
         // - Unmapping it after it's already been unmapped is OK (except on windows).
-        let mut ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        let mut ptr = map(pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ_WRITE);
@@ -82,7 +82,7 @@ fn test_map() {
         // - The returned pointer is page-aligned
         // - The pages are zero-filled (on Windows, after the page is committed)
         // - Unmapping it after it's already been unmapped is OK (except on windows).
-        ptr = map(16 * pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        ptr = map(16 * pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, 16 * pagesize(), PROT_READ_WRITE);
@@ -100,7 +100,7 @@ fn test_map_non_windows() {
         // Check that:
         // - Unmapping a subset of a previously-mapped region works
         // - The remaining pages are still mapped
-        let mut ptr = map(5 * pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        let mut ptr = map(5 * pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         test_zero_filled(ptr, 5 * pagesize());
         unmap(ptr, pagesize());
@@ -119,7 +119,7 @@ fn test_map_non_windows() {
         // test_valid_map_address.
         let size = 1 << 29;
         let t0 = Instant::now();
-        ptr = map(size, PROT_READ_WRITE, false, None).unwrap();
+        ptr = map(size, PROT_READ_WRITE, false).unwrap();
         // In tests on a 2016 MacBook Pro (see bench_large_map), a 2^31 byte map/unmap pair
         // took ~5 usec natively (Mac OS X) and ~350 ns in a Linux VM. Thus, 1 ms is a safe
         // upper bound.
@@ -371,12 +371,7 @@ fn test_commit() {
         // - The returned pointer is page-aligned
         // - We can read that page, and it is zero-filled (on Unix, this test is trivial, but
         //   on Windows, it ensures that map properly committed the page)
-        let mut ptr = map(
-            pagesize(),
-            PROT_READ_WRITE,
-            !cfg!(target_os = "macos"),
-            None,
-        ).unwrap();
+        let mut ptr = map(pagesize(), PROT_READ_WRITE, !cfg!(target_os = "macos")).unwrap();
         test_valid_map_address(ptr);
         test_zero_filled(ptr, pagesize());
         unmap(ptr, pagesize());
@@ -389,7 +384,7 @@ fn test_commit() {
         // - On Windows, we can commit the page after it has already been committed
         // - We can uncommit the page
         // - We can uncommit the page after it has already been uncommitted
-        ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        ptr = map(pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ_WRITE);
@@ -411,7 +406,7 @@ fn test_perms() {
         // - The returned pointer is page-aligned
         // - We can read the page, and it is zero-filled (on Windows, after the page is committed)
         // - It has the proper permissions (on Linux)
-        let mut ptr = map(pagesize(), PROT_READ, false, None).unwrap();
+        let mut ptr = map(pagesize(), PROT_READ, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ);
@@ -426,7 +421,7 @@ fn test_perms() {
         // - The returned pointer is page-aligned
         // - We can write to the page (on Windows, after the page is committed)
         // - It has the proper permissions (on Linux)
-        ptr = map(pagesize(), PROT_WRITE, false, None).unwrap();
+        ptr = map(pagesize(), PROT_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_WRITE);
@@ -442,7 +437,7 @@ fn test_perms() {
         // - We can read the page, and it is zero-filled (on Windows, after the page is committed)
         // - We can write to the page, and those writes are properly read back
         // - It has the proper permissions (on Linux)
-        ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        ptr = map(pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ_WRITE);
@@ -457,7 +452,7 @@ fn test_perms() {
             fn test_perms(perm: Perm) {
                 unsafe {
                     // Perform the same checks as above on arbitrary permissions.
-                    let ptr = map(pagesize(), perm, false, None).unwrap();
+                    let ptr = map(pagesize(), perm, false).unwrap();
                     test_valid_map_address(ptr);
                     assert_block_perm(ptr, pagesize(), perm);
                     unmap(ptr, pagesize());
@@ -481,7 +476,7 @@ fn test_map_panic_zero() {
     unsafe {
         // Check that zero length causes map to panic. On Windows, our map implementation never
         // panics.
-        map(0, PROT_READ_WRITE, false, None);
+        map(0, PROT_READ_WRITE, false);
     }
 }
 
@@ -494,7 +489,7 @@ fn test_map_panic_too_large() {
         // implementation never panics. On 64-bit Linux, map simply responds to overly large maps
         // by returning ENOMEM.
         use core::usize::MAX;
-        map(MAX, PROT_READ_WRITE, false, None);
+        map(MAX, PROT_READ_WRITE, false);
     }
 }
 
@@ -507,7 +502,7 @@ fn test_unmap_panic_zero() {
         // ignored, so the page will simply be unmapped normally.
 
         // NOTE: This test leaks memory, but it's only a page, so it doesn't really matter.
-        let ptr = map(pagesize(), PROT_READ_WRITE, false, None).unwrap();
+        let ptr = map(pagesize(), PROT_READ_WRITE, false).unwrap();
         unmap(ptr, 0);
     }
 }
@@ -528,7 +523,7 @@ fn bench_large_map(b: &mut Bencher) {
     // Determine the speed of mapping a large region of memory so that we can tune the timeout
     // in test_map_non_windows.
     b.iter(|| unsafe {
-        let ptr = map(1 << 29, PROT_READ_WRITE, false, None).unwrap();
+        let ptr = map(1 << 29, PROT_READ_WRITE, false).unwrap();
         unmap(ptr, 1 << 29);
     })
 }
