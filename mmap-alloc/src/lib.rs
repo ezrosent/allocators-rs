@@ -87,24 +87,14 @@ pub struct MapAllocBuilder {
     exec: bool,
     // Only supported on Linux (which has MAP_POPULATE) and Windows (which has MEM_COMMIT)
     commit: bool,
+    // sysconf::page::pagesize might be inefficient, so store a copy of the pagesize to ensure that
+    // loading it is efficient
     pagesize: usize,
-    huge_pagesize: Option<usize>,
     obj_size: Option<usize>,
 }
 
 impl MapAllocBuilder {
     pub fn build(&self) -> MapAlloc {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(huge) = self.huge_pagesize {
-                assert!(
-                    sysconf::page::hugepage_supported(huge),
-                    "unsupported hugepage size: {}",
-                    huge
-                );
-            }
-        }
-
         let obj_size = if let Some(obj_size) = self.obj_size {
             assert_eq!(
                 obj_size % self.pagesize,
@@ -119,7 +109,6 @@ impl MapAllocBuilder {
         };
         MapAlloc {
             pagesize: self.pagesize,
-            huge_pagesize: self.huge_pagesize,
             read: self.read,
             write: self.write,
             exec: self.exec,
@@ -127,19 +116,6 @@ impl MapAllocBuilder {
             commit: self.commit,
             obj_size: obj_size,
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    pub fn default_huge_pagesize(mut self) -> MapAllocBuilder {
-        let pagesize = sysconf::page::default_hugepage().expect("huge pages not supported");
-        self.pagesize = pagesize;
-        self.huge_pagesize = Some(pagesize);
-        self
-    }
-
-    pub fn huge_pagesize(mut self, pagesize: usize) -> MapAllocBuilder {
-        self.huge_pagesize = Some(pagesize);
-        self
     }
 
     /// Configures read permission for allocated memory.
@@ -222,15 +198,15 @@ impl Default for MapAllocBuilder {
             exec: false,
             commit: false,
             pagesize: sysconf::page::pagesize(),
-            huge_pagesize: None,
             obj_size: None,
         }
     }
 }
 
 pub struct MapAlloc {
+    // sysconf::page::pagesize might be inefficient, so store a copy of the pagesize to ensure that
+    // loading it is efficient
     pagesize: usize,
-    huge_pagesize: Option<usize>,
     #[cfg_attr(target_os = "linux", allow(unused))] read: bool,
     #[cfg_attr(target_os = "linux", allow(unused))] write: bool,
     #[cfg_attr(target_os = "linux", allow(unused))] exec: bool,
@@ -324,25 +300,14 @@ impl MapAlloc {
     }
 
     fn debug_verify_ptr(&self, ptr: *mut u8, layout: Layout) {
-        if let Some(huge) = self.huge_pagesize {
-            debug_assert_eq!(
-                ptr as usize % huge,
-                0,
-                "ptr {:?} not aligned to huge page size {}",
-                ptr,
-                huge
-            );
-            debug_assert!(layout.align() <= huge);
-        } else {
-            debug_assert_eq!(
-                ptr as usize % self.pagesize,
-                0,
-                "ptr {:?} not aligned to page size {}",
-                ptr,
-                self.pagesize
-            );
-            debug_assert!(layout.align() <= self.pagesize);
-        }
+        debug_assert_eq!(
+            ptr as usize % self.pagesize,
+            0,
+            "ptr {:?} not aligned to page size {}",
+            ptr,
+            self.pagesize
+        );
+        debug_assert!(layout.align() <= self.pagesize);
     }
 }
 
@@ -359,8 +324,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         }
 
         let size = next_multiple(layout.size(), self.pagesize);
-        map(size, self.perms, self.commit, self.huge_pagesize)
-            .ok_or(AllocErr::Exhausted { request: layout })
+        map(size, self.perms, self.commit).ok_or(AllocErr::Exhausted { request: layout })
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
@@ -665,33 +629,13 @@ fn next_multiple(size: usize, unit: usize) -> usize {
 // method.
 
 #[cfg(target_os = "linux")]
-unsafe fn map(
-    size: usize,
-    perms: i32,
-    commit: bool,
-    huge_pagesize: Option<usize>,
-) -> Option<*mut u8> {
-    use libc::{ENOMEM, MAP_ANONYMOUS, MAP_FAILED, MAP_HUGETLB, MAP_POPULATE, MAP_PRIVATE};
+unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<*mut u8> {
+    use libc::{ENOMEM, MAP_ANONYMOUS, MAP_FAILED, MAP_POPULATE, MAP_PRIVATE};
 
     // TODO: Figure out when it's safe to pass MAP_UNINITIALIZED (it's not defined in all
     // versions of libc). Be careful about not invalidating alloc_zeroed.
 
-    // MAP_HUGE_SHIFT isn't used on all kernel versions, but I assume it must be
-    // backwards-compatible. The only way for it to not be backwards-compatible would be for
-    // there to be bits in the range [26, 31] (in the 'flags' argument) that used to be
-    // meaningful. That would make old programs fail on newer kernels. In theory, old kernels
-    // could be checking to make sure that undefined flags aren't set, but that seems unlikely.
-    // See:
-    // http://elixir.free-electrons.com/linux/latest/source/arch/alpha/include/uapi/asm/mman.h
-    // http://man7.org/linux/man-pages/man2/mmap.2.html
-    const MAP_HUGE_SHIFT: usize = 26;
-    let flags = if let Some(pagesize) = huge_pagesize {
-        debug_assert!(pagesize.is_power_of_two()); // implies pagesize > 0
-        let log = pagesize.trailing_zeros();
-        MAP_HUGETLB | ((log as i32) << MAP_HUGE_SHIFT)
-    } else {
-        0
-    } | if commit { MAP_POPULATE } else { 0 };
+    let flags = if commit { MAP_POPULATE } else { 0 };
 
     let ptr = libc::mmap(
         ptr::null_mut(),
@@ -721,18 +665,10 @@ unsafe fn map(
 
 // commit must be false
 #[cfg(target_os = "macos")]
-unsafe fn map(
-    size: usize,
-    perms: i32,
-    commit: bool,
-    huge_pagesize: Option<usize>,
-) -> Option<*mut u8> {
+unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<*mut u8> {
     use libc::{ENOMEM, MAP_ANON, MAP_FAILED, MAP_PRIVATE};
 
     debug_assert!(!commit);
-
-    // TODO: Support superpages (see MAP_ANON description in mmap manpage)
-    debug_assert!(huge_pagesize.is_none());
 
     let ptr = libc::mmap(ptr::null_mut(), size, perms, MAP_ANON | MAP_PRIVATE, -1, 0);
 
@@ -763,20 +699,11 @@ type WindowsSize = u64;
 // https://blogs.technet.microsoft.com/markrussinovich/2008/11/17/pushing-the-limits-of-windows-virtual-memory/
 
 #[cfg(windows)]
-unsafe fn map(
-    size: usize,
-    perms: u32,
-    commit: bool,
-    huge_pagesize: Option<usize>,
-) -> Option<*mut u8> {
+unsafe fn map(size: usize, perms: u32, commit: bool) -> Option<*mut u8> {
     use kernel32::VirtualAlloc;
-    use winapi::winnt::{MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE};
+    use winapi::winnt::{MEM_COMMIT, MEM_RESERVE};
 
-    let typ = MEM_RESERVE | if commit { MEM_COMMIT } else { 0 } | if huge_pagesize.is_some() {
-        MEM_LARGE_PAGES
-    } else {
-        0
-    };
+    let typ = MEM_RESERVE | if commit { MEM_COMMIT } else { 0 };
 
     // NOTE: While Windows makes a distinction between allocation granularity and page size (see
     // https://msdn.microsoft.com/en-us/library/windows/desktop/ms724958(v=vs.85).aspx),
