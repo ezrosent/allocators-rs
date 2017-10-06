@@ -531,14 +531,18 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
         let n_small_classes = cmp::min((ELFMALLOC_SMALL_CUTOFF / MULTIPLE) - (start / MULTIPLE), n_classes / 2);
         let n_medium_classes = n_classes - n_small_classes;
         let (f2, small_classes) = Multiples::init_conserve(start, n_small_classes, f);
+        // mutability is unnecessary when we don't execute the 'let word_objs = f3(8)' line
+        #[allow(unused_mut)]
         let (mut f3, medium_classes) =
             PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
+        #[cfg(any(not(feature = "c-api"),
+                    not(any(target_os = "macos",
+                                all(windows, target_pointer_width = "64")))))]
         let word_objs = f3(8);
         (
             f3,
             TieredSizeClasses {
                 // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
-                #[cfg(any(not(feature = "c-api"), not(any(target_os = "macos", all(windows, target_pointer_width = "64")))))]
                 #[cfg(any(not(feature = "c-api"),
                             not(any(target_os = "macos",
                                         all(windows, target_pointer_width = "64")))))]
@@ -581,8 +585,13 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
     }
 
     fn foreach<F: Fn(*mut T)>(&self, f: F) {
-        if let Some(r) = self.word_objs.as_ref() {
-            f(r as *const _ as *mut T);
+        #[cfg(any(not(feature = "c-api"),
+                    not(any(target_os = "macos",
+                                all(windows, target_pointer_width = "64")))))]
+        {
+            if let Some(r) = self.word_objs.as_ref() {
+                f(r as *const _ as *mut T);
+            }
         }
         self.small_objs.foreach(&f);
         self.medium_objs.foreach(f);
@@ -680,6 +689,9 @@ impl Drop for DynamicAllocator {
         unsafe {
             self.0.allocs.medium_objs.classes.destroy();
             self.0.allocs.small_objs.classes.destroy();
+            #[cfg(any(not(feature = "c-api"),
+                        not(any(target_os = "macos",
+                                    all(windows, target_pointer_width = "64")))))]
             ptr::write(&mut self.0.allocs.word_objs, None);
         }
     }
