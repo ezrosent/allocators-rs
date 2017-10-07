@@ -17,8 +17,9 @@ use std::thread;
 use std::time;
 use std::ptr::write_volatile;
 
-use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
-use elfmalloc::general::global;
+// use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
+// use elfmalloc::general::global;
+use elfmalloc::alloc_impl::ElfMallocGlobal;
 use elfmalloc::general::DynamicAllocator;
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -40,25 +41,25 @@ where
     fn kill(&mut self) {}
 }
 
-impl<T: 'static> AllocLike for MagazineAllocator<T> {
-    type Item = T;
-    fn create() -> Self {
-        AllocBuilder::default()
-            .cutoff_factor(0.8)
-            .page_size(PAGE_SIZE)
-            .eager_decommit_threshold(EAGER_DECOMMIT)
-            .build_magazine()
-    }
-
-    unsafe fn allocate(&mut self) -> *mut T {
-        self.alloc()
-    }
-
-    unsafe fn deallocate(&mut self, item: *mut T) {
-        self.free(item)
-    }
-    fn kill(&mut self) {}
-}
+// impl<T: 'static> AllocLike for MagazineAllocator<T> {
+//     type Item = T;
+//     fn create() -> Self {
+//         AllocBuilder::default()
+//             .cutoff_factor(0.8)
+//             .page_size(PAGE_SIZE)
+//             .eager_decommit_threshold(EAGER_DECOMMIT)
+//             .build_magazine()
+//     }
+//
+//     unsafe fn allocate(&mut self) -> *mut T {
+//         self.alloc()
+//     }
+//
+//     unsafe fn deallocate(&mut self, item: *mut T) {
+//         self.free(item)
+//     }
+//     fn kill(&mut self) {}
+// }
 
 struct ElfGlobal<T>(marker::PhantomData<T>);
 impl<T> Clone for ElfGlobal<T> {
@@ -68,6 +69,8 @@ impl<T> Clone for ElfGlobal<T> {
 }
 unsafe impl<T> Send for ElfGlobal<T> {}
 
+use alloc::allocator::{Alloc, Layout};
+
 impl<T: 'static> AllocLike for ElfGlobal<T> {
     type Item = T;
     fn create() -> Self {
@@ -75,11 +78,13 @@ impl<T: 'static> AllocLike for ElfGlobal<T> {
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        global::alloc(mem::size_of::<T>()) as *mut T
+        (&ElfMallocGlobal{}).alloc(Layout::new::<T>()).unwrap() as *mut T
+        // global::alloc(mem::size_of::<T>()) as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        global::free(item as *mut u8)
+        (&ElfMallocGlobal{}).dealloc(item as *mut u8, Layout::new::<T>())
+        // global::free(item as *mut u8)
     }
 
     fn kill(&mut self) {}
@@ -110,25 +115,25 @@ impl<T: 'static> AllocLike for ElfClone<T> {
     fn kill(&mut self) {}
 }
 
-impl<T: 'static> AllocLike for LocalAllocator<T> {
-    type Item = T;
-    fn create() -> Self {
-        AllocBuilder::default()
-            .cutoff_factor(0.8)
-            .page_size(PAGE_SIZE)
-            .eager_decommit_threshold(EAGER_DECOMMIT)
-            .build_local()
-    }
-
-    unsafe fn allocate(&mut self) -> *mut T {
-        self.alloc()
-    }
-
-    unsafe fn deallocate(&mut self, item: *mut T) {
-        self.free(item)
-    }
-    fn kill(&mut self) {}
-}
+// impl<T: 'static> AllocLike for LocalAllocator<T> {
+//     type Item = T;
+//     fn create() -> Self {
+//         AllocBuilder::default()
+//             .cutoff_factor(0.8)
+//             .page_size(PAGE_SIZE)
+//             .eager_decommit_threshold(EAGER_DECOMMIT)
+//             .build_local()
+//     }
+//
+//     unsafe fn allocate(&mut self) -> *mut T {
+//         self.alloc()
+//     }
+//
+//     unsafe fn deallocate(&mut self, item: *mut T) {
+//         self.free(item)
+//     }
+//     fn kill(&mut self) {}
+// }
 
 struct DefaultMalloc<T>(marker::PhantomData<T>);
 
@@ -427,16 +432,16 @@ macro_rules! run_bench_inner {
     ($bench:tt, $nthreads:expr, $iters:expr) => {
         let iters = $iters;
         let nthreads = $nthreads;
-        println!("global malloc");
-        $bench::<DefaultMalloc<BenchItem>>(nthreads, iters);
+        // println!("global malloc");
+        // $bench::<DefaultMalloc<BenchItem>>(nthreads, iters);
         println!("global slag allocator");
         $bench::<ElfGlobal<BenchItem>>(nthreads, iters);
-        println!("clone-based slag allocator");
-        $bench::<ElfClone<BenchItem>>(nthreads, iters);
-        println!("slag allocator");
-        $bench::<LocalAllocator<BenchItem>>(nthreads, iters);
-        println!("slagazine allocator");
-        $bench::<MagazineAllocator<BenchItem>>(nthreads, iters);
+        // println!("clone-based slag allocator");
+        // $bench::<ElfClone<BenchItem>>(nthreads, iters);
+        // println!("slag allocator");
+        // $bench::<LocalAllocator<BenchItem>>(nthreads, iters);
+        // println!("slagazine allocator");
+        // $bench::<MagazineAllocator<BenchItem>>(nthreads, iters);
     };
 }
 
@@ -464,8 +469,8 @@ fn main() {
 
     run_bench!(both "alloc/free pairs", bench_alloc_free_pairs, nthreads, ITERS);
     run_bench!(both "buffered alloc/free pairs", bench_alloc_free_pairs_buffered, nthreads, ITERS);
-    run_bench!(both "alloc (thread-local)", bench_alloc, nthreads, ITERS);
-    run_bench!(both "free (thread-local)", bench_free, nthreads, ITERS);
-    run_bench!(both "alloc & free (thread-local)", bench_alloc_free, nthreads, ITERS);
-    run_bench!(threads "free (producer-consumer)", bench_prod_cons, nthreads, ITERS);
+    // run_bench!(both "alloc (thread-local)", bench_alloc, nthreads, ITERS);
+    // run_bench!(both "free (thread-local)", bench_free, nthreads, ITERS);
+    // run_bench!(both "alloc & free (thread-local)", bench_alloc_free, nthreads, ITERS);
+    // run_bench!(threads "free (producer-consumer)", bench_prod_cons, nthreads, ITERS);
 }

@@ -1,0 +1,26 @@
+# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# README.md file at the top-level directory of this repository.
+#
+# Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+# the MIT license (the LICENSE-MIT file) at your option. This file may not be
+# copied, modified, or distributed except according to those terms.
+
+[package]
+name = "alloc-tls"
+version = "0.1.0"
+authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0/MIT"
+description = "Thread-local storage that is safe for use in implementing global allocators."
+
+keywords = ["thread-local", "allocator", "tls"]
+categories = ["memory-management", "os"]
+
+readme = "README.md"
+documentation = "https://docs.rs/alloc-tls"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/alloc-tls"
+
+[features]
+dylib = []
+
+[dependencies]
+alloc-fmt = { path = "../alloc-fmt" }

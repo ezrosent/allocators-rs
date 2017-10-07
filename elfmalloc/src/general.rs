@@ -58,7 +58,7 @@ use super::alloc_type::AllocType;
 
 type Source = MmapSource;
 
-pub mod global {
+pub(crate) mod global {
     //! A global malloc-style interface to interact with a `DynamicAllocator`. All of these
     //! structures are lazily initailized.
     //!
@@ -91,11 +91,9 @@ pub mod global {
     #[allow(unused_imports)]
     use super::{CoarseAllocator, DynamicAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc,
                 PageAlloc, TieredSizeClasses, TypedArray, AllocType, get_type, Source, AllocMap};
-    #[cfg(feature = "nightly")]
-    use super::likely;
     use std::ptr;
     use std::cell::UnsafeCell;
-    use std::mem;
+    use std::mem::{ManuallyDrop, self};
     #[allow(unused_imports)]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, Sender};
@@ -123,87 +121,9 @@ pub mod global {
     struct BackgroundDirty;
     impl DirtyFn for BackgroundDirty {
         fn dirty(_mem: *mut u8) {
-            #[cfg(feature = "nightly")]
-            {
-                let _ = LOCAL_DESTRUCTOR_CHAN.try_with(|h| h.send(Husk::Slag(_mem)));
-            }
+            let _ = unsafe { LOCAL_DESTRUCTOR_CHAN.with(|h| h.send(Husk::Slag(_mem))).unwrap() };
         }
     }
-
-    #[cfg(all(feature = "nightly", target_thread_local))]
-    #[thread_local]
-    /// A thread-local value used to guard against recursive calls to allocation functions during
-    /// TLS initialization.
-    static mut INIT: bool = false;
-
-    #[cfg(all(feature = "nightly", target_thread_local))]
-    #[thread_local]
-    /// A "cached" pointer to the thread-local allocator. This is set after initialization and
-    /// set to null out prior to destruction.
-    static mut PTR: *mut ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>> = ptr::null_mut();
-
-    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-    #[inline(always)]
-    /// Signal that initialization has begun. Note the use of a fall-back/stable method uses an
-    /// atomic integer. This is painfully slow.
-    fn init_begin() {
-        #[cfg(feature = "nightly")]
-        #[cfg(target_thread_local)]
-        unsafe {
-            INIT = true;
-        }
-        #[cfg(feature = "nightly")]
-        #[cfg(not(target_thread_local))]
-        {
-            INITIALIZING.fetch_add(1, Ordering::Relaxed);
-        }
-
-        #[cfg(not(feature = "nightly"))]
-        {
-            INITIALIZING.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-    #[inline(always)]
-    /// The inverse of `init_begin`.
-    fn init_end() {
-        #[cfg(feature = "nightly")]
-        #[cfg(target_thread_local)]
-        unsafe {
-            INIT = false;
-        }
-        #[cfg(feature = "nightly")]
-        #[cfg(not(target_thread_local))]
-        {
-            INITIALIZING.fetch_sub(1, Ordering::Relaxed);
-        }
-
-        #[cfg(not(feature = "nightly"))]
-        {
-            INITIALIZING.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-
-    #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
-    #[inline(always)]
-    /// Check if we are in a recursive call to an allocation function.
-    fn is_initializing() -> bool {
-        #[cfg(feature = "nightly")]
-        #[cfg(target_thread_local)]
-        unsafe { INIT }
-        #[cfg(feature = "nightly")]
-        #[cfg(not(target_thread_local))]
-        {
-            INITIALIZING.load(Ordering::Relaxed) > 0
-        }
-
-        #[cfg(not(feature = "nightly"))]
-        {
-            INITIALIZING.load(Ordering::Relaxed) > 0
-        }
-    }
-
 
     #[derive(Clone)]
     /// A wrapper like `DynamicAllocator` in the parent module.
@@ -211,7 +131,16 @@ pub mod global {
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
     struct GlobalAllocator {
-        inner: Option<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
+        // GlobalAllocator's Drop implementation reads this field (using ptr::read) and sends it
+        // over a channel. This invalidates the underlying memory, but of course Rust doesn't know
+        // that, so if this field were of the type ElfMalloc<...>, the field's drop method would be
+        // run after GlobalAllocator's drop method returned. We use ManuallyDrop to prevent that
+        // from happening.
+        alloc: ManuallyDrop<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
+        // In some rare cases, we've observed that a thread-local GlobalAllocator is spuriously
+        // dropped twice. Until we figure out why and fix it, we just detect when it's happening
+        // and make the second drop call a no-op.
+        dropped: bool,
     }
     unsafe impl Send for GlobalAllocator {}
 
@@ -247,26 +176,15 @@ pub mod global {
 
     impl Drop for GlobalAllocator {
         fn drop(&mut self) {
-            fn with_chan<F: FnMut(&Sender<Husk>)>(mut f: F) {
-                #[cfg(feature = "nightly")]
-                {
-                    #[cfg(target_thread_local)]
-                    {
-                        unsafe { PTR = ptr::null_mut() };
-                    }
-                    LOCAL_DESTRUCTOR_CHAN
-                        .try_with(|chan| f(chan))
-                        .unwrap_or_else(|_| {
-                            let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                            f(&chan);
-                        })
-                }
-                #[cfg(not(feature = "nightly"))]
-                {
-                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                    f(&chan);
-                }
+            unsafe fn with_chan<F: FnMut(&Sender<Husk>)>(mut f: F) {
+                LOCAL_DESTRUCTOR_CHAN
+                    .with(|chan| f(chan))
+                    .unwrap_or_else(|| {
+                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                        f(&chan);
+                    })
             }
+
             // XXX: Why this check?
             //
             // We have found that for some reason, this destructor can be called more than once on
@@ -274,15 +192,19 @@ pub mod global {
             // be a bug in the code here. Regardless; without this check there are some cases in
             // which this benchmark drops Arc-backed data-structures multiple times, leading to
             // segfaults either here or in the background thread.
-            if self.inner.is_none() {
+            if self.dropped {
+                alloc_eprintln!("{:?} dropped twice!", self as *const _);
                 return;
             }
             unsafe {
                 with_chan(|chan| {
-                    let dyn = ptr::read(self.inner.as_ref().unwrap());
+                    // After we read the alloc field with ptr::read, the underlying memory should
+                    // be treated as uninitialized, but Rust doesn't know this. We use ManuallyDrop
+                    // to ensure that Rust doesn't try to drop the field after this method returns.
+                    let dyn = ManuallyDrop::into_inner(ptr::read(&self.alloc));
                     let _ = chan.send(Husk::Array(dyn));
                 });
-                ptr::write(&mut self.inner, None);
+                self.dropped = true;
             };
         }
     }
@@ -291,21 +213,17 @@ pub mod global {
         let m_block = match get_type(item) {
             // TODO(ezrosent): this duplicates some work..
             AllocType::SmallSlag | AllocType::Large => {
-                LOCAL_ELF_HEAP.with(|h| {
+                with_local_or_clone(|h| {
                     (*h.get())
-                        .inner
-                        .as_ref()
-                        .unwrap()
+                        .alloc
                         .small_pages
                         .backing_memory()
                 })
             }
             AllocType::BigSlag => {
-                LOCAL_ELF_HEAP.with(|h| {
+                with_local_or_clone(|h| {
                     (*h.get())
-                        .inner
-                        .as_ref()
-                        .unwrap()
+                        .alloc
                         .large_pages
                         .backing_memory()
                 })
@@ -316,7 +234,8 @@ pub mod global {
 
     fn new_handle() -> GlobalAllocator {
         GlobalAllocator {
-            inner: Some(ELF_HEAP.inner.as_ref().expect("heap uninitialized").clone()),
+            alloc: ManuallyDrop::new(ELF_HEAP.inner.as_ref().expect("heap uninitialized").clone()),
+            dropped: false,
         }
     }
 
@@ -339,7 +258,7 @@ pub mod global {
                         let msg: Husk = msg;
                         match msg {
                             Husk::Array(alloc) => mem::drop(DynamicAllocator(alloc)),
-                            Husk::Ptr(p) => local_alloc.inner.as_mut().unwrap().free(p),
+                            Husk::Ptr(p) => local_alloc.alloc.free(p),
                             Husk::Slag(s) => dirty_slag(s),
                         }
                         continue
@@ -352,52 +271,21 @@ pub mod global {
         };
     }
 
-    lazy_static!{
-        // only used on stable nightly or targets where thread-local is not supported
-        #[allow(unused_variables)]
-        pub static ref INITIALIZING: AtomicUsize = AtomicUsize::new(0);
-    }
+    alloc_thread_local!{ static LOCAL_DESTRUCTOR_CHAN: Sender<Husk> = DESTRUCTOR_CHAN.lock().unwrap().clone(); }
+    alloc_thread_local!{ static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(new_handle()); }
 
-    thread_local! {
-        static LOCAL_DESTRUCTOR_CHAN: Sender<Husk> =
-            DESTRUCTOR_CHAN.lock().unwrap().clone();
-        static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(new_handle());
+    fn with_local_or_clone<F, R>(f: F) -> R
+        where F: Fn(&UnsafeCell<GlobalAllocator>) -> R
+    {
+        unsafe {
+            alloc_tls_fast_with!(LOCAL_ELF_HEAP, h, { f(h) })
+                .unwrap_or_else(|| f(&UnsafeCell::new(new_handle())))
+        }
     }
 
     pub unsafe fn alloc(size: usize) -> *mut u8 {
-        #[cfg(feature = "nightly")]
-        #[cfg(target_thread_local)]
-        {
-            if likely(!PTR.is_null()) {
-                return (*PTR).alloc(size);
-            }
-        }
-        trace!("fallback alloc({:?})", size);
-        if is_initializing() {
-            return super::large_alloc::alloc(size);
-        }
-        init_begin();
-        let res = alloc_inner(size);
-        init_end();
-        res
-    }
-
-    unsafe fn alloc_inner(size: usize) -> *mut u8 {
-        #[cfg(feature = "nightly")]
-        {
-            LOCAL_ELF_HEAP
-                .try_with(|h| {
-                    let res = (*h.get()).inner.as_mut().unwrap().alloc(size);
-                    PTR = (*h.get()).inner.as_mut().unwrap() as *const _ as *mut _;
-                    res
-                })
-                .unwrap_or_else(|_| super::large_alloc::alloc(size))
-        }
-
-        #[cfg(not(feature = "nightly"))]
-        {
-            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().alloc(size))
-        }
+        alloc_tls_fast_with!(LOCAL_ELF_HEAP, h, { (*h.get()).alloc.alloc(size) })
+            .unwrap_or_else(|| super::large_alloc::alloc(size))
     }
 
     pub unsafe fn realloc(item: *mut u8, new_size: usize) -> *mut u8 {
@@ -405,56 +293,25 @@ pub mod global {
     }
 
     pub unsafe fn aligned_realloc(item: *mut u8, new_size: usize, new_alignment: usize) -> *mut u8 {
-        #[cfg(feature = "nightly")]
-        {
-            if likely(!PTR.is_null()) {
-                return (*PTR).realloc(item, new_size, new_alignment);
-            }
-        }
-        alloc_assert!(!is_initializing(), "realloc can't be called recursively");
-        init_begin();
-        let res = LOCAL_ELF_HEAP.with(|h| {
-            (*h.get()).inner.as_mut().unwrap().realloc(
-                item,
-                new_size,
-                new_alignment,
-            )
-        });
-        init_end();
-        res
+        with_local_or_clone(|h| (*h.get()).alloc.realloc(item, new_size, new_alignment))
     }
 
     pub unsafe fn free(item: *mut u8) {
-        #[cfg(feature = "nightly")]
-        {
-            #[cfg(target_thread_local)]
-            #[thread_local]
-            {
-                if likely(!PTR.is_null()) {
-                    return (*PTR).free(item);
+        alloc_tls_fast_with!(LOCAL_ELF_HEAP, h, { (*h.get()).alloc.free(item) })
+            .unwrap_or_else(|| match get_type(item) {
+                AllocType::Large => {
+                    super::large_alloc::free(item);
                 }
-            }
-            LOCAL_ELF_HEAP
-                .try_with(|h| (*h.get()).inner.as_mut().unwrap().free(item))
-                .unwrap_or_else(|_| match get_type(item) {
-                    AllocType::Large => {
-                        super::large_alloc::free(item);
-                    }
-                    AllocType::SmallSlag | AllocType::BigSlag => {
-                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        let _ = chan.send(Husk::Ptr(item));
-                    }
-                });
-        }
-        #[cfg(not(feature = "nightly"))]
-        {
-            LOCAL_ELF_HEAP.with(|h| (*h.get()).inner.as_mut().unwrap().free(item))
-        }
+                AllocType::SmallSlag | AllocType::BigSlag => {
+                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
+                    let _ = chan.send(Husk::Ptr(item));
+                }
+            });
     }
 }
 
 /// A trait encapsulating the notion of an array of size classes for an allocator.
-pub trait AllocMap<T>
+pub(crate) trait AllocMap<T>
 where
     Self: Sized,
 {
@@ -599,10 +456,10 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
 }
 
 // Once this can be a type parameter, it should be.
-pub const MULTIPLE: usize = 16;
+pub(crate) const MULTIPLE: usize = 16;
 
 /// An array of size classes where sizes are multiples of 16.
-pub struct Multiples<T> {
+pub(crate) struct Multiples<T> {
     starting_size: usize,
     max_size: usize,
     pub classes: TypedArray<T>,
@@ -669,7 +526,7 @@ impl<T> AllocMap<T> for Multiples<T> {
 ///
 /// This is useful mostly for testing purposes: it is a very simple implementation, but it can also
 /// be rather wasteful.
-pub struct PowersOfTwo<T> {
+pub(crate) struct PowersOfTwo<T> {
     starting_size: usize,
     max_size: usize,
     pub classes: TypedArray<T>,
@@ -793,9 +650,9 @@ type Inner<CA> = MagazineCache<CA>;
 type Inner<CA> = LocalCache<CA>;
 
 #[cfg(not(feature = "magazine_layer"))]
-pub type ObjectAlloc<CA> = Lazy<Inner<CA>>;
+pub(crate) type ObjectAlloc<CA> = Lazy<Inner<CA>>;
 #[cfg(feature = "magazine_layer")]
-pub type ObjectAlloc<CA> = Lazy<DepotCache<Inner<CA>>>;
+pub(crate) type ObjectAlloc<CA> = Lazy<DepotCache<Inner<CA>>>;
 
 
 /// A Dynamic memory allocator, parmetrized on a particular `ObjectAlloc`, `CourseAllocator` and
@@ -881,7 +738,6 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
     }
 }
-
 
 unsafe fn elfmalloc_get_layout<M: MemorySource>(m_block: &M, item: *mut u8) -> (usize, usize) {
     match get_type(item) {
@@ -1079,8 +935,8 @@ mod large_alloc {
 
     #[repr(C)]
     #[derive(Copy, Clone)]
-    struct AllocInfo {
-        ty: AllocType,
+    pub struct AllocInfo {
+        pub ty: AllocType,
         base: *mut u8,
         region_size: usize,
     }
@@ -1106,9 +962,11 @@ mod large_alloc {
 
         // begin extra debugging information
         alloc_debug_assert!(!mem.is_null());
+        alloc_debug_assert_eq!(mem as usize % ELFMALLOC_SMALL_CUTOFF, 0);
         let upage: usize = 4096;
         alloc_debug_assert_eq!(mem as usize % upage, 0);
         alloc_debug_assert_eq!(res as usize % upage, 0);
+        alloc_debug_assert_eq!(get_commitment(res), (size + ELFMALLOC_PAGE_SIZE, mem));
         #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, region_size));
         // end extra debugging information
         res
@@ -1116,12 +974,23 @@ mod large_alloc {
 
     pub unsafe fn free(item: *mut u8) {
         let (size, base_ptr) = get_commitment(item);
+        use std::intrinsics::unlikely;
+        if unlikely(size == 0 && base_ptr.is_null()) {
+            return;
+        }
+
         trace!("size={}, base_ptr={:?}", size, base_ptr);
         // begin extra debugging information:
         #[cfg(debug_assertions)]
         {
             ptr::write_volatile(item, 10);
-            alloc_debug_assert_eq!(base_ptr as usize % page_size(), 0);
+            alloc_debug_assert_eq!(
+                base_ptr as usize % page_size(),
+                0,
+                "base_ptr ({:?}) not a multiple of the page size ({})",
+                base_ptr,
+                page_size()
+            );
         }
         #[cfg(test)]
         {
@@ -1151,7 +1020,7 @@ mod large_alloc {
         (size, base_ptr)
     }
 
-    unsafe fn get_commitment_mut(item: *mut u8) -> *mut AllocInfo {
+    pub unsafe fn get_commitment_mut(item: *mut u8) -> *mut AllocInfo {
         round_to_page(item.offset(-1) as *mut AllocInfo)
     }
 }
@@ -1174,12 +1043,18 @@ mod tests {
             }
         }
 
-        test_and_free(8, |size, align| alloc_assert_eq!((size, align), (8, 8)));
+        test_and_free(8, |size, align| {
+            alloc_assert!(size >= 8);
+            alloc_assert!(align >= 8);
+        });
         test_and_free(24, |size, align| {
             alloc_assert!(size >= 24);
             alloc_assert!(align >= 8);
         });
-        test_and_free(512, |size, align| alloc_assert_eq!((size, align), (512, 512)));
+        test_and_free(512, |size, align| {
+            alloc_assert!(size >= 512);
+            alloc_assert!(align >= 512);
+        });
         test_and_free(4 << 20, |size, align| {
             alloc_assert_eq!((size, align), (4 << 20, mmap::page_size()))
         });

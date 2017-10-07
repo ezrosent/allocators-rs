@@ -14,17 +14,22 @@ license = "Apache-2.0/MIT"
 publish = false
 exclude = ["appveyor.sh", "travis.sh"]
 
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+
 [lib]
 name = "elfc"
 crate-type = ["cdylib"]
 
 [features]
-nightly = ["elfmalloc/nightly"]
 local_cache = ["elfmalloc/local_cache"]
 magazine_layer = ["elfmalloc/magazine_layer"]
 logging = ["elfmalloc/print_stats"]
 
 [dependencies]
-elfmalloc = { path = "../elfmalloc", features = ["nightly", "c-api"] }
+alloc-tls = { path = "../alloc-tls", features = ["dylib"] }
+elfmalloc = { path = "../elfmalloc", features = ["c-api"] }
 malloc-bind = { path = "../malloc-bind" }
 env_logger = "0.4.3"
