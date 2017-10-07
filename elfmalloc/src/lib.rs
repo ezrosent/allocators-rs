@@ -8,12 +8,13 @@
 #![feature(alloc)]
 #![feature(allocator_api)]
 #![cfg_attr(test, feature(test))]
-#![cfg_attr(feature = "nightly", feature(thread_local_state))]
-#![cfg_attr(feature = "nightly", feature(thread_local))]
-#![cfg_attr(feature = "nightly", feature(const_fn))]
-#![cfg_attr(feature = "nightly", feature(cfg_target_thread_local))]
-#![cfg_attr(feature = "nightly", feature(core_intrinsics))]
-#![cfg_attr(feature = "nightly", feature(const_ptr_null_mut))]
+#![feature(thread_local_state)]
+#![feature(thread_local)]
+#![feature(const_fn)]
+#![feature(const_size_of)]
+#![feature(cfg_target_thread_local)]
+#![feature(core_intrinsics)]
+#![feature(const_ptr_null_mut)]
 extern crate alloc;
 extern crate bagpipe;
 extern crate num_cpus;
@@ -29,6 +30,8 @@ extern crate bsalloc;
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate alloc_tls;
 
 mod sources;
 mod alloc_type;
@@ -39,9 +42,6 @@ mod slag;
 pub mod frontends;
 pub mod general;
 
-#[cfg(feature = "nightly")]
 pub mod alloc_impl;
-#[cfg(feature = "nightly")]
 pub mod rust_alloc;
-#[cfg(feature = "nightly")]
 pub mod vec_alloc;
