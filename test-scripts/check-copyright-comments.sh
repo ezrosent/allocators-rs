@@ -13,7 +13,7 @@ function last_modification_year {
   git show -s --format=%ci "$COMMIT" | cut -d - -f 1
 }
 
-# last_modification_year <file>
+# first_modification_year <file>
 function first_modification_year {
   COMMIT=$(git log --pretty=format:"%H" "$1" | tail -n 1)
   git show -s --format=%ci "$COMMIT" | cut -d - -f 1
