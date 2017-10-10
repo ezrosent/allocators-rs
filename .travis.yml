@@ -15,16 +15,18 @@ os:
   - osx
 # Load travis-cargo
 before_script:
-  - pip install 'travis-cargo<0.2' --user &&
-    export PATH=$HOME/.local/bin:$PATH
+  - |
+      pip install 'travis-cargo<0.2' --user &&
+      export PATH=`python -m site --user-base`/bin:$PATH
 script:
-  - set -x; set -e; for script in */travis.sh; do
-        dir=$(dirname "$script");
-        file=$(basename "$script");
-        pushd "$dir";
-        ./$file;
-        popd;
-    done
+  - |
+      set -x; set -e; for script in */travis.sh; do
+          dir=$(dirname "$script");
+          file=$(basename "$script");
+          pushd "$dir";
+          ./$file;
+          popd;
+      done
   - ./test-scripts/check-copyright-comments.sh
 
 env:
