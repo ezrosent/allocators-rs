@@ -5,73 +5,39 @@ Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
 the MIT license (the LICENSE-MIT file) at your option. This file may not be
 copied, modified, or distributed except according to those terms. -->
 
-# Allocators, general and specific
+# Allocators in Rust
 
-This repo includes a number of custom dynamic memory allocators written in Rust,
-along with some utilities used to implement these allocators. The `info`
-directory contains more detailed information about specific components of the
-project (e.g. performance measurements). Aside from `info`, all top-level
-directories are Rust crates. More detailed information on each crate can be
-found in each top-level directory's readme.
+[![Build Status](https://travis-ci.org/ezrosent/allocators-rs.svg?branch=sysconf)](https://travis-ci.org/ezrosent/allocators-rs)
+[![Build status](https://ci.appveyor.com/api/projects/status/github/ezrosent/allocators-rs?svg=true)](https://ci.appveyor.com/project/ezrosent/allocators-rs)
 
-## Allocator Crates
+_Looking for elfmalloc in particular? It's [here](https://github.com/ezrosent/allocators-rs/blob/master/elfmalloc)._
 
-* `slab-alloc` includes an implementation of a slab allocator in the same
-  tradition as the original [slab allocator](https://www.usenix.org/legacy/publications/library/proceedings/bos94/full_papers/bonwick.a)
-  by Jeff Bonwick (though several details are changed from the original). Some
-  key points to consider here are:
+This repository encompasses a number of different crates. Some are general
+memory allocators, some are object allocators (allocators which allocate a
+specific type of object), and some are utility crates providing various
+features needed to implement these allocators.
 
-  * Slab allocators are object-specific: they can only create objects of a
-    specified size and alignment.
+The [`info`](https://github.com/ezrosent/allocators-rs/blob/master/info) directory contains more detailed information, including performance
+measurements. Aside from `info`, all top-level directories are Rust crates.
+More detailed information on each crate can be found in the crate's `README.md`.
 
-  * These slab allocators are currently limited to use by a single thread.
+### Allocator crates
 
-  * Slabs can be used in a way that tracks whether freed objects have already
-    been initialized. This allows expensive constructor calls to be elided under
-    some circumstances.
+| Crate | Description |
+|-------|-------------|
+| [`elfmalloc`](https://github.com/ezrosent/allocators-rs/blob/master/elfmalloc) | A general-purpose multi-threaded allocator providing both Rust `Alloc` and C `malloc` APIs |
+| [`slab-alloc`](https://github.com/ezrosent/allocators-rs/blob/master/slab-alloc) | An object-specific slab allocator in the same tradition as the original [slab allocator](https://www.usenix.org/legacy/publications/library/proceedings/bos94/full_papers/bonwick.a) by Jeff Bonwick |
+| [`bsalloc`](https://github.com/ezrosent/allocators-rs/blob/master/bsalloc) | A simple general-purpose "bootstrapping" allocator used in the implementation of other allocators |
+| [`mmap-alloc`](https://github.com/ezrosent/allocators-rs/blob/master/mmap-alloc) | An `Alloc` API which is a thin wrapper around `mmap` (on Unix) or `VirtualAlloc` (on Windows) |
 
-* `elfmalloc` includes a general multi-threaded allocator. `elfmalloc` is fully
-   thread-safe and can be used as a drop-in replacement for `malloc`. See the
-   `elfc` crate for how to go about doing this. This general allocator is
-   implemented as an ensemble of size-specific allocators. As a result,
-   size-specific allocators are also exposed for that more specialized
-   use-case. These object-specific allocators do not currently track
-   initialization, but they scale well in a multi-threaded setting, giving them
-   a complementary set of use-cases when compared to `slab-alloc`.
+### Utility crates
 
-* `bsalloc` is a very simple dynamic memory allocator used to bootstrap
-  `elfmalloc` in the cases when it depends on libraries that allocate memory on
-  the heap. Using `bsalloc` allows our code to be completely self-hosting (not
-  relying on whatever `malloc` Rust would otherwise use), without having to
-  re-write key library infrastructure like `crossbeam` that relies on a dynamic
-  memory allocation.
-
-* `mmap-alloc` is an allocator that constructs anonymous virtual memory maps.
-  There are enough edge-cases and cross-platform issues with calling `mmap`
-  directly, that it made sense to make this its own crate.
-
-## Utility Crates
-
-* `bagpipe` provides a number of key concurrent queue-like data-structures. In
-  addition to implementing a number of state-of-the-art concurrent MPMC queues
-  in the `crossbeam` framework, it also exposes a new data-structure: the
-  `Bagpipe`. `Bagpipes` are like queues, but they trade consistency for
-  scalability. This is normally a dubious exchange to make, but for
-  `elfmalloc`, `Bagpipe`s are used as "free lists" where ordering on the
-  insertion and removal of elements is not required.
-
-* `object-alloc` includes a number of traits currently used to define
-  object-specific allocators. Its traits are currently only implemented by the
-  allocators in `slab-alloc`, though we intend this to change over time.
-
-* `object-alloc-test` provides a number of tests that check for correctness of
-  an arbitrary object allocator (i.e. an allocator implementing one of the
-  traits in `object-alloc`).
-
-* `malloc-bind` is a crate that provides macros to transform any general
-  allocator that can store its own size and alignment-related metadata into a
-  full `malloc` implementation. The intent is to replace `elfc` with this more
-  generic solution in the future.
+| Crate | Description |
+|-------|-------------|
+| [`bagpipe`](https://github.com/ezrosent/allocators-rs/blob/master/bagpipe) | Fast, concurrent data structures including queues and a weakly-ordered bag data structure ([design](https://github.com/ezrosent/allocators-rs/blob/master/info/bagpipes.md)) |
+| [`malloc-bind`](https://github.com/ezrosent/allocators-rs/blob/master/malloc-bind) | Bindings to allow a Rust `Alloc` to implement the C `malloc` API |
+| [`object-alloc`](https://github.com/ezrosent/allocators-rs/blob/master/object-alloc) | Traits representing type-specific variants of the `Alloc` trait |
+| [`object-alloc-test`](https://github.com/ezrosent/allocators-rs/blob/master/object-alloc-test) | A correctness test suite for object allocator implementations (uses the traits defined in `object-alloc`) |
 
 ## Contributing
 
