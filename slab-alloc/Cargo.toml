@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/slab-alloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/slab-alloc"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [profile.test]
 opt-level = 3

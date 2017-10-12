@@ -19,4 +19,4 @@ readme = "README.md"
 documentation = "https://docs.rs/object-alloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]

@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/object-alloc-test"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc-test"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
 interpolate_idents = "0.1.8"

@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/mmap-alloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/mmap-alloc"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
 errno = "0.2"

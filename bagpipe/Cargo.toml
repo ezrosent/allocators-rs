@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/bagpipe"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/bagpipe"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [features]
 # TODO: Rename these features to use dashes instead of underscores

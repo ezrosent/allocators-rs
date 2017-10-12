@@ -12,7 +12,7 @@ authors = ["Eli Rosenthal <ezrosenthal@gmail.com>"]
 license = "Apache-2.0"
 
 publish = false
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [lib]
 name = "elfc"
