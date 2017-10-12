@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/elfmalloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/elfmalloc"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [[bin]]
 name = "bench_vec"

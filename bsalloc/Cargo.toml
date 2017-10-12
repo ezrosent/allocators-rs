@@ -19,7 +19,7 @@ readme = "README.md"
 documentation = "https://docs.rs/bsalloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/bsalloc"
 
-exclude = ["travis.sh"]
+exclude = ["appveyor.sh", "travis.sh"]
 
 [profile.dev]
 panic = "abort"
