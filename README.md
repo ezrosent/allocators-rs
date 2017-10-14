@@ -7,7 +7,7 @@ copied, modified, or distributed except according to those terms. -->
 
 # Allocators in Rust
 
-[![Build Status](https://travis-ci.org/ezrosent/allocators-rs.svg?branch=sysconf)](https://travis-ci.org/ezrosent/allocators-rs)
+[![Build Status](https://travis-ci.org/ezrosent/allocators-rs.svg?branch=master)](https://travis-ci.org/ezrosent/allocators-rs)
 [![Build status](https://ci.appveyor.com/api/projects/status/github/ezrosent/allocators-rs?svg=true)](https://ci.appveyor.com/project/ezrosent/allocators-rs)
 
 _Looking for elfmalloc in particular? It's [here](https://github.com/ezrosent/allocators-rs/blob/master/elfmalloc)._
