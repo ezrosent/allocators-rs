@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -52,7 +52,7 @@ fn enqueue_dequeue_pairs_usize<W>(npairs: usize,
                                   prefill_with: usize,
                                   description: String)
                                   -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
+    where W: WeakBag<Item = usize> + Send + 'static + Default
 {
     let wb = W::default();
     for i in 0..prefill_with {
@@ -113,7 +113,7 @@ fn enqueue_dequeue_pairs_strong<W>(npairs: usize,
                                    prefill_with: usize,
                                    description: String)
                                    -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
+    where W: WeakBag<Item = usize> + Send + 'static + Default
 {
     let wb = W::default();
     for i in 0..prefill_with {
@@ -168,7 +168,7 @@ fn producer_consumer_strong<W>(npairs: usize,
                                prefill_with: usize,
                                description: String)
                                -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
+    where W: WeakBag<Item = usize> + Send + 'static + Default
 {
     let wb = W::default();
     for i in 0..prefill_with {
@@ -238,7 +238,7 @@ fn enqueue_dequeue_usize<W>(npairs: usize,
                             prefill_with: usize,
                             description: String)
                             -> WorkloadStats
-    where W: WeakBag<Item = usize> + Send + Sync + 'static + Default
+    where W: WeakBag<Item = usize> + Send + 'static + Default
 {
     let wb = W::default();
     for i in 0..prefill_with {

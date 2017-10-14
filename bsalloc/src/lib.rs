@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -10,6 +10,7 @@
 #![feature(alloc)]
 #![feature(global_allocator)]
 extern crate alloc;
+#[cfg(debug_assertions)]
 #[macro_use]
 extern crate alloc_fmt;
 #[macro_use]

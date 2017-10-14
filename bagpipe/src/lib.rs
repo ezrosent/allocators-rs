@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -65,12 +65,14 @@
 //! soon.
 
 extern crate crossbeam;
+extern crate crossbeam_epoch;
 extern crate num_cpus;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicIsize, Ordering, fence};
 use bag::{WeakBag, SharedWeakBag, RevocableWeakBag, Revocable, PopResult, PopStatus};
 use crossbeam::mem::CachePadded;
+use crossbeam_epoch::{Collector, Guard, Handle};
 use std::mem;
 
 pub mod queue;
@@ -85,9 +87,9 @@ const N_COUNTERS: usize = 4;
 
 pub trait BagCleanup {
     type Item;
-    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(&self, it: I) {
+    fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(&self, guard: &Guard, it: I) {
         for bag in it {
-            while let Some(p) = bag.pop() {
+            while let Some(p) = bag.pop(guard) {
                 self.cleanup(p);
             }
         }
@@ -111,6 +113,7 @@ impl<T> BagCleanup for DummyCleanup<T> {
     #[inline(always)]
     fn cleanup_all<'a, B: SharedWeakBag<Item = Self::Item> + 'a, I: Iterator<Item = &'a B>>(
         &self,
+        _guard: &Guard,
         _it: I,
     ) {
     }
@@ -130,6 +133,7 @@ where
     Clean: BagCleanup<Item = B::Item>,
 {
     pipes: Arc<BagPipeState<B, Clean>>,
+    gc_handle: Handle,
     offset: usize,
     stride: usize,
     push_failures: usize,
@@ -147,13 +151,6 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Drop for BagPipe<B, Cl
 
 impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Clone for BagPipe<B, Clean> {
     fn clone(&self) -> Self {
-        // We want to ensure that a cloned Bagpipe has initialized crossbeam's TLS before it is
-        // created. This is important to avoid a reentrancy bug in elfmalloc wherein the elfmalloc
-        // TLS handle is initialized without actually calling pin() in any Bagpipe code. Once the
-        // handle for elfmalloc is initialized, reentrancy guards are no longer checked; this
-        // forces later calls to elfmalloc that require EBMR to initialize TLS, and call malloc:
-        // resulting in a recursive malloc call that blows out the stack.
-        let _ = crossbeam::mem::epoch::pin();
         #[cfg(feature="prime_schedules")]
         let offset = {
             primes::get(self.pipes.all_refs.fetch_add(1, Ordering::Relaxed) + 1)
@@ -165,6 +162,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Clone for BagPipe<B, C
         };
         BagPipe {
             pipes: self.pipes.clone(),
+            gc_handle: self.pipes.gc.handle(),
             offset: offset & (self.pipes.pipes.len() - 1),
             stride: offset,
             push_failures: 0,
@@ -181,9 +179,14 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipe<B, Clean> {
         #[cfg(not(feature="prime_schedules"))]
         let offset = 1;
         debug_assert!(size > 0);
+
+        let pipes = Arc::new(BagPipeState::new_size(size, clean));
+        let gc_handle = pipes.gc.handle();
+
         BagPipe {
-            pipes: Arc::new(BagPipeState::new_size(size, clean)),
-            offset: offset,
+            pipes,
+            gc_handle,
+            offset,
             stride: offset,
             push_failures: 0,
             pop_failures: 0,
@@ -252,9 +255,14 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> BagPipe<B, C
         let offset = primes::get(1);
         #[cfg(not(feature="prime_schedules"))]
         let offset = 1;
+
+        let pipes = Arc::new(BagPipeState::new(Clean::default()));
+        let gc_handle = pipes.gc.handle();
+
         BagPipe {
-            pipes: Arc::new(BagPipeState::new(Clean::default())),
-            offset: offset,
+            pipes,
+            gc_handle,
+            offset,
             stride: offset,
             push_failures: 0,
             pop_failures: 0,
@@ -267,7 +275,9 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
     type Item = B::Item;
 
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
+        let guard = self.gc_handle.pin();
         match self.pipes.try_push_internal(
+            &guard,
             it,
             self.offset,
             self.stride,
@@ -288,7 +298,9 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
     }
 
     fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
+        let guard = self.gc_handle.pin();
         let res = self.pipes.try_pop_internal(
+            &guard,
             self.offset,
             self.stride,
             (self.pop_failures * 2) + 1,
@@ -312,8 +324,10 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
     }
 
     fn push_mut(&mut self, it: Self::Item) {
+        let guard = self.gc_handle.pin();
         if let Err(it) = self.try_push_mut(it) {
             match self.pipes.try_push_internal(
+                &guard,
                 it,
                 self.offset,
                 self.stride,
@@ -333,8 +347,9 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
         }
     }
 
-
     fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, iter: I) {
+        let guard = self.gc_handle.pin();
+
         let mut cur_index = self.offset;
         let p_len = self.pipes.pipes.len();
         let mut n_iters = 0;
@@ -342,7 +357,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
             let mut it = item;
             loop {
                 cur_index &= p_len - 1;
-                let res = unsafe { self.pipes.pipes.get_unchecked(cur_index).try_push(it) };
+                let res = unsafe { self.pipes.pipes.get_unchecked(cur_index).try_push(&guard, it) };
                 cur_index += self.stride;
                 match res {
                     Ok(_) => {
@@ -376,17 +391,21 @@ where
     }
 }
 
-
 struct BagPipeState<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> {
     all_refs: AtomicUsize,
     counters: [CachePadded<AtomicIsize>; N_COUNTERS],
     pipes: Vec<B>,
     clean: Clean,
+    gc: Collector,
 }
 
 impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Drop for BagPipeState<B, Clean> {
     fn drop(&mut self) {
-        self.clean.cleanup_all(self.pipes.iter());
+        // Since we have exclusive access to self, we have exclusive access
+        // to self.clean, which in turn means that we don't actually need
+        // to worry about synchronization. Thus, a dummy guard is fine.
+        let guard = unsafe { ::crossbeam_epoch::unprotected() };
+        self.clean.cleanup_all(&guard, self.pipes.iter());
     }
 }
 
@@ -400,6 +419,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
             counters: unsafe { mem::transmute([[0 as usize; 32]; N_COUNTERS]) },
             pipes: Vec::with_capacity(len),
             clean: clean,
+            gc: Collector::new(),
         };
         for _ in 0..len {
             res.pipes.push(B::new())
@@ -417,6 +437,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
     // by offset, allowing for at most `max_failures` failures.
     pub fn try_push_internal(
         &self,
+        guard: &Guard,
         it: B::Item,
         offset: usize,
         stride: usize,
@@ -432,11 +453,11 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
             ix &= len - 1;
             unsafe {
                 if succeed_final && remaining == 1 {
-                    self.pipes.get_unchecked(ix).push(cur_item);
+                    self.pipes.get_unchecked(ix).push(guard, cur_item);
                     // indicates whether the final cell was used
                     return Ok(false);
                 } else {
-                    match self.pipes.get_unchecked(ix).try_push(cur_item) {
+                    match self.pipes.get_unchecked(ix).try_push(guard, cur_item) {
                         Ok(()) => return Ok(true),
                         Err(item) => cur_item = item,
                     }
@@ -450,6 +471,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
 
     pub fn try_pop_internal(
         &self,
+        guard: &Guard,
         offset: usize,
         stride: usize,
         max_failures: usize,
@@ -465,7 +487,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
         loop {
             ix &= len - 1;
             unsafe {
-                match self.pipes.get_unchecked(ix).try_pop() {
+                match self.pipes.get_unchecked(ix).try_pop(guard) {
                     Ok(it) => return Ok(it),
                     Err(PopStatus::Empty) => {
                         #[cfg(debug_assertions)] seen.push(ix);
