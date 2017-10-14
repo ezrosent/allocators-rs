@@ -168,8 +168,8 @@ impl<M: MemorySource> PageFrontend<M> {
         pipe_size: usize,
         parent: PageSource<M>,
     ) -> PageFrontend<M> {
-        debug_assert!(size <= parent.source.page_size());
-        debug_assert!(size.is_power_of_two());
+        alloc_debug_assert!(size <= parent.source.page_size());
+        alloc_debug_assert!(size.is_power_of_two());
         PageFrontend {
             parent: parent,
             pages: SlagPipe::new_size_cleanup(pipe_size, PageCleanup::new(size)),
@@ -400,7 +400,7 @@ impl ElfMallocBuilder {
     pub fn build<M: MemorySource>(&self) -> ElfMalloc<M> {
         let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size, AllocType::SmallSlag);
         let n_small_classes = (self.page_size / 4) / MULTIPLE;
-        assert!(n_small_classes > 0);
+        alloc_assert!(n_small_classes > 0);
         let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes) as
             *mut Metadata;
         let small_classes = Multiples::init(MULTIPLE, n_small_classes, |size: usize| {
@@ -449,7 +449,7 @@ impl ElfMallocBuilder {
                 (size, target_size, self.small_pipe_size, p_source.clone()),
             )
         });
-        debug_assert!(small_classes.max_key().is_power_of_two());
+        alloc_debug_assert!(small_classes.max_key().is_power_of_two());
         ElfMalloc {
             small: small_classes,
             large: large_classes,

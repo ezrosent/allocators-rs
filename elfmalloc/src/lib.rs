@@ -18,6 +18,8 @@ extern crate alloc;
 extern crate bagpipe;
 extern crate num_cpus;
 
+#[macro_use]
+extern crate alloc_fmt;
 // Linking in `bsalloc` causes it to be used as the global heap allocator. That is important when
 // using this as a basis for a `malloc` library, but it becomes a hindrance when using this crate
 // as a specialized allocator library.

@@ -21,11 +21,7 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/bsalloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
-[profile.dev]
-panic = "abort"
-[profile.release]
-panic = "abort"
-
 [dependencies]
+alloc-fmt = { path = "../alloc-fmt" }
 lazy_static = { version = "0.2.9", features = ["spin_no_std"] }
 mmap-alloc = { path = "../mmap-alloc" }

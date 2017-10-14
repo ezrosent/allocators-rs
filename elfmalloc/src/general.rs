@@ -411,7 +411,7 @@ pub mod global {
                 return (*PTR).realloc(item, new_size, new_alignment);
             }
         }
-        assert!(!is_initializing(), "realloc can't be called recursively");
+        alloc_assert!(!is_initializing(), "realloc can't be called recursively");
         init_begin();
         let res = LOCAL_ELF_HEAP.with(|h| {
             (*h.get()).inner.as_mut().unwrap().realloc(
@@ -625,7 +625,7 @@ fn round_up(n: usize) -> usize {
 impl<T> AllocMap<T> for Multiples<T> {
     type Key = usize;
     fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, mut f: F) -> (F, Self) {
-        debug_assert!(n_classes >= 1);
+        alloc_debug_assert!(n_classes >= 1);
         let starting_size = round_up(start);
         let res = Multiples {
             starting_size: starting_size,
@@ -639,7 +639,7 @@ impl<T> AllocMap<T> for Multiples<T> {
             }
             cur_size += MULTIPLE;
         }
-        debug_assert_eq!(res.max_size, cur_size - MULTIPLE);
+        alloc_debug_assert_eq!(res.max_size, cur_size - MULTIPLE);
         (f, res)
     }
 
@@ -647,7 +647,7 @@ impl<T> AllocMap<T> for Multiples<T> {
     #[inline(always)]
     unsafe fn get_raw(&self, n: usize) -> *mut T {
         let class = round_up(n);
-        debug_assert!(class <= self.max_size);
+        alloc_debug_assert!(class <= self.max_size);
         self.classes.get(
             (round_up(n) - self.starting_size) / MULTIPLE,
         )
@@ -729,10 +729,10 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
     #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
     unsafe fn get_raw(&self, k: usize) -> *mut T {
-        debug_assert!(k <= self.max_size);
+        alloc_debug_assert!(k <= self.max_size);
         let log = (k.next_power_of_two().trailing_zeros() -
             self.starting_size.trailing_zeros()) as usize;
-        debug_assert!(
+        alloc_debug_assert!(
             log < self.classes.len(),
             "log={} len={}",
             log,
@@ -983,11 +983,11 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
         match get_type(item) {
             AllocType::SmallSlag => {
-                debug_assert_eq!(self.small_pages.backing_memory().page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
+                alloc_debug_assert_eq!(self.small_pages.backing_memory().page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
                 Some(ELFMALLOC_SMALL_PAGE_SIZE)
             },
             AllocType::BigSlag => {
-                debug_assert_eq!(self.large_pages.backing_memory().page_size(), ELFMALLOC_PAGE_SIZE);
+                alloc_debug_assert_eq!(self.large_pages.backing_memory().page_size(), ELFMALLOC_PAGE_SIZE);
                 Some(ELFMALLOC_PAGE_SIZE)
             },
             AllocType::Large => None,
@@ -1033,7 +1033,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         #[cfg(debug_assertions)]
         {
             let (size, _) = global::get_layout(new_mem);
-            debug_assert!(new_size <= size, "Realloc for {} got memory with size {}", new_size, size);
+            alloc_debug_assert!(new_size <= size, "Realloc for {} got memory with size {}", new_size, size);
         }
         new_mem
     }
@@ -1105,10 +1105,10 @@ mod large_alloc {
         );
 
         // begin extra debugging information
-        debug_assert!(!mem.is_null());
+        alloc_debug_assert!(!mem.is_null());
         let upage: usize = 4096;
-        debug_assert_eq!(mem as usize % upage, 0);
-        debug_assert_eq!(res as usize % upage, 0);
+        alloc_debug_assert_eq!(mem as usize % upage, 0);
+        alloc_debug_assert_eq!(res as usize % upage, 0);
         #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, region_size));
         // end extra debugging information
         res
@@ -1121,7 +1121,7 @@ mod large_alloc {
         #[cfg(debug_assertions)]
         {
             ptr::write_volatile(item, 10);
-            debug_assert_eq!(base_ptr as usize % page_size(), 0);
+            alloc_debug_assert_eq!(base_ptr as usize % page_size(), 0);
         }
         #[cfg(test)]
         {
@@ -1129,7 +1129,7 @@ mod large_alloc {
                 let mut hmap = hm.borrow_mut();
                 {
                     if let Some(len) = hmap.get(&base_ptr) {
-                        assert_eq!(*len, size);
+                        alloc_assert_eq!(*len, size);
                     }
                 }
                 hmap.remove(&base_ptr);
@@ -1174,14 +1174,14 @@ mod tests {
             }
         }
 
-        test_and_free(8, |size, align| assert_eq!((size, align), (8, 8)));
+        test_and_free(8, |size, align| alloc_assert_eq!((size, align), (8, 8)));
         test_and_free(24, |size, align| {
-            assert!(size >= 24);
-            assert!(align >= 8);
+            alloc_assert!(size >= 24);
+            alloc_assert!(align >= 8);
         });
-        test_and_free(512, |size, align| assert_eq!((size, align), (512, 512)));
+        test_and_free(512, |size, align| alloc_assert_eq!((size, align), (512, 512)));
         test_and_free(4 << 20, |size, align| {
-            assert_eq!((size, align), (4 << 20, mmap::page_size()))
+            alloc_assert_eq!((size, align), (4 << 20, mmap::page_size()))
         });
     }
 

@@ -58,7 +58,7 @@ unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
 unsafe impl Malloc for ElfMallocGlobal {
     unsafe fn c_malloc(&self, size: size_t) -> *mut c_void {
         let p = global::alloc(size as usize) as *mut c_void;
-        debug_assert_eq!((p as usize) % MIN_ALIGN,
+        alloc_debug_assert_eq!((p as usize) % MIN_ALIGN,
                          0,
                          "object does not have the required alignment of {}: {:?}",
                          MIN_ALIGN,
@@ -66,7 +66,7 @@ unsafe impl Malloc for ElfMallocGlobal {
         p
     }
     unsafe fn c_free(&self, p: *mut c_void) {
-        debug_assert_eq!((p as usize) % MIN_ALIGN,
+        alloc_debug_assert_eq!((p as usize) % MIN_ALIGN,
                          0,
                          "object does not have the required alignment of {}: {:?}",
                          MIN_ALIGN,
@@ -77,7 +77,7 @@ unsafe impl Malloc for ElfMallocGlobal {
         global::free(p as *mut u8)
     }
     unsafe fn c_realloc(&self, p: *mut c_void, new_size: size_t) -> *mut c_void {
-        debug_assert_eq!((p as usize) % MIN_ALIGN,
+        alloc_debug_assert_eq!((p as usize) % MIN_ALIGN,
                          0,
                          "object does not have the required alignment of {}: {:?}",
                          MIN_ALIGN,
