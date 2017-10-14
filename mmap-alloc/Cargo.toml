@@ -21,6 +21,10 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/mmap-alloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
+
 [dependencies]
 errno = "0.2"
 kernel32-sys = "0.2"

@@ -21,6 +21,10 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/bagpipe"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
+
 [features]
 # TODO: Rename these features to use dashes instead of underscores
 default = ["check_empty_yq"]

@@ -21,6 +21,10 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/bsalloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
+
 [profile.dev]
 panic = "abort"
 [profile.release]

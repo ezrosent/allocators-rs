@@ -20,3 +20,7 @@ documentation = "https://docs.rs/object-alloc"
 repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
+
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
