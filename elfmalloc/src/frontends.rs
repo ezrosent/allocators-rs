@@ -154,7 +154,7 @@ impl<CA: CoarseAllocator> Clone for MagazineCache<CA> {
 
 impl<CA: CoarseAllocator> MagazineCache<CA> {
     pub fn new_sized(mut alloc: SlagAllocator<CA>, magazine_size: usize) -> Self {
-        assert!(magazine_size > 0);
+        alloc_assert!(magazine_size > 0);
         let s = PtrStack::new(magazine_size);
         let iter = unsafe { alloc.refresh() };
         let buckets = Coalescer::new(magazine_size * 2);
@@ -199,7 +199,7 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
 
     /// Perform the bulk-level frees for the `Coalescer`.
     unsafe fn return_memory(&mut self) {
-        debug_assert_eq!(self.s.top as usize, self.stack_size);
+        alloc_debug_assert_eq!(self.s.top as usize, self.stack_size);
         let new_top = self.stack_size / 2;
         let meta = &*self.alloc.m;
         // iterate over the stack and attempt to add them to the coalescer.
@@ -438,12 +438,12 @@ mod magazine {
     impl Magazine {
         unsafe fn new(size: usize) -> *mut Magazine {
             let page_size = mmap::page_size();
-            debug_assert!(page_size.is_power_of_two());
+            alloc_debug_assert!(page_size.is_power_of_two());
             let bytes = mem::size_of::<Magazine>() + mem::size_of::<*mut u8>() * size;
             let rem = bytes & (page_size - 1);
             let n_pages = (bytes >> page_size.trailing_zeros()) + cmp::min(1, rem);
             let region_size = n_pages * page_size;
-            debug_assert!(bytes <= region_size);
+            alloc_debug_assert!(bytes <= region_size);
             let mem = mmap::map(region_size) as *mut Magazine;
             ptr::write(
                 mem,
@@ -467,19 +467,19 @@ mod magazine {
         /// This function does not free the memory associated with the stack's contents if it is
         /// nonempty.
         unsafe fn destroy(slf: *mut Magazine) {
-            debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
-            debug_assert_eq!(slf as usize % mmap::page_size(), 0);
+            alloc_debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
+            alloc_debug_assert_eq!(slf as usize % mmap::page_size(), 0);
             mmap::unmap(slf as *mut u8, (*slf).mapped)
         }
 
         fn push(&mut self, item: *mut u8) -> bool {
-            debug_assert!(!item.is_null());
+            alloc_debug_assert!(!item.is_null());
             if self.top == self.cap {
                 return false;
             }
             unsafe {
                 let addr = (self.base as *mut *mut u8).offset(self.top as isize);
-                debug_assert!((addr as isize - self.base as isize) < self.mapped as isize);
+                alloc_debug_assert!((addr as isize - self.base as isize) < self.mapped as isize);
                 ptr::write(addr, item);
             }
             self.top += 1;
@@ -493,7 +493,7 @@ mod magazine {
             unsafe {
                 self.top -= 1;
                 let res = ptr::read((self.base as *mut *mut u8).offset(self.top as isize));
-                debug_assert!(!res.is_null());
+                alloc_debug_assert!(!res.is_null());
                 Some(res)
             }
         }
@@ -529,7 +529,7 @@ mod magazine {
 
     impl Depot {
         fn new_size(max_size: usize, empty: usize, full: usize) -> Depot {
-            assert!(max_size < (isize::max_value() as usize));
+            alloc_assert!(max_size < (isize::max_value() as usize));
             Depot {
                 max_size: max_size as isize,
                 empty: MagPipe::new_size(empty),
@@ -546,7 +546,7 @@ mod magazine {
         ///
         /// If the `Depot` is at capacity, the `Magazine`'s memory is unmapped.
         unsafe fn free_empty(&mut self, m: *mut Magazine) {
-            debug_assert_eq!((*m).top, 0);
+            alloc_debug_assert_eq!((*m).top, 0);
             if self.empty.size_guess() >= self.max_size {
                 Magazine::destroy(m);
             } else {
@@ -560,7 +560,7 @@ mod magazine {
         /// method returns `false`.
         fn free_full(&mut self, m: *mut Magazine) -> bool {
             unsafe {
-                debug_assert_eq!((*m).top, (*m).cap)
+                alloc_debug_assert_eq!((*m).top, (*m).cap)
             };
             if self.full.size_guess() >= self.max_size {
                 false
@@ -574,7 +574,7 @@ mod magazine {
         fn alloc_full(&mut self) -> Option<*mut Magazine> {
             self.full.pop_mut().and_then(|r| {
                 unsafe {
-                    debug_assert_eq!((*r).top, (*r).cap)
+                    alloc_debug_assert_eq!((*r).top, (*r).cap)
                 };
                 Some(r)
             })
@@ -589,7 +589,7 @@ mod magazine {
                 }
             });
             unsafe {
-                debug_assert_eq!((*res).top, 0)
+                alloc_debug_assert_eq!((*res).top, 0)
             };
             res
         }
@@ -665,7 +665,7 @@ mod magazine {
                 let cap = (*self.m1).cap;
                 for _ in 0..cap {
                     let _r = (*self.m1).push(self.backing.alloc());
-                    debug_assert!(_r);
+                    alloc_debug_assert!(_r);
                 }
             }
             (*self.m1).pop().expect("new full magazine is empty")
@@ -689,7 +689,7 @@ mod magazine {
                 },
             };
             let _r = (*self.m1).push(item);
-            debug_assert!(_r);
+            alloc_debug_assert!(_r);
         }
     }
 
@@ -705,11 +705,11 @@ mod magazine {
                 let goal = m_ref.cap;
                 // start at 1 because we debug_assert that the pointer is non-null
                 for i in 1..(goal + 1) {
-                    assert!(m_ref.push(i as *mut u8));
+                    alloc_assert!(m_ref.push(i as *mut u8));
                 }
-                assert!(!m_ref.push(8 as *mut u8));
-                assert_eq!(m_ref.pop(), Some(m_ref.cap as *mut u8));
-                assert!(m_ref.push(8 as *mut u8));
+                alloc_assert!(!m_ref.push(8 as *mut u8));
+                alloc_assert_eq!(m_ref.pop(), Some(m_ref.cap as *mut u8));
+                alloc_assert!(m_ref.push(8 as *mut u8));
                 Magazine::destroy(m);
             }
         }
@@ -869,7 +869,7 @@ mod tests {
         let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
         let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local();
-        assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
+        alloc_assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         // stay in a local cache
         for _ in 0..N_ITEMS {
             unsafe {
@@ -887,7 +887,7 @@ mod tests {
                 write_volatile(item as *mut usize, i + 1);
                 v.push(item);
                 let item_num = item as usize;
-                assert!(!h.contains(&item_num));
+                alloc_assert!(!h.contains(&item_num));
                 h.insert(item_num);
             }
         }
@@ -923,7 +923,7 @@ mod tests {
             .page_size(4096)
             .build_magazine();
         // stay in a local cache
-        assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
+        alloc_assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         let mut threads = Vec::new();
         for _ in 0..N_THREADS {
             let mut my_alloc = oa.clone();
@@ -944,7 +944,7 @@ mod tests {
                         write_volatile(item as *mut usize, i);
                         v.push(item);
                         let item_num = item as usize;
-                        assert!(!h.contains(&item_num));
+                        alloc_assert!(!h.contains(&item_num));
                         h.insert(item_num);
                     }
                 }

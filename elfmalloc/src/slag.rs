@@ -201,7 +201,7 @@ mod metadata {
         /// Calculate the padding (in bytes) required to ensure the `Slag` objects are aligned to
         /// `alignment` bytes, given `n_objects` objects and `gran` bits per object in the bit-set.
         fn align_padding(alignment: usize, n_objects: usize, gran: usize) -> usize {
-            debug_assert!(alignment.is_power_of_two());
+            alloc_debug_assert!(alignment.is_power_of_two());
             let header_size = slag_size();
             let h_bitset_size = header_size + bitset_bytes(n_objects, gran);
             let rounded = (h_bitset_size + (alignment - 1)) & !(alignment - 1);
@@ -251,12 +251,12 @@ mod metadata {
             // gran (read "granularity") is the number of bits used to represent a single object in the
             // slag bit-set.
             let gran = padded_size / round_up_to_bytes;
-            debug_assert!(usable_size > 0);
-            debug_assert!(round_up_to_bytes > 0);
-            debug_assert!(round_up_to_bytes.is_power_of_two());
-            debug_assert!(gran > 0);
+            alloc_debug_assert!(usable_size > 0);
+            alloc_debug_assert!(round_up_to_bytes > 0);
+            alloc_debug_assert!(round_up_to_bytes.is_power_of_two());
+            alloc_debug_assert!(gran > 0);
             #[cfg_attr(feature = "cargo-clippy", allow(panic_params))]
-            debug_assert!({
+            alloc_debug_assert!({
                 if gran == 1 {
                     padded_size.is_power_of_two()
                 } else {
@@ -502,7 +502,7 @@ mod ref_count {
             let was = self.0.fetch_sub(n, Ordering::Release);
             let claimed = was & MASK == MASK;
             let result = was & !MASK;
-            debug_assert!(
+            alloc_debug_assert!(
                 result >= n,
                 "(dec {:?}; claimed={}), was {}, n={}",
                 self as *const Self,
@@ -726,7 +726,7 @@ impl Slag {
         let bits_per_word = Word::bits();
         let slush_size = bits_per_object - (bits_per_word % bits_per_object);
         // this is enforced in compute_metadata
-        debug_assert!(
+        alloc_debug_assert!(
             bits_per_word >= slush_size,
             "bpw={}, slush_size={} {:?}",
             bits_per_word,
@@ -790,8 +790,8 @@ impl Slag {
     /// Given a pointer to an object within a `Slag` with matching `Metadata` find a pointer to the
     /// `Slag`.
     pub fn find(item: *mut u8, alignment: usize) -> *mut Self {
-        debug_assert!(alignment.is_power_of_two());
-        debug_assert!(alignment > 0);
+        alloc_debug_assert!(alignment.is_power_of_two());
+        alloc_debug_assert!(alignment > 0);
         ((item as usize) & !(alignment - 1)) as *mut Self
     }
 
@@ -818,7 +818,7 @@ impl Slag {
     pub fn free(&self, item: *mut u8) -> Transition {
         let m = self.get_metadata();
         // must be in-bounds
-        debug_assert!((item as usize) < (self.as_raw() as usize + m.total_bytes));
+        alloc_debug_assert!((item as usize) < (self.as_raw() as usize + m.total_bytes));
         let (word, word_ix) = Self::get_word(self.as_raw(), item, m);
         // first we increment the reference count and then we mark the bitset. Why? During a refill
         // of local state, the bitset _must_ be read first because it informs how much the
@@ -931,9 +931,9 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
         align: usize,
         ty: AllocType,
     ) -> Self {
-        debug_assert!(align >= page_size);
-        debug_assert!(page_size.is_power_of_two());
-        debug_assert!(align.is_power_of_two());
+        alloc_debug_assert!(align >= page_size);
+        alloc_debug_assert!(page_size.is_power_of_two());
+        alloc_debug_assert!(align.is_power_of_two());
         let pages_per = align / page_size;
         let clean = PageCleanup::new(page_size);
         let creek = C::new(page_size);
@@ -1131,7 +1131,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         // up-stream by a cache data-structure. These initial slags will be unclaimed (hence
         // hitting the first branch of the if below). The comment above that branch does not apply
         // to the initialization case.
-        debug_assert_eq!(*meta, *(*s_ref).meta.load(Ordering::Relaxed));
+        alloc_debug_assert_eq!(*meta, *(*s_ref).meta.load(Ordering::Relaxed));
 
         // There is a race condition between deciding to `unclaim` and actually letting the slag
         // go. This is because only one thread is permitted to transition from unavailable to
@@ -1152,7 +1152,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         // available!
         if was >= meta.cutoff_objects {
             let _claimed = s_ref.rc.claim();
-            debug_assert!(
+            alloc_debug_assert!(
                 _claimed,
                 "claiming slag either during initialization or due to being over cutoff"
             );
@@ -1178,7 +1178,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             self.slag = next_slab;
             let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
             let claimed = s_ref.rc.claim();
-            debug_assert!(claimed, "claiming new slag after refresh");
+            alloc_debug_assert!(claimed, "claiming new slag after refresh");
             s_ref.refresh(meta)
         }
     }
@@ -1219,7 +1219,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         let s_ref = &*slag;
         let (claimed, was) = s_ref.rc.inc_n(n_ones);
         let before = (*word).fetch_or(mask, Ordering::Release);
-        debug_assert_eq!(
+        alloc_debug_assert_eq!(
             before & mask,
             0,
             "\nInvalid mask (obj size {:?}): transitioned\n{:064b} with \n{:064b}",

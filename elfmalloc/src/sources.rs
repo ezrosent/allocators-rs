@@ -72,7 +72,7 @@ impl MemorySource for MmapSource {
         mmap::fallible_map(req_size).and_then(|mem| {
             let mem_num = mem as usize;
 
-            debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
+            alloc_debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
 
             // region at the end that is not needed.
             let rem1 = mod_size(mem_num, self.page_size);
@@ -80,7 +80,7 @@ impl MemorySource for MmapSource {
             let rem2 = self.page_size - rem1;
             unsafe {
                 let res = mem.offset(rem2 as isize);
-                debug_assert_eq!(mod_size(res as usize, self.page_size), 0);
+                alloc_debug_assert_eq!(mod_size(res as usize, self.page_size), 0);
                 if rem1 > 0 {
                     mmap::unmap(res.offset(target_size as isize), rem1);
                 }
@@ -140,7 +140,7 @@ macro_rules! check_bump {
         #[cfg(debug_assertions)]
         {
             let bump = $slf.bump.load(Ordering::Relaxed);
-            debug_assert!(!bump.is_null());
+            alloc_debug_assert!(!bump.is_null());
         }
     };
 }
@@ -188,8 +188,8 @@ impl MemorySource for Creek {
             panic!("unable to map heap")
         };
         // lots of stuff breaks if this isn't true
-        assert!(page_size.is_power_of_two());
-        assert!(page_size > mem::size_of::<usize>());
+        alloc_assert!(page_size.is_power_of_two());
+        alloc_assert!(page_size > mem::size_of::<usize>());
         // first, let's grab some memory;
         let (orig_base, heap_size) = get_heap();
         info!("created heap of size {}", heap_size);
@@ -234,7 +234,7 @@ impl MemoryBlock for Creek {
 impl Clone for Creek {
     fn clone(&self) -> Self {
         let bump = self.bump.load(Ordering::Relaxed);
-        debug_assert!(!bump.is_null());
+        alloc_debug_assert!(!bump.is_null());
         Creek {
             page_size: self.page_size,
             map_info: self.map_info.clone(),

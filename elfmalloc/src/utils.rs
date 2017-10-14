@@ -251,10 +251,10 @@ mod tests {
     fn basic_functionality() {
         let mut l = Lazy::<DefaultInit<usize>>::new(());
         let l_u = l.0;
-        assert_eq!(l_u, 0);
+        alloc_assert_eq!(l_u, 0);
         *l = DefaultInit(1);
         let l_u = l.0;
-        assert_eq!(l_u, 1);
+        alloc_assert_eq!(l_u, 1);
     }
 
 }

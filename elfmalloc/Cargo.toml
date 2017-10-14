@@ -44,6 +44,7 @@ magazine_layer = []
 c-api = ["nightly"]
 
 [dependencies]
+alloc-fmt = { path = "../alloc-fmt" }
 bagpipe = { path = "../bagpipe" }
 bsalloc = "0.1.0"
 lazy_static = "0.2.9"

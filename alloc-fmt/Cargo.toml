@@ -1,0 +1,27 @@
+# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# README.md file at the top-level directory of this repository.
+#
+# Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
+# the MIT license (the LICENSE-MIT file) at your option. This file may not be
+# copied, modified, or distributed except according to those terms.
+
+[package]
+name = "alloc-fmt"
+version = "0.1.0"
+authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
+license = "Apache-2.0/MIT"
+description = "Formatting utilities safe for use in an allocator."
+
+keywords = ["format", "print", "string", "allocator"]
+categories = ["memory-management", "no-std"]
+
+readme = "README.md"
+documentation = "https://docs.rs/alloc-fmt"
+repository = "https://github.com/ezrosent/allocators-rs/tree/master/alloc-fmt"
+
+exclude = ["appveyor.sh", "travis.sh"]
+
+[dependencies]
+backtrace = "0.3.3"
+libc = "0.2"
+spin = "0.4.6"

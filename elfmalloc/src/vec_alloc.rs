@@ -195,14 +195,14 @@ forward_slice_index_impl!(ops::RangeFull, [T]);
 impl<T, A: Alloc> ops::Index<usize> for AVec<T, A> {
     type Output = T;
     fn index(&self, ix: usize) -> &T {
-        assert!(ix < self.len);
+        alloc_assert!(ix < self.len);
         unsafe { &*self.get_raw(ix) }
     }
 }
 
 impl<T, A: Alloc> ops::IndexMut<usize> for AVec<T, A> {
     fn index_mut(&mut self, ix: usize) -> &mut T {
-        assert!(ix < self.len);
+        alloc_assert!(ix < self.len);
         unsafe { &mut *self.get_raw(ix) }
     }
 }
@@ -254,7 +254,7 @@ mod tests {
             rv.push(i);
         }
         let expect: Vec<_> = (0..1000).collect();
-        assert_eq!(&*rv, &expect[..]);
+        alloc_assert_eq!(&*rv, &expect[..]);
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod tests {
         rv.push(!0);
         let mut expect: Vec<_> = (0..999).collect();
         expect.push(!0);
-        assert_eq!(&*rv, &expect[..]);
+        alloc_assert_eq!(&*rv, &expect[..]);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         let tmp = expect.clone();
         expect.extend(&*rv);
         rv.extend(tmp.into_iter());
-        assert_eq!(&*rv, &expect[..]);
+        alloc_assert_eq!(&*rv, &expect[..]);
     }
 
     #[bench]

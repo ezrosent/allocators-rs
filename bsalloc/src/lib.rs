@@ -11,6 +11,8 @@
 #![feature(global_allocator)]
 extern crate alloc;
 #[macro_use]
+extern crate alloc_fmt;
+#[macro_use]
 extern crate lazy_static;
 extern crate mmap_alloc;
 mod bsalloc;
@@ -23,7 +25,7 @@ use core::ptr;
 fn assert_nonoverlapping(r1: (usize, usize), r2: (usize, usize)) {
     let (_, b) = cmp::min(r1, r2);
     let (c, _) = cmp::max(r1, r2);
-    assert!(c >= b);
+    alloc_assert!(c >= b);
 }
 
 #[global_allocator]
