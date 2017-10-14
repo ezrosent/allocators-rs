@@ -10,6 +10,7 @@
 #![feature(alloc)]
 
 extern crate alloc;
+#[cfg(debug_assertions)]
 #[macro_use]
 extern crate alloc_fmt;
 #[macro_use]

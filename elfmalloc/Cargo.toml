@@ -35,7 +35,6 @@ prime_schedules = ["bagpipe/prime_schedules"]
 huge_segments = ["bagpipe/huge_segments"]
 no_lazy_region = []
 local_cache = []
-use_default_allocator = []
 print_stats = []
 magazine_layer = []
 # Limit the amount of memory used by tests to avoid running out.
@@ -51,7 +50,6 @@ c-api = []
 alloc-fmt = { path = "../alloc-fmt" }
 alloc-tls = { path = "../alloc-tls" }
 bagpipe = { path = "../bagpipe" }
-bsalloc = "0.1.0"
 lazy_static = "1.0.0"
 libc = "0.2"
 log = "0.3.8"
