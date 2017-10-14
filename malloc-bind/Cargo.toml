@@ -21,6 +21,10 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/malloc-bind"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
+
 [dependencies]
 errno = "0.2"
 lazy_static = { version = "0.2.9", features = ["spin_no_std"] }

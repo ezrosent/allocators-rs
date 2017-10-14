@@ -21,6 +21,10 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/elfmalloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[badges]
+travis-ci = { repository = "ezrosent/allocators-rs" }
+appveyor = { repository = "ezrosent/allocators-rs" }
+
 [[bin]]
 name = "bench_vec"
 path = "src/bin/bench_vec.rs"
