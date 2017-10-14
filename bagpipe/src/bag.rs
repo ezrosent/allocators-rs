@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -8,7 +8,7 @@
 //! Specification of best-effort bags and implementation for `crossbeam`
 //! data-structures.
 use super::crossbeam::sync::{TreiberStack, SegQueue, MsQueue};
-use super::crossbeam::mem::epoch;
+use super::crossbeam_epoch::{Collector, Guard, Handle};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -22,27 +22,27 @@ pub enum PopStatus {
 
 pub type PopResult<T> = Result<T, PopStatus>;
 
-
 /// A best-effort Bag data-structure.
 ///
 /// As embodied in the `PopResult` definition, `try_pop` is permitted to
 /// fail even if the bag in question is not empty.
-pub trait SharedWeakBag {
+pub trait SharedWeakBag where Self: Sized {
     type Item;
+
     /// Returns a new instance of the data-structure.
     fn new() -> Self;
 
     /// Attempts to push `it` onto the data-structure.
     ///
     /// If successful, `try_push` will return `true`.
-    fn try_push(&self, it: Self::Item) -> Result<(), Self::Item>;
+    fn try_push(&self, guard: &Guard, it: Self::Item) -> Result<(), Self::Item>;
 
     /// Attempts to pop a value from the data-structure.
     ///
     /// There is no guaranteed ordering of popped values. This method
     /// may fail arbitrarily even if there are accessible values in the
     /// data-structure.
-    fn try_pop(&self) -> PopResult<Self::Item>;
+    fn try_pop(&self, guard: &Guard) -> PopResult<Self::Item>;
 
     /// A push operation that will not fail.
     ///
@@ -50,13 +50,9 @@ pub trait SharedWeakBag {
     /// in a loop. until it succeeds. Depending on the underlying
     /// data-structure this may loop infinitely under some
     /// circumstances.
-    ///
-    /// `push` also creates a `Guard` for the duration of the function
-    /// to avoid excessive checking in the hot loop.
-    fn push(&self, it: Self::Item) {
-        let _g = epoch::pin();
+    fn push(&self, guard: &Guard, it: Self::Item) {
         let mut cur_item = it;
-        while let Err(old_item) = self.try_push(cur_item) {
+        while let Err(old_item) = self.try_push(guard, cur_item) {
             cur_item = old_item
         }
     }
@@ -64,10 +60,9 @@ pub trait SharedWeakBag {
     /// A pop operation that will not fail.
     ///
     /// Same caveats apply to those of `push`.
-    fn pop(&self) -> Option<Self::Item> {
-        let _g = epoch::pin();
+    fn pop(&self, guard: &Guard) -> Option<Self::Item> {
         loop {
-            return match self.try_pop() {
+            return match self.try_pop(guard) {
                 Ok(it) => Some(it),
                 Err(PopStatus::Empty) => None,
                 Err(PopStatus::TransientFailure) => continue,
@@ -88,24 +83,24 @@ pub trait SharedWeakBag {
 pub trait WeakBag: Clone {
     // TODO(ezrosent): should we keep Clone here?
     type Item;
-    // fn new() -> Self;
+
     fn try_push_mut(&mut self, Self::Item) -> Result<(), Self::Item>;
     fn try_pop_mut(&mut self) -> PopResult<Self::Item>;
     fn push_mut(&mut self, it: Self::Item) {
-        let _g = epoch::pin();
+        // TODO(joshlf): Pin the WeakBag's GC for performance
         let mut cur_item = it;
         while let Err(old_item) = self.try_push_mut(cur_item) {
             cur_item = old_item
         }
     }
     fn pop_mut(&mut self) -> Option<Self::Item> {
-        let _g = epoch::pin();
+        // TODO(joshlf): Pin the WeakBag's GC for performance
         loop {
-            return match self.try_pop_mut() {
-                Ok(it) => Some(it),
-                Err(PopStatus::Empty) => None,
-                Err(PopStatus::TransientFailure) => continue,
-            };
+            match self.try_pop_mut() {
+                Ok(it) => break Some(it),
+                Err(PopStatus::Empty) => break None,
+                Err(PopStatus::TransientFailure) => {}
+            }
         }
     }
 
@@ -120,25 +115,46 @@ pub trait WeakBag: Clone {
     }
 }
 
-pub struct ArcLike<B>(Arc<B>);
+pub struct ArcLike<B>{
+    arc: Arc<B>,
+    gc: Handle,
+}
 
 impl<B> Clone for ArcLike<B> {
     fn clone(&self) -> Self {
-        ArcLike(self.0.clone())
+        ArcLike {
+            arc: self.arc.clone(),
+            gc: self.gc.clone(),
+        }
     }
 }
 
 impl<B: SharedWeakBag> Default for ArcLike<B> {
-    fn default() -> Self { ArcLike(Arc::new(B::new())) }
+    fn default() -> Self {
+        ArcLike {
+            arc: Arc::new(B::new()),
+            gc: Collector::new().handle(),
+        }
+    }
 }
 
 impl<B: SharedWeakBag> WeakBag for ArcLike<B> {
     type Item = B::Item;
+
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
-        self.0.try_push(it)
+        self.arc.try_push(&self.gc.pin(), it)
     }
+
     fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
-        self.0.try_pop()
+        self.arc.try_pop(&self.gc.pin())
+    }
+
+    fn push_mut(&mut self, it: Self::Item) {
+        self.arc.push(&self.gc.pin(), it)
+    }
+
+    fn pop_mut(&mut self) -> Option<Self::Item> {
+        self.arc.pop(&self.gc.pin())
     }
 }
 
@@ -197,14 +213,17 @@ where
 
 impl<T> SharedWeakBag for TreiberStack<T> {
     type Item = T;
+
     fn new() -> Self {
         Self::new()
     }
-    fn try_push(&self, t: T) -> Result<(), T> {
+
+    fn try_push(&self, _guard: &Guard, t: T) -> Result<(), T> {
         self.push(t);
         Ok(())
     }
-    fn try_pop(&self) -> PopResult<T> {
+
+    fn try_pop(&self, _guard: &Guard) -> PopResult<T> {
         match self.pop() {
             Some(res) => Ok(res),
             None => Err(PopStatus::Empty),
@@ -214,14 +233,17 @@ impl<T> SharedWeakBag for TreiberStack<T> {
 
 impl<T> SharedWeakBag for SegQueue<T> {
     type Item = T;
+
     fn new() -> Self {
         Self::new()
     }
-    fn try_push(&self, t: T) -> Result<(), T> {
+
+    fn try_push(&self, _guard: &Guard, t: T) -> Result<(), T> {
         self.push(t);
         Ok(())
     }
-    fn try_pop(&self) -> PopResult<T> {
+
+    fn try_pop(&self, _guard: &Guard) -> PopResult<T> {
         match self.try_pop() {
             Some(res) => Ok(res),
             None => Err(PopStatus::Empty),
@@ -231,14 +253,17 @@ impl<T> SharedWeakBag for SegQueue<T> {
 
 impl<T> SharedWeakBag for MsQueue<T> {
     type Item = T;
+
     fn new() -> Self {
         Self::new()
     }
-    fn try_push(&self, t: T) -> Result<(), T> {
+
+    fn try_push(&self, _guard: &Guard, t: T) -> Result<(), T> {
         self.push(t);
         Ok(())
     }
-    fn try_pop(&self) -> PopResult<T> {
+
+    fn try_pop(&self, _guard: &Guard) -> PopResult<T> {
         match self.try_pop() {
             Some(res) => Ok(res),
             None => Err(PopStatus::Empty),

@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -17,6 +17,10 @@
 
 #[cfg(feature = "logging")]
 extern crate alloc_tls;
+// Linking in `bsalloc` causes it to be used as the global heap allocator.
+// This is important because otherwise any allocation performed inside of
+// elfmalloc using the global allocator would be recursive.
+extern crate bsalloc;
 extern crate elfmalloc;
 #[cfg(feature = "logging")]
 extern crate env_logger;
