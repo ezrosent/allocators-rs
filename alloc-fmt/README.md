@@ -9,8 +9,8 @@ alloc-fmt
 =========
 
 `alloc-fmt` provides formatting and assertion macros similar to `println`,
-`eprintln`,  `assert`, `debug_assert`, etc which are safe for use in a global
-allocator. The standard library's formatting  and assertion macros can allocate,
-meaning that if they are used in the implementation of a global allocator, it
-can cause infinite recursion. The macros in this crate do not allocate in order
-to avoid this problem.
+`eprintln`, `panic`, `assert`, `debug_assert`, etc which are safe for use in a
+global allocator. The standard library's formatting, panic, and assertion macros
+can allocate, meaning that if they are used in the implementation of a global
+allocator, it can cause infinite recursion. The macros in this crate do not
+allocate in order to avoid this problem.

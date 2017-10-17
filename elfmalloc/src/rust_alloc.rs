@@ -554,7 +554,7 @@ mod global {
     macro_rules! with_instance {
 
         ($ptr:ident, $exp:expr) => {
-            with_instance!($ptr, $exp, panic!("TLS in invalid state"))
+            with_instance!($ptr, $exp, alloc_panic!("TLS in invalid state"))
         };
 
         ($ptr:ident, $exp:expr, $else:expr) => {

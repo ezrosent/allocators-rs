@@ -8,26 +8,27 @@
 //! Allocator-safe formatting and assertion macros.
 //!
 //! `alloc-fmt` provides formatting and assertion macros similar to the standard library's
-//! `println`, `eprintln`, `assert`, `debug_assert`, etc which are safe for use in a global
-//! allocator. The standard library's formatting and assertion macros can allocate, meaning that if
-//! they are used in the implementation of a global allocator, it can cause infinite recursion. The
-//! macros in this crate avoid this problem by either not allocating (in the case of formatting
-//! macros) or detecting recursion (in the case of assertion macros).
+//! `println`, `eprintln`, `panic`, `assert`, `debug_assert`, etc which are safe for use in a
+//! global allocator. The standard library's formatting and assertion macros can allocate, meaning
+//! that if they are used in the implementation of a global allocator, it can cause infinite
+//! recursion. The macros in this crate avoid this problem by either not allocating (in the case of
+//! formatting macros) or detecting recursion (in the case of panic and assertion macros).
 //!
 //! # Usage and Behavior
 //! The macros in this crate are named `alloc_xxx`, where `xxx` is the name of the equivalent
 //! standard library macro (e.g., `alloc_println`, `alloc_debug_assert`, etc).
 //!
 //! The behavior of the formatting macros is identical to the behavior of their standard library
-//! counterparts. The behavior of the assertion macros is somewhat different. When an assertion
-//! fails, a message is first unconditionally printed to stderr (in case further processing causes
-//! a crash). A stack trace is then printed, and the process aborts. If recursion is detected
-//! during the printing of the stack trace, the process immediately aborts. Recusion can happen if,
-//! for example, the code that computes the stack trace allocates, triggering further assertion
-//! failures. This check is conservative - it may sometimes detect recursion when there is none.
+//! counterparts. The behavior of the panic and assertion macros is somewhat different. When an
+//! assertion fails or an explicit panic is invoked, a message is first unconditionally printed to
+//! stderr (in case further processing causes a crash). A stack trace is then printed, and the
+//! process aborts. If recursion is detected during the printing of the stack trace, the process
+//! immediately aborts. Recusion can happen if, for example, the code that computes the stack trace
+//! allocates, triggering further assertion failures or panics. This check is conservative - it may
+//! sometimes detect recursion when there is none.
 //!
-//! Unlike the standard library assertion macros, no panic is generated, and once an assertion
-//! failure triggers, it cannot be caught or aborted.
+//! Unlike the standard library assertion and panic macros, the stack is not unwound, and once an
+//! assertion failure or panic triggers, it cannot be caught or aborted.
 
 #![no_std]
 #![feature(core_intrinsics)]
@@ -138,63 +139,73 @@ macro_rules! alloc_eprintln {
 // (essentially short-circuiting what would eventually happen if print_backtrace_and_abort
 // successfully finished executing).
 #[doc(hidden)]
-pub static IS_ASSERTING: AtomicBool = ATOMIC_BOOL_INIT;
+pub static IS_PANICKING: AtomicBool = ATOMIC_BOOL_INIT;
+
+#[macro_export]
+macro_rules! alloc_panic {
+    () => (panic!("explicit panic"));
+    ($msg:expr) => ({
+        // in case we're called from inside an unsafe block
+        #[allow(unused_unsafe)]
+        unsafe {
+            alloc_eprintln!("thread panicked at '{}', {}:{}:{}", $msg, file!(), line!(), column!());
+
+            if $crate::IS_PANICKING.compare_and_swap(false, true, $crate::SeqCst) {
+                // compare_and_swap returns the old value; true means somebody's already panicking.
+                alloc_eprintln!("thread panicked while panicking");
+                $crate::abort();
+            }
+
+            $crate::print_backtrace_and_abort();
+        }
+    });
+    ($fmt:expr, $($arg:tt)*) => ({
+        // in case we're called from inside an unsafe block
+        #[allow(unused_unsafe)]
+        unsafe {
+            // If we wanted to do this in a single line, we'd have two options:
+            //   eprintln!(concat!("thread panicked at '", $fmt, "', {}:{}:{}"), $($arg)*, file!(), line!(), column!());
+            //   eprintln!(concat!("thread panicked at '", $fmt, "', {}:{}:{}"), $($arg)* file!(), line!(), column!());
+            // (the latter without a comma after $($arg)*). The first one breaks on invocations
+            // like:
+            //   alloc_panic!(
+            //       "bar: {}",
+            //       baz,
+            //   );
+            // While the second one breaks on invocations like:
+            //   alloc_panic!("bar: {}", baz);
+            // Thus, we just do it this (slightly less efficient) way.
+            alloc_eprint!(concat!("thread panicked at '", $fmt, "'"), $($arg)*);
+            alloc_eprintln!(", {}:{}:{}", file!(), line!(), column!());
+
+            if $crate::IS_PANICKING.compare_and_swap(false, true, $crate::SeqCst) {
+                // compare_and_swap returns the old value; true means somebody's already panicking.
+                alloc_eprintln!("thread panicked while panicking");
+                $crate::abort();
+            }
+
+            $crate::print_backtrace_and_abort();
+        }
+    })
+}
 
 #[macro_export]
 macro_rules! alloc_assert {
-    ($pred:expr) => {
+    ($pred:expr) => ({
         // Do this instead of alloc_assert!($pred, stringify!($pred)) in case $pred contains
         // characters that would be interpreted as formatting directives.
         alloc_assert!($pred, "{}", stringify!($pred));
-    };
-    ($pred:expr, $fmt:expr) => {
+    });
+    ($pred:expr, $msg:expr) => ({
         if !($pred) {
-            // in case we're called from inside an unsafe block
-            #[allow(unused_unsafe)]
-            unsafe {
-                alloc_eprintln!(concat!("assertion failed: ", $fmt, ", {}:{}:{}"), file!(), line!(), column!());
-
-                if $crate::IS_ASSERTING.compare_and_swap(false, true, $crate::SeqCst) {
-                    // compare_and_swap returns the old value; true means somebody's already asserting.
-                    alloc_eprintln!("assertion failed while aborting");
-                    $crate::abort();
-                }
-
-                $crate::print_backtrace_and_abort();
-            }
+            alloc_panic!("assertion failed: {}", $msg);
         }
-    };
-    ($pred:expr, $fmt:expr, $($arg:tt)*) => {
+    });
+    ($pred:expr, $fmt:expr, $($arg:tt)*) => ({
         if !($pred) {
-            // in case we're called from inside an unsafe block
-            #[allow(unused_unsafe)]
-            unsafe {
-                // If we wanted to do this in a single line, we'd have two options:
-                //   eprintln!(concat!("assertion failed: ", $fmt, ", {}:{}:{}"), $($arg)*, file!(), line!(), column!());
-                //   eprintln!(concat!("assertion failed: ", $fmt, ", {}:{}:{}"), $($arg)* file!(), line!(), column!());
-                // (the latter without a comma after $($arg)*). The first one breaks on invocations
-                // like:
-                //   alloc_assert!(
-                //       foo,
-                //       "bar: {}",
-                //       baz,
-                //   );
-                // While the second one breaks on invocations like:
-                //   alloc_assert!(foo, "bar: {}", baz);
-                // Thus, we just do it this (slightly less efficient) way.
-                alloc_eprint!(concat!("assertion failed: ", $fmt), $($arg)*);
-                alloc_eprintln!(", {}:{}:{}", file!(), line!(), column!());
-
-                if $crate::IS_ASSERTING.compare_and_swap(false, true, $crate::SeqCst) {
-                    // compare_and_swap returns the old value; true means somebody's already asserting.
-                    alloc_eprintln!("assertion failed while aborting");
-                    $crate::abort();
-                }
-
-                $crate::print_backtrace_and_abort();
-            }
+            alloc_panic!(concat!("assertion failed: ", $fmt), $($arg)*);
         }
-    }
+    })
 }
 
 #[macro_export]
