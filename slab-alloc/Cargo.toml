@@ -9,7 +9,7 @@
 name = "slab-alloc"
 version = "0.1.1"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>", "Eli Rosenthal <ezrosenthal@gmail.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A fast, single-threaded object allocator."
 
 keywords = ["allocator", "cache", "object", "slab"]

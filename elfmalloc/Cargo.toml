@@ -9,7 +9,7 @@
 name = "elfmalloc"
 version = "0.1.0"
 authors = ["Eli Rosenthal <ezrosenthal@gmail.com>", "Joshua Liebow-Feeser <hello@joshlf.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A fast, concurrent, general-purpose allocator."
 
 keywords = ["allocator"]

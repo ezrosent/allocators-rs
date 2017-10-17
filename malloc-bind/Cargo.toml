@@ -9,7 +9,7 @@
 name = "malloc-bind"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A tool to implement the C malloc API using a Rust allocator."
 
 keywords = ["allocator", "malloc", "bindings", "C", "ffi"]

@@ -9,7 +9,7 @@
 name = "object-alloc-test"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A suite of tests for object allocators."
 
 keywords = ["allocator", "object", "test", "memory", "corruption"]
