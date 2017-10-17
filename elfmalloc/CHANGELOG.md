@@ -31,5 +31,5 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Added workaround to avoid double-drop behavior in certain `malloc` workloads
 - Fixed "recursive `malloc`" bug caused by failing to initialize the `crossbeam`
   TLS early enough
-- Fixed recursive allocation bugs during printing and asserting by switching to
-  the macros from the `alloc-fmt` crate
+- Fixed recursive allocation bugs during printing, asserting, and panicking by
+  switching to the macros from the `alloc-fmt` crate

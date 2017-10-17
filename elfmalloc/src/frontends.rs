@@ -190,7 +190,7 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
                 None => self.iter = self.alloc.refresh(),
             }
         }
-        panic!(
+        alloc_panic!(
             "New slag is empty {:?} {:?}",
             self.alloc.slag,
             (*self.alloc.slag).rc.load()

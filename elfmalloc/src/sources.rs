@@ -185,7 +185,7 @@ impl MemorySource for Creek {
                 }
                 heap_size /= 2;
             }
-            panic!("unable to map heap")
+            alloc_panic!("unable to map heap")
         };
         // lots of stuff breaks if this isn't true
         alloc_assert!(page_size.is_power_of_two());
