@@ -9,7 +9,7 @@
 name = "mmap-alloc"
 version = "0.1.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A simple allocator backed by memory mappings."
 
 keywords = ["allocator", "mmap", "virtualalloc", "memory"]
