@@ -41,7 +41,7 @@ More detailed information on each crate can be found in the crate's `README.md`.
 
 ## Contributing
 
-Interested in contributing? We'd love to have you! Check out [CONTRIBUTING.md](https://github.com/ezrosent/allocators-rs/blob/master/CONTRIBUTING.md)
+Interested in contributing? We'd love to have you! Check out [CONTRIBUTING.md](https://github.com/ezrosent/allocators-rs/blob/master/CONTRIBUTING.md).
 
 ## Copyright and license
 
