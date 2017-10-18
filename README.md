@@ -34,6 +34,7 @@ More detailed information on each crate can be found in the crate's `README.md`.
 
 | Crate | Description |
 |-------|-------------|
+| [`alloc-fmt`](https://github.com/ezrosent/allocators-rs/blob/master/alloc-fmt) | Allocation-safe formatting and debugging macros (unreleased) |
 | [`bagpipe`](https://github.com/ezrosent/allocators-rs/blob/master/bagpipe) | Fast, concurrent data structures including queues and a weakly-ordered bag data structure ([design](https://github.com/ezrosent/allocators-rs/blob/master/info/bagpipes.md)) |
 | [`malloc-bind`](https://github.com/ezrosent/allocators-rs/blob/master/malloc-bind) | Bindings to allow a Rust `Alloc` to implement the C `malloc` API |
 | [`object-alloc`](https://github.com/ezrosent/allocators-rs/blob/master/object-alloc) | Traits representing type-specific variants of the `Alloc` trait |
