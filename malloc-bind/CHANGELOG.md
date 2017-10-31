@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   allocation API
 
 ### Changed
+- Put some `unlikely` in `if`s
 - Made `cfree` only compile on Linux
 - Made `posix_memalign` and `valloc` only compile on Linux and Mac
 - Made `LayoutFinder` and its methods unsafe
