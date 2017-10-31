@@ -9,7 +9,7 @@ use super::core::sync::atomic::{AtomicPtr, Ordering};
 use super::core::mem;
 use super::core::ptr;
 
-use super::mmap_alloc::{MapAlloc, MapAllocBuilder};
+use super::mmap_alloc::MapAlloc
 use super::{Alloc, Layout, AllocErr};
 
 #[derive(Copy, Clone)]
@@ -22,7 +22,7 @@ lazy_static! {
 pub struct GlobalAllocator {
     small_objs: large::Cache,
     large_objs: small::Cache,
-    ma: MapAlloc::default(),
+    ma: MapAlloc,
 }
 
 impl GlobalAllocator {
@@ -30,7 +30,7 @@ impl GlobalAllocator {
         GlobalAllocator {
             small_objs: large::Cache::new(1 << 10),
             large_objs: small::Cache::new(18 << 10),
-            ma: MapAllocBuilder::default().commit(true).build()
+            ma: MapAlloc::default()
         }
     }
 
