@@ -22,7 +22,7 @@ lazy_static! {
 pub struct GlobalAllocator {
     small_objs: large::Cache,
     large_objs: small::Cache,
-    ma: MapAlloc,
+    ma: MapAlloc::default(),
 }
 
 impl GlobalAllocator {
