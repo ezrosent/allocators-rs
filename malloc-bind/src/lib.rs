@@ -58,6 +58,7 @@ use alloc::allocator::{Alloc, AllocErr, Layout};
 // this is necessary.
 #[doc(hidden)]
 pub use libc::{c_void, size_t};
+use core::intrinsics::unlikely;
 use core::ptr;
 
 /// A mechanism for mapping allocated objects to their `Layout`s.
@@ -188,7 +189,7 @@ pub unsafe trait Malloc: LayoutFinder
     /// created on the heap such that two different 0-sized allocations result in two distinct
     /// pointers.
     unsafe fn c_malloc(&self, size: size_t) -> *mut c_void {
-        if cfg!(target_os = "linux") && size == 0 {
+        if cfg!(target_os = "linux") && unlikely(size == 0) {
             return ptr::null_mut();
         }
 
@@ -216,7 +217,7 @@ pub unsafe trait Malloc: LayoutFinder
     /// of `free` is undefined if `ptr` does not represent a previous allocation, or if `ptr` has
     /// already been freed.
     unsafe fn c_free(&self, ptr: *mut c_void) {
-        if ptr.is_null() {
+        if unlikely(ptr.is_null()) {
             // Linux/Mac: "If ptr is a NULL pointer, no operation is performed."
             // Windows: "If memblock is NULL, the pointer is ignored and free immediately returns."
             return;
@@ -251,7 +252,7 @@ pub unsafe trait Malloc: LayoutFinder
     /// are 0, an allocation must still be created on the heap such that two different 0-sized
     /// allocations result in two distinct pointers.
     unsafe fn c_calloc(&self, nmemb: size_t, size: size_t) -> *mut c_void {
-        if cfg!(target_os = "linux") && (nmemb == 0 || size == 0) {
+        if cfg!(target_os = "linux") && unlikely(nmemb == 0 || size == 0) {
             return ptr::null_mut();
         }
 
@@ -287,7 +288,7 @@ pub unsafe trait Malloc: LayoutFinder
     /// heap such that two different 0-sized allocations result in two distinct pointers.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     unsafe fn c_valloc(&self, size: size_t) -> *mut c_void {
-        if cfg!(target_os = "linux") && size == 0 {
+        if cfg!(target_os = "linux") && unlikely(size == 0) {
             return ptr::null_mut();
         }
 
@@ -316,7 +317,7 @@ pub unsafe trait Malloc: LayoutFinder
     unsafe fn c_pvalloc(&self, size: size_t) -> *mut c_void {
         // See http://man7.org/linux/man-pages/man3/posix_memalign.3.html
 
-        if size == 0 {
+        if unlikely(size == 0) {
             return ptr::null_mut();
         }
 
@@ -366,7 +367,7 @@ pub unsafe trait Malloc: LayoutFinder
             return self.c_malloc(size);
         }
 
-        if cfg!(any(target_os = "linux", windows)) && size == 0 {
+        if cfg!(any(target_os = "linux", windows)) && unlikely(size == 0) {
             // Linux: "if size is equal to zero, and ptr is not NULL, then the call is equivalent
             // to free(ptr)."
             // Windows (https://msdn.microsoft.com/en-us/library/xbebcx7d.aspx): "If size is zero,
@@ -481,11 +482,11 @@ pub unsafe trait Malloc: LayoutFinder
         // The manpage also specifies that the alignment must be a multiple of the word size, but
         // all powers of two greater than or equal to the word size are multiples of the word size,
         // so we omit that check.
-        if alignment <= WORD_SIZE || !alignment.is_power_of_two() {
+        if unlikely(alignment <= WORD_SIZE || !alignment.is_power_of_two()) {
             return libc::EINVAL;
         }
 
-        if cfg!(target_os = "linux") && size == 0 {
+        if cfg!(target_os = "linux") && unlikely(size == 0) {
             *memptr = ptr::null_mut();
             return 0;
         }
@@ -524,12 +525,12 @@ pub unsafe trait Malloc: LayoutFinder
     unsafe fn c_memalign(&self, alignment: size_t, size: size_t) -> *mut c_void {
         // See http://man7.org/linux/man-pages/man3/posix_memalign.3.html
 
-        if !alignment.is_power_of_two() {
+        if unlikely(!alignment.is_power_of_two()) {
             errno::set_errno(errno::Errno(libc::EINVAL));
             return ptr::null_mut();
         }
 
-        if size == 0 {
+        if unlikely(size == 0) {
             return ptr::null_mut();
         }
 
@@ -564,7 +565,7 @@ pub unsafe trait Malloc: LayoutFinder
 
         // From the aligned_alloc manpage: "The function aligned_alloc() is the same as memalign(),
         // except for the added restriction that size should be a multiple of alignment."
-        if !alignment.is_power_of_two() || size % alignment != 0 {
+        if unlikely(!alignment.is_power_of_two() || size % alignment != 0) {
             errno::set_errno(errno::Errno(libc::EINVAL));
             return ptr::null_mut();
         }
@@ -589,7 +590,7 @@ pub unsafe trait Malloc: LayoutFinder
     unsafe fn c__aligned_malloc(&self, size: size_t, alignment: size_t) -> *mut c_void {
         // See https://msdn.microsoft.com/en-us/library/8z34s9c6.aspx
 
-        if !alignment.is_power_of_two() || size == 0 {
+        if unlikely(!alignment.is_power_of_two() || size == 0) {
             // TODO: Call invalid parameter handler (see documentation). Blocked on this issue:
             // https://github.com/retep998/winapi-rs/issues/493
             errno::set_errno(errno::Errno(libc::EINVAL));
