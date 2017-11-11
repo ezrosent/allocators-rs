@@ -13,6 +13,4 @@ set -e
 export RUST_TEST_THREADS=1
 
 travis-cargo --only nightly build
-# TODO: Figure out why tests cause SIGBUS on Mac (see issue #120)
-if [ "$TRAVIS_OS_NAME" == "osx" ]; then exit 0; fi
 RUST_BACKTRACE=1 travis-cargo --only nightly test
