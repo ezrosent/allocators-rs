@@ -43,11 +43,7 @@ extern crate errno;
 extern crate sysconf;
 // lazy_static's macros are only used in the macros we define, so if no macros are called (which is
 // the case when compiling this crate on its own), then lazy_static's macros (and thus the
-// #[macro_use] attribute) will appear unused.  Due to an issue with clippy
-// (https://rust-lang-nursery.github.io/rust-clippy/master/index.html#useless_attribute), this
-// allow(unused_imports) directive will be seen as useless, so we suppress the useless_attribute
-// warning as well.
-#[cfg_attr(feature = "cargo-clippy", allow(useless_attribute))]
+// #[macro_use] attribute) will appear unused.
 #[allow(unused_imports)]
 #[macro_use]
 extern crate lazy_static;
