@@ -33,3 +33,4 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   TLS early enough
 - Fixed recursive allocation bugs during printing, asserting, and panicking by
   switching to the macros from the `alloc-fmt` crate
+- Fixed recursive allocation bugs with TLS by switching to the `alloc-tls` crate
