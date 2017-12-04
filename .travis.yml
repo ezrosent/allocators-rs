@@ -16,10 +16,17 @@ os:
 # Load travis-cargo
 before_script:
   - |
-      pip install 'travis-cargo<0.2' --user &&
+      pip2 install 'travis-cargo<0.2' --user &&
       export PATH=`python -m site --user-base`/bin:$PATH
 script:
   - |
+      # Disable rm override of cd, pushd, and popd;
+      # see https://github.com/travis-ci/travis-ci/issues/8703
+      if [ "$TRAVIS_OS_NAME" == "osx" ]; then
+          unset -f cd;
+          unset -f pushd;
+          unset -f popd;
+      fi
       set -x; set -e; for script in */travis.sh; do
           dir=$(dirname "$script");
           file=$(basename "$script");
