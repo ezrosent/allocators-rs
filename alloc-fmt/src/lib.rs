@@ -68,7 +68,11 @@ impl Write for FDWriter {
         let mut buf = s.as_bytes();
         while !buf.is_empty() {
             unsafe {
+                #[cfg(not(windows))]
                 let written = libc::write(self.0, buf.as_ptr() as *const _, buf.len());
+                #[cfg(windows)]
+                let written =
+                    libc::write(self.0, buf.as_ptr() as *const _, buf.len() as libc::c_uint);
                 if written < 1 {
                     core::intrinsics::abort();
                 }
