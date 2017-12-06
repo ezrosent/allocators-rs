@@ -782,7 +782,11 @@ unsafe fn protect(ptr: *mut u8, size: usize, perm: perms::Perm) {
     use kernel32::{GetLastError, VirtualProtect};
 
     let mut _old_perm: winapi::DWORD = 0;
-    let ret = VirtualProtect(ptr as *mut _, size as u64, perm, &mut _old_perm as *mut _);
+    #[cfg(target_pointer_width = "64")]
+    type U = u64;
+    #[cfg(target_pointer_width = "32")]
+    type U = u32;
+    let ret = VirtualProtect(ptr as *mut _, size as U, perm, &mut _old_perm as *mut _);
     assert_ne!(
         ret,
         0,
