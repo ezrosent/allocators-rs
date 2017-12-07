@@ -10,6 +10,8 @@ use super::core::mem;
 use super::core::ptr;
 
 use super::mmap_alloc::MapAlloc;
+#[cfg(windows)]
+use super::mmap_alloc::MapAllocBuilder;
 use super::{Alloc, Layout, AllocErr};
 
 #[derive(Copy, Clone)]
@@ -30,6 +32,11 @@ impl GlobalAllocator {
         GlobalAllocator {
             small_objs: large::Cache::new(1 << 10),
             large_objs: small::Cache::new(18 << 10),
+            // On Windows, memory must be explicitly committed - it will not simply be committed on
+            // first use like on Linux and Mac.
+            #[cfg(windows)]
+            ma: MapAllocBuilder::default().commit(true).build(),
+            #[cfg(not(windows))]
             ma: MapAlloc::default(),
         }
     }
