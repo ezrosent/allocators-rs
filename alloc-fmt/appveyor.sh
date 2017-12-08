@@ -17,3 +17,4 @@ fi
 cargo build
 RUST_BACKTRACE=1 cargo test
 RUST_BACKTRACE=1 cargo run --bin print
+RUST_BACKTRACE=1 cargo run --no-default-features --bin print

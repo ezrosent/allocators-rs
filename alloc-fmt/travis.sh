@@ -13,3 +13,4 @@ set -e
 travis-cargo --only nightly build
 RUST_BACKTRACE=1 travis-cargo --only nightly test
 RUST_BACKTRACE=1 travis-cargo --only nightly run -- --bin print
+RUST_BACKTRACE=1 travis-cargo --only nightly run -- --no-default-features --bin print

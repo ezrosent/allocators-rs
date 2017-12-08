@@ -33,6 +33,7 @@
 #![no_std]
 #![feature(core_intrinsics)]
 
+#[cfg(feature = "print-backtrace")]
 extern crate backtrace;
 extern crate libc;
 extern crate spin;
@@ -305,31 +306,34 @@ pub unsafe fn print_backtrace_and_abort() -> ! {
     // TODO(joshlf): Currently, this function prints itself and its callees in the trace. We should
     // figure out a way to omit those and have the first printed frame be the caller's.
 
-    backtrace::trace(|frame| {
-        let ip = frame.ip();
-        backtrace::resolve(ip, |symbol| {
-            if let Some(name) = symbol.name() {
-                alloc_eprintln!("{}", name);
-            } else {
-                alloc_eprintln!("<unknown function>");
-            }
-            if let Some(path) = symbol.filename() {
-                if let Some(s) = path.to_str() {
-                    alloc_eprint!("\t{}", s);
+    #[cfg(feature = "print-backtrace")]
+    {
+        backtrace::trace(|frame| {
+            let ip = frame.ip();
+            backtrace::resolve(ip, |symbol| {
+                if let Some(name) = symbol.name() {
+                    alloc_eprintln!("{}", name);
+                } else {
+                    alloc_eprintln!("<unknown function>");
+                }
+                if let Some(path) = symbol.filename() {
+                    if let Some(s) = path.to_str() {
+                        alloc_eprint!("\t{}", s);
+                    } else {
+                        alloc_eprint!("\t<unknown file>");
+                    }
                 } else {
                     alloc_eprint!("\t<unknown file>");
                 }
-            } else {
-                alloc_eprint!("\t<unknown file>");
-            }
-            if let Some(line) = symbol.lineno() {
-                alloc_eprintln!(":{}", line);
-            } else {
-                alloc_eprintln!();
-            }
+                if let Some(line) = symbol.lineno() {
+                    alloc_eprintln!(":{}", line);
+                } else {
+                    alloc_eprintln!();
+                }
+            });
+            true
         });
-        true
-    });
+    }
     core::intrinsics::abort();
 }
 
