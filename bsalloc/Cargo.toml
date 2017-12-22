@@ -23,5 +23,5 @@ exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
 alloc-fmt = { path = "../alloc-fmt" }
-lazy_static = { version = "0.2.9", features = ["spin_no_std"] }
+lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
 mmap-alloc = { path = "../mmap-alloc" }

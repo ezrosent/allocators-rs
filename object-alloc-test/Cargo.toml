@@ -23,7 +23,7 @@ exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
 interpolate_idents = "0.1.8"
-lazy_static = "0.2.9"
+lazy_static = "1.0.0"
 libc = "0.2"
 object-alloc = "0.1.0"
 quickcheck = "0.4"
