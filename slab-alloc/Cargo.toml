@@ -40,7 +40,7 @@ hashmap-no-coalesce = []
 
 [dependencies]
 interpolate_idents = "0.1.8"
-lazy_static = { version = "0.2.9", features = ["spin_no_std"] }
+lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
 mmap-alloc = "0.1.0"
 object-alloc = "0.1.0"
 object-alloc-test = { path = "../object-alloc-test" }

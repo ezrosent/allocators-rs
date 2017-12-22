@@ -23,6 +23,6 @@ exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
 errno = "0.2"
-lazy_static = { version = "0.2.9", features = ["spin_no_std"] }
+lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
 libc = "0.2"
 sysconf = "0.3.1"
