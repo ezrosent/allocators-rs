@@ -49,3 +49,6 @@ env:
   global:
     # Override the default `--features unstable` used for the nightly branch
     - TRAVIS_CARGO_NIGHTLY_FEATURE=""
+  matrix:
+    - ARCH=x86_64
+    - ARCH=i686
