@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -384,7 +384,7 @@ mod tests {
     fn bench_extend<V: VecLike<usize> + Default>(b: &mut Bencher) {
         #[inline(never)]
         fn extend_noinline<V: VecLike<usize>>(vec: &mut V) {
-            vec.extend((0..(1 << 10)));
+            vec.extend(0..(1 << 10));
         }
         b.iter(|| {
             let mut vec = V::default();

@@ -1,4 +1,4 @@
-# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
 # Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -22,7 +22,7 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/object-alloc
 exclude = ["appveyor.sh", "travis.sh"]
 
 [dependencies]
-interpolate_idents = "0.1.8"
+interpolate_idents = "0.2.2"
 lazy_static = "1.0.0"
 libc = "0.2"
 object-alloc = "0.1.0"
