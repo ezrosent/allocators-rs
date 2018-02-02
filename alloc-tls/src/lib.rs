@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -386,7 +386,7 @@ mod tests {
     fn bench_tls(b: &mut Bencher) {
         alloc_thread_local!{ static FOO: UnsafeCell<usize> = UnsafeCell::new(0); }
         b.iter(|| unsafe {
-            FOO.with(|foo| unsafe {
+            FOO.with(|foo| {
                 let inner = foo.get();
                 (*inner) += 1;
                 black_box(*inner);

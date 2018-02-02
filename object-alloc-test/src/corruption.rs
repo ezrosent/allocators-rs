@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -390,7 +390,7 @@ impl<T: Copy> CorruptionTester<T> {
 
         unsafe {
             let ptr = self as *const CorruptionTester<T> as usize;
-            (transmute(ptr), from_raw_parts((ptr + header_size) as *const u8, (size - header_size)))
+            (transmute(ptr), from_raw_parts((ptr + header_size) as *const u8, size - header_size))
         }
     }
 
@@ -405,7 +405,7 @@ impl<T: Copy> CorruptionTester<T> {
         unsafe {
             let ptr = self as *mut CorruptionTester<T> as usize;
             (transmute(ptr),
-             from_raw_parts_mut((ptr + header_size) as *mut u8, (size - header_size)))
+             from_raw_parts_mut((ptr + header_size) as *mut u8, size - header_size))
         }
     }
 
