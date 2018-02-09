@@ -1,4 +1,4 @@
-<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the
+<!-- Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 README.md file at the top-level directory of this repository.
 
 Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## 0.2.0
+
 ### Added
 - Added this changelog
 - Added `commit` and `uncommit` methods on Windows
@@ -21,7 +23,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - Added support for full Alloc API (`shrink_in_place`, `grow_in_place`,
   `realloc`)
     - In Linux, these functions can use `mremap` to grow/shrink beyond the size
-      of a the pagesize
+      of a page
 - Added tests for memory permissions on Linux (by parsing `/proc/<pid>/maps`)
   and Windows (by using the `VirtualQuery` function)
 
