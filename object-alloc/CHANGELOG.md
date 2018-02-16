@@ -1,4 +1,4 @@
-<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the
+<!-- Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 README.md file at the top-level directory of this repository.
 
 Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -15,3 +15,6 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Added this changelog
+
+### Changed
+- Switched from `*mut u8` to `NonNull<u8>` for pointer values

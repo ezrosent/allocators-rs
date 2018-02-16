@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -26,19 +26,20 @@
 extern crate alloc;
 extern crate object_alloc;
 
-use {OBJECTS_PER_SLAB, PAGE_SIZE, stack};
-use stack::{SlabHeader, Layout};
+use {stack, OBJECTS_PER_SLAB, PAGE_SIZE};
+use stack::{Layout, SlabHeader};
 use init::InitSystem;
 use self::alloc::allocator;
 use self::object_alloc::UntypedObjectAlloc;
+use core::ptr::NonNull;
 
 pub struct ConfigData;
 
 impl stack::ConfigData for ConfigData {
-    fn ptr_to_slab(&self, slab_size: usize, ptr: *mut u8) -> *mut SlabHeader {
-        let slab = ptr as usize & !(slab_size - 1);
+    fn ptr_to_slab(&self, slab_size: usize, ptr: NonNull<u8>) -> NonNull<SlabHeader> {
+        let slab = ptr.as_ptr() as usize & !(slab_size - 1);
         debug_assert_eq!(slab % slab_size, 0);
-        slab as *mut SlabHeader
+        unsafe { NonNull::new_unchecked(slab as *mut SlabHeader) }
     }
 }
 
@@ -72,9 +73,8 @@ pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
     }
 
     let unused = |slab_size: usize| {
-        Layout::for_slab_size(layout.clone(), slab_size).map(|(layout, unused)| {
-                                                                 (layout.num_obj, unused)
-                                                             })
+        Layout::for_slab_size(layout.clone(), slab_size)
+            .map(|(layout, unused)| (layout.num_obj, unused))
     };
 
     // We guarantee that we never request aligned slabs smaller than a page (see the Documentation

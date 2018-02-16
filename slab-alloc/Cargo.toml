@@ -41,8 +41,8 @@ hashmap-no-coalesce = []
 [dependencies]
 interpolate_idents = "0.2.2"
 lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
-mmap-alloc = "0.1.0"
-object-alloc = "0.1.0"
+mmap-alloc = { path = "../mmap-alloc" }
+object-alloc = { path = "../object-alloc" }
 object-alloc-test = { path = "../object-alloc-test" }
 rand = "0.3"
 sysconf = "0.3.1"

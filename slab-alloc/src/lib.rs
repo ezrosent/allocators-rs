@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -51,9 +51,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(alloc, allocator_api)]
+#![feature(nonnull_cast)]
 #![feature(plugin)]
 #![cfg_attr(test, feature(test))]
-
 #![plugin(interpolate_idents)]
 
 mod aligned;
@@ -80,6 +80,7 @@ extern crate sysconf;
 use core::marker::PhantomData;
 use core::default::Default;
 use core::mem;
+use core::ptr::NonNull;
 use self::util::list::*;
 use util::workingset::WorkingSet;
 use init::*;
@@ -207,9 +208,10 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     /// required to be supported (at least a page in size and page-aligned), so `get_large` returns
     /// an allocator directly rather than an `Option`.
     pub fn build_backing<B, A, L>(self, get_aligned: A, get_large: L) -> SlabAlloc<T, I, B>
-        where B: BackingAlloc,
-              A: Fn(Layout) -> Option<B::Aligned>,
-              L: Fn(Layout) -> B::Large
+    where
+        B: BackingAlloc,
+        A: Fn(Layout) -> Option<B::Aligned>,
+        L: Fn(Layout) -> B::Large,
     {
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
@@ -233,13 +235,15 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
     ///
     /// `build_untyped_backing` is like `build_backing`, except that it builds an
     /// `UntypedSlabAlloc` instead of a `SlabAlloc`.
-    pub fn build_untyped_backing<B, A, L>(self,
-                                          get_aligned: A,
-                                          get_large: L)
-                                          -> UntypedSlabAlloc<I, B>
-        where B: BackingAlloc,
-              A: Fn(Layout) -> Option<B::Aligned>,
-              L: Fn(Layout) -> B::Large
+    pub fn build_untyped_backing<B, A, L>(
+        self,
+        get_aligned: A,
+        get_large: L,
+    ) -> UntypedSlabAlloc<I, B>
+    where
+        B: BackingAlloc,
+        A: Fn(Layout) -> Option<B::Aligned>,
+        L: Fn(Layout) -> B::Large,
     {
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
@@ -287,7 +291,7 @@ impl<T, F: Fn() -> T> SlabAllocBuilder<T, FnInitSystem<T, F>> {
     }
 }
 
-impl<T, F: Fn(*mut T)> SlabAllocBuilder<T, UnsafeFnInitSystem<T, F>> {
+impl<T, F: Fn(NonNull<T>)> SlabAllocBuilder<T, UnsafeFnInitSystem<T, F>> {
     /// Constructs a new builder for an allocator which uses `f` to initialize allocated objects.
     ///
     /// The constructed allocator will call `f` whenever a new object needs to be initialized.
@@ -385,9 +389,10 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
     /// required to be supported (at least a page in size and page-aligned), so `get_large` returns
     /// an allocator directly rather than an `Option`.
     pub fn build_backing<B, A, L>(self, get_aligned: A, get_large: L) -> UntypedSlabAlloc<I, B>
-        where B: BackingAlloc,
-              A: Fn(Layout) -> Option<B::Aligned>,
-              L: Fn(Layout) -> B::Large
+    where
+        B: BackingAlloc,
+        A: Fn(Layout) -> Option<B::Aligned>,
+        L: Fn(Layout) -> B::Large,
     {
         let layout = util::misc::satisfy_min_align(self.layout.clone(), I::min_align());
         let aligned_backing_size = aligned::backing_size_for::<I>(&layout);
@@ -407,7 +412,7 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
     }
 }
 
-impl<F: Fn(*mut u8)> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
+impl<F: Fn(NonNull<u8>)> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
     pub fn func(layout: Layout, f: F) -> UntypedSlabAllocBuilder<UnsafeFnInitSystem<u8, F>> {
         UntypedSlabAllocBuilder {
             init: UnsafeFnInitSystem::new(UnsafeFnInitializer::new(f)),
@@ -426,18 +431,17 @@ impl UntypedSlabAllocBuilder<NopInitSystem> {
 }
 
 unsafe impl<T, I: InitSystem, B: BackingAlloc> ObjectAlloc<T> for SlabAlloc<T, I, B> {
-    unsafe fn alloc(&mut self) -> Result<*mut T, Exhausted> {
+    unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted> {
         match self.alloc {
-                PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
-                PrivateSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
-            }
-            .map(|ptr| ptr as *mut T)
+            PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
+            PrivateSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
+        }.map(NonNull::cast)
     }
 
-    unsafe fn dealloc(&mut self, x: *mut T) {
+    unsafe fn dealloc(&mut self, x: NonNull<T>) {
         match self.alloc {
-            PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.dealloc(x as *mut u8),
-            PrivateSlabAlloc::Large(ref mut alloc) => alloc.dealloc(x as *mut u8),
+            PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.dealloc(x.cast()),
+            PrivateSlabAlloc::Large(ref mut alloc) => alloc.dealloc(x.cast()),
         }
     }
 }
@@ -450,14 +454,14 @@ unsafe impl<T, I: InitSystem, B: BackingAlloc> UntypedObjectAlloc for SlabAlloc<
         }
     }
 
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
         match self.alloc {
             PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
             PrivateSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
         }
     }
 
-    unsafe fn dealloc(&mut self, x: *mut u8) {
+    unsafe fn dealloc(&mut self, x: NonNull<u8>) {
         match self.alloc {
             PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.dealloc(x),
             PrivateSlabAlloc::Large(ref mut alloc) => alloc.dealloc(x),
@@ -473,14 +477,14 @@ unsafe impl<I: InitSystem, B: BackingAlloc> UntypedObjectAlloc for UntypedSlabAl
         }
     }
 
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
         match self.alloc {
             PrivateUntypedSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
             PrivateUntypedSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
         }
     }
 
-    unsafe fn dealloc(&mut self, x: *mut u8) {
+    unsafe fn dealloc(&mut self, x: NonNull<u8>) {
         match self.alloc {
             PrivateUntypedSlabAlloc::Aligned(ref mut alloc) => alloc.dealloc(x),
             PrivateUntypedSlabAlloc::Large(ref mut alloc) => alloc.dealloc(x),
@@ -493,7 +497,8 @@ struct SizedSlabAlloc<I: InitSystem, S: SlabSystem<I>> {
     total_slabs: usize,
     num_full: usize, // number of full slabs
     refcnt: usize,
-    full_slab_working_set: WorkingSet<usize>, /* minimum number of slabs full at every moment during this working period */
+    // minimum number of slabs full at every moment during this working period
+    full_slab_working_set: WorkingSet<usize>,
 
     slab_system: S,
     init_system: I,
@@ -515,7 +520,7 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
         }
     }
 
-    fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+    fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
         if self.freelist.size() == 0 {
             let ok = self.alloc_slab();
             if !ok {
@@ -534,7 +539,7 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
             self.freelist.remove_front();
         }
         self.refcnt += 1;
-        debug_assert_eq!(obj as usize % self.layout.align(), 0);
+        debug_assert_eq!(obj.as_ptr() as usize % self.layout.align(), 0);
         self.init_system.init(obj, init_status);
         Ok(obj)
     }
@@ -544,21 +549,20 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
     /// Allocates a new slab and inserts it onto the back of the freelist. Returns `true` upon
     /// success and `false` upon failure.
     fn alloc_slab(&mut self) -> bool {
-        let new = self.slab_system.alloc_slab();
-        if new.is_null() {
-            return false;
+        if let Some(new) = self.slab_system.alloc_slab() {
+            // technically it doesn't matter whether it's back or front since this is only called when
+            // the list is currently empty
+            self.freelist.insert_back(new);
+            self.total_slabs += 1;
+            self.num_full += 1;
+            true
+        } else {
+            false
         }
-
-        // technically it doesn't matter whether it's back or front since this is only called when
-        // the list is currently empty
-        self.freelist.insert_back(new);
-        self.total_slabs += 1;
-        self.num_full += 1;
-        true
     }
 
-    fn dealloc(&mut self, ptr: *mut u8) {
-        debug_assert_eq!(ptr as usize % self.layout.align(), 0);
+    fn dealloc(&mut self, ptr: NonNull<u8>) {
+        debug_assert_eq!(ptr.as_ptr() as usize % self.layout.align(), 0);
         let (slab, was_empty) = self.slab_system.dealloc(ptr, I::status_initialized());
         let is_full = self.slab_system.is_full(slab);
 
@@ -593,8 +597,7 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
     }
 
     fn garbage_collect_slabs(&mut self) {
-        if let Some(min_full) = self.full_slab_working_set
-               .refresh(WORKING_PERIOD_SECONDS) {
+        if let Some(min_full) = self.full_slab_working_set.refresh(WORKING_PERIOD_SECONDS) {
             for _ in 0..min_full {
                 let slab = self.freelist.remove_back();
                 self.slab_system.dealloc_slab(slab);
@@ -630,18 +633,18 @@ trait SlabSystem<I: InitSystem> {
 
     /// Allocate a new `Slab`.
     ///
-    /// The returned `Slab` has its next and previous pointers initialized to null.
-    fn alloc_slab(&mut self) -> *mut Self::Slab;
-    fn dealloc_slab(&mut self, slab: *mut Self::Slab);
+    /// The returned `Slab` has its next and previous pointers initialized to `None`.
+    fn alloc_slab(&mut self) -> Option<NonNull<Self::Slab>>;
+    fn dealloc_slab(&mut self, slab: NonNull<Self::Slab>);
 
     /// `is_full` returns true if all objects are available for allocation.
-    fn is_full(&self, slab: *mut Self::Slab) -> bool;
+    fn is_full(&self, slab: NonNull<Self::Slab>) -> bool;
     /// `is_empty` returns true if no objects are available for allocation.
-    fn is_empty(&self, slab: *mut Self::Slab) -> bool;
+    fn is_empty(&self, slab: NonNull<Self::Slab>) -> bool;
     /// `alloc` allocates a new object from the given `Slab`.
-    fn alloc(&self, slab: *mut Self::Slab) -> (*mut u8, I::Status);
+    fn alloc(&self, slab: NonNull<Self::Slab>) -> (NonNull<u8>, I::Status);
     /// `dealloc` deallocates the given object. It is `dealloc`'s responsibility to find the
     /// object's parent `Slab` and return it. It also returns whether the `Slab` was empty prior to
     /// deallocation.
-    fn dealloc(&self, obj: *mut u8, init_status: I::Status) -> (*mut Self::Slab, bool);
+    fn dealloc(&self, obj: NonNull<u8>, init_status: I::Status) -> (NonNull<Self::Slab>, bool);
 }

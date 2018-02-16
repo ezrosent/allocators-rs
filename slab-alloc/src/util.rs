@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -6,11 +6,13 @@
 // copied, modified, or distributed except according to those terms.
 
 pub mod size {
-    pub fn choose_size<I: Iterator<Item = usize>, F>(sizes: I,
-                                                     unused: F,
-                                                     max_objects_per_slab: usize)
-                                                     -> usize
-        where F: Fn(usize) -> Option<(usize, usize)>
+    pub fn choose_size<I: Iterator<Item = usize>, F>(
+        sizes: I,
+        unused: F,
+        max_objects_per_slab: usize,
+    ) -> usize
+    where
+        F: Fn(usize) -> Option<(usize, usize)>,
     {
         fn leq(a: f64, b: Option<f64>) -> bool {
             match b {
@@ -50,8 +52,9 @@ pub mod size {
 
 pub mod stack {
     extern crate alloc;
-    use core::{mem, ptr};
     use core::marker::PhantomData;
+    use core::{mem, ptr};
+    use core::ptr::NonNull;
 
     /// A manually-allocated stack. The `Stack` object itself is only where the metadata lives; the
     /// data itself lives in memory which is manually allocated by the user.
@@ -91,7 +94,7 @@ pub mod stack {
         ///
         /// The new size of the stack must not exceed the size for which the underlying memory
         /// (`data`) was allocated.
-        pub fn push(&mut self, data: *mut T, val: T) {
+        pub fn push(&mut self, data: NonNull<T>, val: T) {
             Self::set_at_idx(data, self.size as isize, val);
             self.size += 1;
         }
@@ -99,7 +102,7 @@ pub mod stack {
         /// Pops an element from the stack.
         ///
         /// The stack must not be empty.
-        pub fn pop(&mut self, data: *mut T) -> T {
+        pub fn pop(&mut self, data: NonNull<T>) -> T {
             debug_assert!(self.size > 0);
             self.size -= 1;
             Self::get_at_idx(data, self.size as isize)
@@ -112,17 +115,17 @@ pub mod stack {
 
         #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
         #[inline(always)]
-        fn get_at_idx(data: *mut T, idx: isize) -> T {
+        fn get_at_idx(data: NonNull<T>, idx: isize) -> T {
             debug_assert!(idx >= 0);
-            unsafe { ptr::read(data.offset(idx)) }
+            unsafe { ptr::read(data.as_ptr().offset(idx)) }
         }
 
         #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
         #[inline(always)]
-        fn set_at_idx(data: *mut T, idx: isize, val: T) {
+        fn set_at_idx(data: NonNull<T>, idx: isize, val: T) {
             debug_assert!(idx >= 0);
             unsafe {
-                ptr::write(data.offset(idx), val);
+                ptr::write(data.as_ptr().offset(idx), val);
             }
         }
     }
@@ -233,16 +236,18 @@ pub mod ptrmap {
             pub map: PtrHashMap<K, V>,
         }
 
-        impl<K, V> Map<K, V> {
+        impl<K, V: Copy> Map<K, V> {
             pub fn new(size_hint: usize, align: usize) -> Map<K, V> {
-                Map { map: PtrHashMap::new(size_hint, align) }
+                Map {
+                    map: PtrHashMap::new(size_hint, align),
+                }
             }
 
-            pub fn get(&self, k: *mut K) -> *mut V {
+            pub fn get(&self, k: *mut K) -> V {
                 self.map.get(k)
             }
 
-            pub fn insert(&mut self, k: *mut K, v: *mut V) {
+            pub fn insert(&mut self, k: *mut K, v: V) {
                 self.map.insert(k, v);
             }
 
@@ -257,19 +262,21 @@ pub mod ptrmap {
         use std::collections::HashMap;
 
         pub struct Map<K, V> {
-            map: HashMap<*mut K, *mut V>,
+            map: HashMap<*mut K, V>,
         }
 
-        impl<K, V> Map<K, V> {
+        impl<K, V: Copy> Map<K, V> {
             pub fn new(size_hint: usize, _: usize) -> Map<K, V> {
-                Map { map: HashMap::with_capacity(size_hint) }
+                Map {
+                    map: HashMap::with_capacity(size_hint),
+                }
             }
 
-            pub fn get(&self, k: *mut K) -> *mut V {
+            pub fn get(&self, k: *mut K) -> V {
                 *self.map.get(&k).unwrap()
             }
 
-            pub fn insert(&mut self, k: *mut K, v: *mut V) {
+            pub fn insert(&mut self, k: *mut K, v: V) {
                 self.map.insert(k, v);
             }
 
@@ -282,136 +289,138 @@ pub mod ptrmap {
 
 pub mod list {
     extern crate core;
-    use core::ptr;
+    use core::ptr::NonNull;
 
     pub trait Linkable {
-        fn next(&self) -> *mut Self;
-        fn prev(&self) -> *mut Self;
-        fn set_next(&mut self, ptr: *mut Self);
-        fn set_prev(&mut self, ptr: *mut Self);
+        fn next(&self) -> Option<NonNull<Self>>;
+        fn prev(&self) -> Option<NonNull<Self>>;
+        fn set_next(&mut self, ptr: Option<NonNull<Self>>);
+        fn set_prev(&mut self, ptr: Option<NonNull<Self>>);
     }
 
     pub struct LinkedList<T: Linkable> {
         size: usize,
-        head: *mut T,
-        tail: *mut T,
+        head: Option<NonNull<T>>,
+        tail: Option<NonNull<T>>,
     }
 
     impl<T: Linkable> LinkedList<T> {
         pub fn new() -> LinkedList<T> {
             LinkedList {
                 size: 0,
-                head: ptr::null_mut(),
-                tail: ptr::null_mut(),
+                head: None,
+                tail: None,
             }
         }
 
-        pub fn insert_front(&mut self, t: *mut T) {
+        pub fn insert_front(&mut self, t: NonNull<T>) {
             unsafe {
-                debug_assert!((*t).next().is_null());
-                debug_assert!((*t).prev().is_null());
-                if self.size == 0 {
-                    self.head = t;
-                    self.tail = t;
+                debug_assert!((*t.as_ptr()).next().is_none());
+                debug_assert!((*t.as_ptr()).prev().is_none());
+                if let Some(head) = self.head {
+                    (*t.as_ptr()).set_next(Some(head));
+                    (*head.as_ptr()).set_prev(Some(t));
+                    self.head = Some(t);
                 } else {
-                    (*t).set_next(self.head);
-                    (*self.head).set_prev(t);
-                    self.head = t;
+                    self.head = Some(t);
+                    self.tail = Some(t);
                 }
                 self.size += 1;
             }
         }
 
-        pub fn insert_back(&mut self, t: *mut T) {
+        pub fn insert_back(&mut self, t: NonNull<T>) {
             unsafe {
-                debug_assert!((*t).next().is_null());
-                debug_assert!((*t).prev().is_null());
-                if self.size == 0 {
-                    self.head = t;
-                    self.tail = t;
+                debug_assert!((*t.as_ptr()).next().is_none());
+                debug_assert!((*t.as_ptr()).prev().is_none());
+                if let Some(tail) = self.tail {
+                    (*t.as_ptr()).set_prev(Some(tail));
+                    (*tail.as_ptr()).set_next(Some(t));
+                    self.tail = Some(t);
                 } else {
-                    (*self.tail).set_next(t);
-                    (*t).set_prev(self.tail);
-                    self.tail = t;
+                    self.head = Some(t);
+                    self.tail = Some(t);
                 }
                 self.size += 1;
             }
         }
 
-        pub fn remove_front(&mut self) -> *mut T {
+        pub fn remove_front(&mut self) -> NonNull<T> {
             unsafe {
                 debug_assert!(self.size > 0);
                 let t = if self.size == 1 {
-                    let t = self.head;
-                    self.head = ptr::null_mut();
-                    self.tail = ptr::null_mut();
+                    let t = self.head.unwrap();
+                    self.head = None;
+                    self.tail = None;
                     t
                 } else {
-                    let t = self.head;
-                    self.head = (*t).next();
-                    (*self.head).set_prev(ptr::null_mut());
-                    (*t).set_next(ptr::null_mut());
+                    let t = self.head.unwrap();
+                    let t_next = (*t.as_ptr()).next().unwrap();
+                    self.head = Some(t_next);
+                    (*t_next.as_ptr()).set_prev(None);
+                    (*t.as_ptr()).set_next(None);
                     t
                 };
-                debug_assert!((*t).next().is_null());
-                debug_assert!((*t).prev().is_null());
+                debug_assert!((*t.as_ptr()).next().is_none());
+                debug_assert!((*t.as_ptr()).prev().is_none());
                 self.size -= 1;
                 t
             }
         }
 
-        pub fn remove_back(&mut self) -> *mut T {
+        pub fn remove_back(&mut self) -> NonNull<T> {
             unsafe {
                 debug_assert!(self.size > 0);
                 let t = if self.size == 1 {
-                    let t = self.head;
-                    self.head = ptr::null_mut();
-                    self.tail = ptr::null_mut();
+                    let t = self.head.unwrap();
+                    self.head = None;
+                    self.tail = None;
                     t
                 } else {
-                    let t = self.tail;
-                    self.tail = (*t).prev();
-                    (*self.tail).set_next(ptr::null_mut());
-                    (*t).set_prev(ptr::null_mut());
+                    let t = self.tail.unwrap();
+                    let t_prev = (*t.as_ptr()).prev().unwrap();
+                    self.tail = Some(t_prev);
+                    (*t_prev.as_ptr()).set_next(None);
+                    (*t.as_ptr()).set_prev(None);
                     t
                 };
-                debug_assert!((*t).next().is_null());
-                debug_assert!((*t).prev().is_null());
+                debug_assert!((*t.as_ptr()).next().is_none());
+                debug_assert!((*t.as_ptr()).prev().is_none());
                 self.size -= 1;
                 t
             }
         }
 
-        pub fn move_to_back(&mut self, t: *mut T) {
+        pub fn move_to_back(&mut self, t: NonNull<T>) {
             debug_assert!(self.size > 0);
-            if self.size == 1 || self.tail == t {
+            if self.size == 1 || self.tail == Some(t) {
                 return;
             }
 
             unsafe {
                 // remove from its place in the list
-                if self.head == t {
-                    let next = (*t).next();
-                    (*next).set_prev(ptr::null_mut());
-                    self.head = next;
+                if self.head == Some(t) {
+                    let next = (*t.as_ptr()).next().unwrap();
+                    (*next.as_ptr()).set_prev(None);
+                    self.head = Some(next);
                 } else {
-                    let prev = (*t).prev();
-                    let next = (*t).next();
-                    (*prev).set_next(next);
-                    (*next).set_prev(prev);
+                    let prev = (*t.as_ptr()).prev().unwrap();
+                    let next = (*t.as_ptr()).next().unwrap();
+                    (*prev.as_ptr()).set_next(Some(next));
+                    (*next.as_ptr()).set_prev(Some(prev));
                 }
 
                 // insert at the back of the list
-                (*t).set_prev(self.tail);
-                (*t).set_next(ptr::null_mut());
-                (*self.tail).set_next(t);
-                self.tail = t;
+                (*t.as_ptr()).set_prev(self.tail);
+                (*t.as_ptr()).set_next(None);
+                (*self.tail.unwrap().as_ptr()).set_next(Some(t));
+                self.tail = Some(t);
             }
         }
 
-        pub fn peek_front(&self) -> *mut T {
+        pub fn peek_front(&self) -> NonNull<T> {
             debug_assert!(self.size > 0);
-            self.head
+            self.head.unwrap()
         }
 
         pub fn size(&self) -> usize {
