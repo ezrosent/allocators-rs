@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -41,6 +41,7 @@ pub mod alloc {
     extern crate object_alloc;
     use self::alloc::allocator::{Alloc, AllocErr, Layout};
     use self::object_alloc::{Exhausted, UntypedObjectAlloc};
+    use core::ptr::NonNull;
 
     /// An `UntypedObjectAlloc` that uses an arbitrary allocator.
     #[derive(Clone)]
@@ -60,9 +61,9 @@ pub mod alloc {
             self.layout.clone()
         }
 
-        unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+        unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
             match self.alloc.alloc(self.layout.clone()) {
-                Ok(ptr) => Ok(ptr),
+                Ok(ptr) => Ok(NonNull::new_unchecked(ptr)),
                 Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
                 Err(AllocErr::Unsupported { details }) => {
                     unreachable!("unexpected unsupported alloc: {}", details)
@@ -70,8 +71,8 @@ pub mod alloc {
             }
         }
 
-        unsafe fn dealloc(&mut self, ptr: *mut u8) {
-            self.alloc.dealloc(ptr, self.layout.clone());
+        unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
+            self.alloc.dealloc(ptr.as_ptr(), self.layout.clone());
         }
     }
 }
@@ -113,7 +114,7 @@ pub mod mmap {
     extern crate sysconf;
     use self::alloc::allocator::Layout;
     #[cfg(target_os = "linux")]
-    use self::mmap_alloc::{MapAlloc, MapAllocBuilder};
+    use self::mmap_alloc::MapAlloc;
     #[cfg(not(target_os = "linux"))]
     use self::mmap_alloc::MapAlloc;
     use super::alloc::AllocObjectAlloc;
@@ -130,18 +131,9 @@ pub mod mmap {
     pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<MapAlloc>> {
         debug_assert_eq!(layout.size(), layout.align());
         if layout.size() != *PAGE_SIZE {
-            #[cfg(target_os = "linux")]
-            {
-                if self::sysconf::page::hugepage_supported(layout.size()) {
-                    let map = MapAllocBuilder::default()
-                        .huge_pagesize(layout.size())
-                        .build();
-                    Some(AllocObjectAlloc::new(map, layout))
-                } else {
-                    None
-                }
-            }
-            #[cfg(not(target_os = "linux"))]
+            // TODO: Use an elfmalloc-style approach of allocating a large
+            // region and then freeing the pages that are not part of the
+            // size-aligned subset.
             None
         } else {
             Some(AllocObjectAlloc::new(MapAlloc::default(), layout))

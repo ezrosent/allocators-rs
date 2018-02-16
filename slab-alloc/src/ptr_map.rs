@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -12,6 +12,8 @@
 //   beginning. We can do better - we could keep track of what bucket/index we're currently at, and
 //   start the next search from that point.
 // - Once Vec and Box support parametric allocators, use that functionality.
+// - Is there something safer we can do for the value field of empty buckets other than
+//   mem::uninitialized?
 
 // Design
 //
@@ -58,6 +60,7 @@
 
 extern crate alloc;
 use core::ptr;
+use mem;
 
 const BUCKET_SIZE: usize = 4;
 
@@ -67,7 +70,7 @@ pub struct PtrHashMap<K, V> {
     align_shift: u32,
 }
 
-impl<K, V> PtrHashMap<K, V> {
+impl<K, V: Copy> PtrHashMap<K, V> {
     /// Constructs a new `PtrHashMap`.
     ///
     /// `size` is a hint for how many elements will be stored in the map.
@@ -97,7 +100,7 @@ impl<K, V> PtrHashMap<K, V> {
     /// `dump_by_bucket` creates a copy of the table, with each bucket represented by a `Vec<(*mut
     /// K, *mut V)>`.
     #[cfg_attr(not(test), allow(unused))]
-    pub fn dump_by_bucket(&self) -> Vec<Vec<(*mut K, *mut V)>> {
+    pub fn dump_by_bucket(&self) -> Vec<Vec<(*mut K, V)>> {
         let mut res = Vec::with_capacity(self.vec.len());
         for b in &self.vec {
             res.push(b.dump());
@@ -132,7 +135,7 @@ impl<K, V> PtrHashMap<K, V> {
 
     // Get the value associated with the given key. The key must exist, or else get will panic.
     #[inline]
-    pub fn get(&self, ptr: *mut K) -> *mut V {
+    pub fn get(&self, ptr: *mut K) -> V {
         self.get_bucket(ptr).get(ptr)
     }
 
@@ -141,7 +144,7 @@ impl<K, V> PtrHashMap<K, V> {
     /// # Panics
     /// The key must not already exist in the table, or else `insert` will panic.
     #[inline]
-    pub fn insert(&mut self, ptr: *mut K, v: *mut V) {
+    pub fn insert(&mut self, ptr: *mut K, v: V) {
         debug_assert!(!ptr.is_null());
         #[cfg(not(feature = "hashmap-no-resize"))]
         {
@@ -196,8 +199,8 @@ impl<K, V> PtrHashMap<K, V> {
 
             // first_free_bkt.is_null() is a sentinal value indicating that these variables are not
             // set.
-            let (mut first_free_bkt, mut first_free_idx) = (ptr::null_mut() as *mut Bucket<K, V>,
-                                                            0);
+            let (mut first_free_bkt, mut first_free_idx) =
+                (ptr::null_mut() as *mut Bucket<K, V>, 0);
             macro_rules! update_first_free {
                 ($bkt:expr, $idx:expr) => (
                     if first_free_bkt.is_null() {
@@ -217,7 +220,7 @@ impl<K, V> PtrHashMap<K, V> {
 
                     if ((ptr as usize) >> self.align_shift) & old_len != 0 {
                         unsafe {
-                            (*cur_bkt).data[j] = (ptr::null_mut(), ptr::null_mut());
+                            (*cur_bkt).data[j] = (ptr::null_mut(), mem::uninitialized());
                         }
                         update_first_free!(cur_bkt, j);
                         let new_idx = i + old_len;
@@ -229,7 +232,7 @@ impl<K, V> PtrHashMap<K, V> {
                         if !first_free_bkt.is_null() {
                             unsafe {
                                 // there's an earlier free slot - move this pointer there
-                                (*cur_bkt).data[j] = (ptr::null_mut(), ptr::null_mut());
+                                (*cur_bkt).data[j] = (ptr::null_mut(), mem::uninitialized());
                                 (*first_free_bkt).data[first_free_idx] = (ptr, v);
                                 // Now that we've filled this slot, we need to find the
                                 // next empty slot. We're guaranteed to only search at most
@@ -239,8 +242,8 @@ impl<K, V> PtrHashMap<K, V> {
                                     if first_free_idx == BUCKET_SIZE - 1 {
                                         use core::ops::DerefMut;
                                         first_free_bkt =
-                                            (*first_free_bkt).next.as_mut().unwrap().deref_mut() as
-                                            *mut Bucket<K, V>;
+                                            (*first_free_bkt).next.as_mut().unwrap().deref_mut()
+                                                as *mut Bucket<K, V>;
                                         first_free_idx = 0;
                                     } else {
                                         first_free_idx += 1;
@@ -291,16 +294,16 @@ impl<K, V> PtrHashMap<K, V> {
 }
 
 #[inline]
-fn new_buckets<K, V>() -> [(*mut K, *mut V); BUCKET_SIZE] {
-    [(ptr::null_mut(), ptr::null_mut()); BUCKET_SIZE]
+fn new_buckets<K, V: Copy>() -> [(*mut K, V); BUCKET_SIZE] {
+    unsafe { [(ptr::null_mut(), mem::uninitialized()); BUCKET_SIZE] }
 }
 
 pub struct Bucket<K, V> {
-    data: [(*mut K, *mut V); BUCKET_SIZE],
+    data: [(*mut K, V); BUCKET_SIZE],
     next: Option<Box<Bucket<K, V>>>,
 }
 
-impl<K, V> Clone for Bucket<K, V> {
+impl<K, V: Copy> Clone for Bucket<K, V> {
     fn clone(&self) -> Bucket<K, V> {
         Bucket {
             data: self.data,
@@ -309,7 +312,7 @@ impl<K, V> Clone for Bucket<K, V> {
     }
 }
 
-impl<K, V> Default for Bucket<K, V> {
+impl<K, V: Copy> Default for Bucket<K, V> {
     fn default() -> Bucket<K, V> {
         Bucket {
             data: new_buckets(),
@@ -318,9 +321,9 @@ impl<K, V> Default for Bucket<K, V> {
     }
 }
 
-impl<K, V> Bucket<K, V> {
+impl<K, V: Copy> Bucket<K, V> {
     #[cfg_attr(not(test), allow(unused))]
-    fn dump(&self) -> Vec<(*mut K, *mut V)> {
+    fn dump(&self) -> Vec<(*mut K, V)> {
         let mut res = Vec::new();
         for i in &self.data {
             if !i.0.is_null() {
@@ -334,7 +337,7 @@ impl<K, V> Bucket<K, V> {
     }
 
     #[inline]
-    fn get(&self, ptr: *mut K) -> *mut V {
+    fn get(&self, ptr: *mut K) -> V {
         for i in &self.data {
             if ptr == i.0 {
                 return i.1;
@@ -354,7 +357,7 @@ impl<K, V> Bucket<K, V> {
                     }
                     #[cfg(feature = "hashmap-no-coalesce")]
                     {
-                        *self.data.get_unchecked_mut(i) = (ptr::null_mut(), ptr::null_mut());
+                        *self.data.get_unchecked_mut(i) = (ptr::null_mut(), mem::uninitialized());
                     }
                     return;
                 }
@@ -370,8 +373,8 @@ impl<K, V> Bucket<K, V> {
     // Starting at the idx index into this bucket, find the last slot in this bucket chain that is
     // non-empty. Zero it out and return it. Also return a boolean indicating whether this bucket
     // is now empty (and should thus be deleted).
-    fn remove_last(&mut self, idx: usize) -> ((*mut K, *mut V), bool) {
-        let mut last = (ptr::null_mut(), ptr::null_mut());
+    fn remove_last(&mut self, idx: usize) -> ((*mut K, V), bool) {
+        let mut last = unsafe { (ptr::null_mut(), mem::uninitialized()) };
         let mut last_idx = None;
         for i in BUCKET_SIZE..idx {
             unsafe {
@@ -397,7 +400,8 @@ impl<K, V> Bucket<K, V> {
                 // We don't have any children. Thus, this is really the last full slot. Zero it out
                 // and return it.
                 unsafe {
-                    *self.data.get_unchecked_mut(last_idx) = (ptr::null_mut(), ptr::null_mut());
+                    *self.data.get_unchecked_mut(last_idx) =
+                        (ptr::null_mut(), mem::uninitialized());
                 }
                 // If we just deleted the first (and thus only) slot in the bucket, then this
                 // bucket is now empty and should be deleted.
@@ -410,11 +414,11 @@ impl<K, V> Bucket<K, V> {
             // Since buckets are guaranteed to not have any gaps, this means that we're the last
             // bucket and so our search is done. Since idx is greater than zero, we know that this
             // bucket isn't empty, and thus shouldn't be deleted.
-            ((ptr::null_mut(), ptr::null_mut()), false)
+            unsafe { ((ptr::null_mut(), mem::uninitialized()), false) }
         }
     }
 
-    fn insert(&mut self, ptr: *mut K, v: *mut V) {
+    fn insert(&mut self, ptr: *mut K, v: V) {
         for i in 0..BUCKET_SIZE {
             unsafe {
                 let cur = self.data.get_unchecked_mut(i);
@@ -433,9 +437,9 @@ impl<K, V> Bucket<K, V> {
         let mut data = new_buckets();
         data[0] = (ptr, v);
         self.next = Some(Box::new(Bucket {
-                                      data: data,
-                                      next: None,
-                                  }));
+            data: data,
+            next: None,
+        }));
     }
 }
 

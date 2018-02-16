@@ -9,15 +9,15 @@
 //!
 //! See `TestBuilder` for documentation on running tests.
 
-extern crate core;
 extern crate libc;
 extern crate object_alloc;
 extern crate rand;
 extern crate test;
 extern crate twox_hash;
 
-use self::core::fmt;
-use self::core::fmt::{Debug, Formatter};
+use std::fmt;
+use std::fmt::{Debug, Formatter};
+use std::ptr::NonNull;
 use self::test::black_box;
 use self::object_alloc::ObjectAlloc;
 
@@ -188,7 +188,7 @@ mod wrapper {
 }
 
 // MIN_SIZE is large enough to hold a Header and a one-byte random nonce.
-const MIN_SIZE: usize = core::mem::size_of::<Header>() + 1;
+const MIN_SIZE: usize = ::std::mem::size_of::<Header>() + 1;
 
 #[derive(Debug)]
 struct Header {
@@ -209,7 +209,7 @@ const NONCE_DROPPED: u32 = 2_620_515_550;
 
 impl<T: Copy> Default for CorruptionTesterDefault<T> {
     fn default() -> CorruptionTesterDefault<T> {
-        use self::core::mem::uninitialized;
+        use std::mem::uninitialized;
         let mut tester = unsafe { uninitialized::<CorruptionTesterDefault<T>>() };
         CorruptionTester::init(&mut tester.0, Initializer::Default);
         assert_eq!(tester.0.state(Initializer::Default), State::New);
@@ -225,7 +225,7 @@ pub unsafe fn unsafe_default<T: Copy>(ptr: *mut CorruptionTesterUnsafe<T>) {
     // The memory we're being given should either be invalid (i.e., not a CorruptionTester) or
     // should be an already-dropped CorruptionTester.
     let state = (*ptr).0.state(Initializer::Unsafe);
-    assert!(state == State::Invalid || state == State::Dropped);
+    assert!(state == State::Invalid || state == State::Dropped, "state: {:?}", state);
 
     CorruptionTester::init(&mut (*ptr).0, Initializer::Unsafe);
     assert_eq!((*ptr).0.state(Initializer::Unsafe), State::New);
@@ -280,7 +280,7 @@ impl<T: Copy> CorruptionTester<T> {
     fn init(ptr: *mut CorruptionTester<T>, init: Initializer) {
         unsafe {
             {
-                use self::core::ptr::write;
+                use std::ptr::write;
                 let (hdr, slc) = (*ptr).to_header_and_slice_mut();
                 for elem in slc.iter_mut() {
                     *elem = self::rand::random();
@@ -383,8 +383,8 @@ impl<T: Copy> CorruptionTester<T> {
 
     /// Split into a header and byte slice.
     fn to_header_and_slice(&self) -> (&Header, &[u8]) {
-        use self::core::mem::{size_of, transmute};
-        use self::core::slice::from_raw_parts;
+        use std::mem::{size_of, transmute};
+        use std::slice::from_raw_parts;
         let size = size_of::<CorruptionTester<T>>();
         let header_size = size_of::<Header>();
 
@@ -397,8 +397,8 @@ impl<T: Copy> CorruptionTester<T> {
     /// Split into a mutable header and byte slice.
     #[cfg_attr(feature="cargo-clippy", allow(wrong_self_convention))]
     fn to_header_and_slice_mut(&mut self) -> (&mut Header, &mut [u8]) {
-        use self::core::mem::{size_of, transmute};
-        use self::core::slice::from_raw_parts_mut;
+        use std::mem::{size_of, transmute};
+        use std::slice::from_raw_parts_mut;
         let size = size_of::<CorruptionTester<T>>();
         let header_size = size_of::<Header>();
 
@@ -415,7 +415,7 @@ impl<T: Copy> CorruptionTester<T> {
     /// `random_bytes` (in that order).
     fn hash(ptr: usize, state_nonce: u32, random_bytes: &[u8]) -> u32 {
         use self::twox_hash::XxHash;
-        use self::core::hash::Hasher;
+        use std::hash::Hasher;
 
         // we could do with_seed(0) and then write_usize(ptr), but this is (marginally) faster
         let mut hasher = XxHash::with_seed(ptr as u64);
@@ -434,6 +434,8 @@ mod mapped {
     #[cfg(windows)]
     extern crate winapi;
 
+    use std::ptr::NonNull;
+
     #[cfg(unix)]
     lazy_static!{
         static ref RANDOM_FD: i32 = unsafe {
@@ -450,65 +452,87 @@ mod mapped {
     ///
     /// Returns true if the range `[ptr, ptr + len)` represents mapped memory.
     #[cfg(unix)]
-    pub fn is_mapped_range(ptr: *mut u8, len: usize) -> bool {
+    pub fn is_mapped_range(ptr: NonNull<u8>, len: usize) -> bool {
         // Credit to http://stackoverflow.com/a/24081504/836390
         unsafe {
-            let ret = libc::write(*RANDOM_FD, ptr as *const libc::c_void, len);
-            assert!(ret < 0 || (ret as usize) == len);
+            let ret = libc::write(*RANDOM_FD, ptr.cast().as_ptr(), len);
+            assert!(ret < 0 || (ret as usize) == len, "ret: {}", ret);
             (ret as usize) == len
         }
     }
 
     #[cfg(windows)]
-    pub fn is_mapped_range(ptr: *mut u8, len: usize) -> bool {
-        use core::mem::{uninitialized, size_of};
+    pub fn is_mapped_range(ptr: NonNull<u8>, len: usize) -> bool {
+        use std::mem::{uninitialized, size_of};
         use self::kernel32::{K32QueryWorkingSet, GetCurrentProcess};
-        use self::winapi::c_void;
-        use self::winapi::basetsd::ULONG_PTR;
+        use self::winapi::shared::basetsd::ULONG_PTR;
+        use std::os::raw::c_void;
+        use self::winapi::um::psapi::PSAPI_WORKING_SET_BLOCK;
+
+        // NOTE: winapi 0.3.4 has winapi::um::psapi::PSAPI_WORKING_SET_INFORMATION,
+        // but it's defined as having a single entry (just like the equivalent type
+        // defined in the Windows docs: https://msdn.microsoft.com/en-us/library/windows/desktop/ms684910(v=vs.85).aspx).
+        // In order to support more than a single entry, we'd need to think about how
+        // Rust would deal with laying out entries after the end of a struct> Logically,
+        // the memory layout would be something like:
+        //   (PSAPI_WORKING_SET_INFORMATION, [PSAPI_WORKING_SET_BLOCK])
+        // It's easier to just define it here ourselves as having many entries, and
+        // thus avoiding having to worry about memory layout issues.
+
+        // NOTE: It's possible that there will be more than 64 * 1024 entries,
+        // in which case K32QueryWorkingSet will return ERROR_BAD_LENGTH.
+        // If this becomes a problem, we may have to either bump the length
+        // of the entries field (while watching out for stack overflow; we
+        // could alternatively heap-allocate) or write the logic to dynamically
+        // allocate the right number of entries (on error, K32QueryWorkingSet
+        // will write the required number of entries into the num_entries field).
 
         #[repr(C)]
         struct WorkingSets {
             num_entries: ULONG_PTR,
-            entries: [PSAPI_WORKING_SET_BLOCK; 1024],
+            entries: [PSAPI_WORKING_SET_BLOCK; 64 * 1024],
         }
 
-        unsafe {
+        let entries = unsafe {
             let mut entries = uninitialized::<WorkingSets>();
             let ptr = &mut entries as *mut _ as *mut c_void;
             let size = size_of::<WorkingSets>() as u32;
             assert_eq!(K32QueryWorkingSet(GetCurrentProcess(), ptr, size), 1);
-        }
+            entries
+        };
+
+        let entries = &entries.entries[..entries.num_entries];
 
         // See https://msdn.microsoft.com/en-us/library/windows/desktop/ms684902(v=vs.85).aspx
         // for layout of entries.
 
-        // TODO: Once winapi 3.0 lands, there will be support for accessing the bitfields of
+        // TODO: Now that winapi 0.3 has landed, there is support for accessing the bitfields of
         // PSAPI_WORKING_SET_BLOCK programmatically (see https://github.com/retep998/winapi-rs/issues/482).
+        // Iterate over the entries to ensure the entire range is mapped.
         false
     }
 
     #[cfg(test)]
     mod tests {
-        extern crate core;
+        use std::ptr::NonNull;
 
         #[test]
         fn test_is_mapped_range() {
             use super::is_mapped_range;
-            use self::core::ptr::null_mut;
-            use self::core::mem::size_of;
+            use std::mem::size_of;
 
-            let arr = Box::new([0 as usize; 100]);
+            let arr = Box::new([0usize; 100]);
             unsafe {
-                let ptr = Box::into_raw(arr);
-                assert!(is_mapped_range(ptr as *mut u8, size_of::<[usize; 100]>()));
-                assert!(!is_mapped_range(null_mut(), 1));
-                Box::from_raw(ptr); // make sure it gets dropped properly
+                let ptr = NonNull::new(Box::into_raw(arr)).unwrap();
+                assert!(is_mapped_range(ptr.cast(), size_of::<[usize; 100]>()));
+                assert!(!is_mapped_range(NonNull::new(1usize as *mut u8).unwrap(), 1));
+                Box::from_raw(ptr.as_ptr()); // make sure it gets dropped properly
             }
         }
     }
 }
 
-use self::core::marker::PhantomData;
+use std::marker::PhantomData;
 
 /// A builder for tests.
 ///
@@ -618,12 +642,11 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>, F: Fn() -> O> TestBuilder<C,
 }
 
 mod quickcheck {
-    extern crate core;
     extern crate quickcheck;
 
     use self::quickcheck::{Arbitrary, Gen, QuickCheck, Testable, TestResult};
     use super::*;
-    use self::core::marker::PhantomData;
+    use std::marker::PhantomData;
 
     pub fn test<C, O, F>(new: F, tests: Option<usize>)
         where C: CorruptionTesterWrapper + Send + 'static,
@@ -695,9 +718,9 @@ use std::collections::HashSet;
 
 struct Tester<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> {
     alloc: O,
-    alloced: Vec<*mut C>,
-    alloced_set: HashSet<*mut C>,
-    freed: HashSet<*mut C>,
+    alloced: Vec<NonNull<C>>,
+    alloced_set: HashSet<NonNull<C>>,
+    freed: HashSet<NonNull<C>>,
 }
 
 impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
@@ -720,10 +743,10 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
             // either be still constructed (Valid) because it hadn't been dropped yet or New
             // because it was dropped and then re-initialized using default() or unsafe_default().
             // Any other state is a bug.
-            match unsafe { (*obj).state() } {
+            match unsafe { (*obj.as_ptr()).state() } {
                 State::New => unsafe {
                     // we just verified the state, so no sense in wasting time checking again
-                    (*obj).update_new(false);
+                    (*obj.as_ptr()).update_new(false);
                 },
                 State::Valid => {}
                 state => {
@@ -734,10 +757,10 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
             }
         } else {
             // this is memory we've never seen before, so it should be New
-            match unsafe { (*obj).state() } {
+            match unsafe { (*obj.as_ptr()).state() } {
                 State::New => unsafe {
                     // we just verified the state, so no sense in wasting time checking again
-                    (*obj).update_new(false);
+                    (*obj.as_ptr()).update_new(false);
                 },
                 state => {
                     panic!("newly-allocated object at {:?} in unexpected state {:?}",
@@ -752,9 +775,9 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
 
     fn dealloc(&mut self, idx: usize) {
         let len = self.alloced.len();
-        let obj: *mut C = self.alloced.swap_remove(idx % len);
+        let obj: NonNull<C> = self.alloced.swap_remove(idx % len);
         // make sure it's still valid
-        assert_eq!(unsafe { (*obj).state() }, State::Valid);
+        assert_eq!(unsafe { (*obj.as_ptr()).state() }, State::Valid);
         self.alloced_set.remove(&obj);
         self.freed.insert(obj);
         unsafe {
@@ -763,7 +786,7 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
     }
 
     fn drop_and_check(mut self) {
-        use self::core::mem::drop;
+        use std::mem::drop;
 
         while !self.alloced.is_empty() {
             let idx = self.alloced.len() - 1;
@@ -774,12 +797,12 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
 
         drop(alloc);
         for obj in freed {
-            use self::core::mem;
-            if !mapped::is_mapped_range(obj as *mut u8, mem::size_of::<C>()) {
+            use std::mem;
+            if !mapped::is_mapped_range(obj.cast(), mem::size_of::<C>()) {
                 // the underlying memory already got freed back to the kernel
                 continue;
             }
-            match unsafe { (*obj).state() } {
+            match unsafe { (*obj.as_ptr()).state() } {
                 State::Invalid | State::Dropped => {}
                 state => {
                     panic!("freed object at {:?} in unexpected state: {:?}", obj, state);
@@ -791,12 +814,11 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
 
 #[cfg(test)]
 pub mod tests {
-    extern crate core;
     extern crate rand;
     extern crate test;
 
     use super::*;
-    use self::core::{mem, ptr};
+    use std::{mem, ptr};
 
     fn make_default_boxed() -> Box<CorruptionTesterDefault> {
         Box::new(CorruptionTesterDefault::default())
@@ -806,21 +828,34 @@ pub mod tests {
         unsafe {
             let obj = mem::uninitialized::<CorruptionTesterUnsafe>();
             let mut bx = Box::new(obj);
-            use self::core::ops::DerefMut;
+            use std::ops::DerefMut;
             unsafe_default(bx.deref_mut());
             bx
         }
     }
 
     fn test_corruption_tester_helper<C: CorruptionTesterWrapper>(mut obj: Box<C>) {
-        assert!(obj.state() == State::New);
+        assert_eq!(obj.state(), State::New);
         obj.update_new(true);
-        assert!(obj.state() == State::Valid);
+        assert_eq!(obj.state(), State::Valid);
 
         let ptr = Box::into_raw(obj);
         unsafe {
-            mem::drop(Box::from_raw(ptr));
-            assert!((*ptr).state() == State::Dropped);
+            // Save the bytes (ptr::read doesn't drop) so we can write them
+            // back after dropping in place. If we didn't do this, when we
+            // put ptr back into a Box and dropped that Box, the CorruptionTesterWrapper
+            // drop implementation would discover it had already been dropped
+            // and would panic.
+            let bytes = ptr::read(ptr);
+            // drop in place (rather than just doing mem::drop(Box::from_raw(ptr)))
+            // so that we're guaranteed that the underlying space hasn't been
+            // unmapped or overwritten. A previous version of this function just
+            // freed and then hoped that the memory would still be valid, and it
+            // turned out not to be a valid assumption on Windows.
+            ptr::drop_in_place(ptr);
+            assert_eq!((*ptr).state(), State::Dropped);
+            ptr::write(ptr, bytes);
+            Box::from_raw(ptr);
         }
     }
 
@@ -832,17 +867,17 @@ pub mod tests {
 
     fn test_corruption_tester_corruption_helper<C: CorruptionTesterWrapper>(mut a: Box<C>,
                                                                             mut b: Box<C>) {
-        assert!(a.state() == State::New);
-        assert!(b.state() == State::New);
+        assert_eq!(a.state(), State::New);
+        assert_eq!(b.state(), State::New);
         a.update_new(true);
         b.update_new(true);
-        assert!(a.state() == State::Valid);
-        assert!(b.state() == State::Valid);
+        assert_eq!(a.state(), State::Valid);
+        assert_eq!(b.state(), State::Valid);
 
-        use self::core::ops::DerefMut;
+        use std::ops::DerefMut;
         unsafe { ptr::copy(a.deref_mut(), b.deref_mut(), 1) };
-        assert!(a.state() == State::Valid);
-        assert!(b.state() == State::Invalid);
+        assert_eq!(a.state(), State::Valid);
+        assert_eq!(b.state(), State::Invalid);
         mem::forget(b); // so it doesn't panic when being dropped
     }
 
@@ -854,7 +889,7 @@ pub mod tests {
     }
 
     fn test_corruption_tester_corruption_panic_on_drop_helper<C: CorruptionTesterWrapper>() {
-        use self::core::mem::zeroed;
+        use std::mem::zeroed;
         let _tester: C = unsafe { zeroed() };
     }
 

@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -31,13 +31,6 @@ impl Drop for Ptr {
     }
 }
 
-impl LeakyAlloc {
-    /// Creates a new `LeakyAlloc`.
-    pub fn new() -> LeakyAlloc {
-        LeakyAlloc { allocs: Vec::new() }
-    }
-}
-
 unsafe impl Alloc for LeakyAlloc {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
         let ptr = Alloc::alloc(&mut Heap, layout.clone())?;
@@ -56,52 +49,42 @@ unsafe impl Alloc for LeakyAlloc {
 #[cfg(test)]
 mod tests {
     extern crate alloc;
-    extern crate core;
     extern crate object_alloc;
 
     use self::alloc::heap::{Alloc, AllocErr, Layout};
-    use self::core::marker::PhantomData;
     use self::object_alloc::{Exhausted, ObjectAlloc};
+    use std::marker::PhantomData;
+    use std::ptr::NonNull;
 
+    #[derive(Default)]
     struct LeakyObjectAlloc<T: Default> {
         alloc: super::LeakyAlloc,
         _marker: PhantomData<T>,
     }
 
-    impl<T: Default> LeakyObjectAlloc<T> {
-        fn new() -> LeakyObjectAlloc<T> {
-            LeakyObjectAlloc {
-                alloc: super::LeakyAlloc::new(),
-                _marker: PhantomData,
-            }
-        }
-    }
-
     unsafe impl<T: Default> ObjectAlloc<T> for LeakyObjectAlloc<T> {
-        unsafe fn alloc(&mut self) -> Result<*mut T, Exhausted> {
+        unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted> {
             let ptr = match Alloc::alloc(&mut self.alloc, Layout::new::<T>()) {
-                Ok(ptr) => ptr as *mut T,
+                Ok(ptr) => NonNull::new(ptr).unwrap().cast(),
                 Err(AllocErr::Exhausted { .. }) => return Err(Exhausted),
                 Err(AllocErr::Unsupported { details }) => {
                     unreachable!("unexpected unsupported alloc: {}", details)
                 }
             };
 
-            use self::core::ptr::write;
-            write(ptr, T::default());
+            ::std::ptr::write(ptr.as_ptr(), T::default());
             Ok(ptr)
         }
 
-        unsafe fn dealloc(&mut self, ptr: *mut T) {
-            use self::core::ptr::drop_in_place;
-            drop_in_place(ptr);
-            Alloc::dealloc(&mut self.alloc, ptr as *mut u8, Layout::new::<T>());
+        unsafe fn dealloc(&mut self, ptr: NonNull<T>) {
+            ::std::ptr::drop_in_place(ptr.as_ptr());
+            Alloc::dealloc(&mut self.alloc, ptr.cast().as_ptr(), Layout::new::<T>());
         }
     }
 
     #[test]
     fn test_memory_corruption() {
         use corruption::{CorruptionTesterDefault, TestBuilder};
-        TestBuilder::new(|| LeakyObjectAlloc::<CorruptionTesterDefault>::new()).test();
+        TestBuilder::new(|| LeakyObjectAlloc::<CorruptionTesterDefault>::default()).test();
     }
 }

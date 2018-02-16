@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -15,15 +15,17 @@ extern crate test;
 use SlabAllocBuilder;
 use self::alloc::heap::{Alloc, Heap, Layout};
 use self::object_alloc::{Exhausted, ObjectAlloc};
-use self::test::{Bencher, black_box};
+use self::test::{black_box, Bencher};
 use self::object_alloc_test::leaky_alloc::LeakyAlloc;
 use backing::alloc::AllocObjectAlloc;
 use backing::BackingAlloc;
 use SlabAlloc;
 
+use core::ptr::NonNull;
+
 fn infer_allocator_type<T>(alloc: &mut ObjectAlloc<T>) {
     if false {
-        let _: Result<*mut T, Exhausted> = unsafe { alloc.alloc() };
+        let _: Result<NonNull<T>, Exhausted> = unsafe { alloc.alloc() };
     }
 }
 
@@ -36,14 +38,14 @@ impl BackingAlloc for LeakyBackingAlloc {
 
 fn leaky_get_aligned(layout: Layout) -> Option<AllocObjectAlloc<LeakyAlloc>> {
     if layout.align() == self::sysconf::page::pagesize() {
-        Some(AllocObjectAlloc::new(LeakyAlloc::new(), layout))
+        Some(AllocObjectAlloc::new(LeakyAlloc::default(), layout))
     } else {
         None
     }
 }
 
 fn leaky_get_large(layout: Layout) -> AllocObjectAlloc<LeakyAlloc> {
-    AllocObjectAlloc::new(LeakyAlloc::new(), layout)
+    AllocObjectAlloc::new(LeakyAlloc::default(), layout)
 }
 
 fn test_memory_corruption<T: Copy + Send + 'static>() {
@@ -59,8 +61,8 @@ fn test_memory_corruption<T: Copy + Send + 'static>() {
         let new = move || {
             SlabAllocBuilder::default()
                 .align(align)
-                .build_backing(leaky_get_aligned, leaky_get_large) as
-            SlabAlloc<_, _, LeakyBackingAlloc>
+                .build_backing(leaky_get_aligned, leaky_get_large)
+                as SlabAlloc<_, _, LeakyBackingAlloc>
         };
         infer_allocator_type::<CorruptionTesterDefault<T>>(&mut new());
         TestBuilder::new(new).test_iters(iters).test();
@@ -81,13 +83,11 @@ fn test_quickcheck_memory_corruption<T: Copy + Send + 'static>() {
         let new = move || {
             SlabAllocBuilder::default()
                 .align(align)
-                .build_backing(leaky_get_aligned, leaky_get_large) as
-            SlabAlloc<_, _, LeakyBackingAlloc>
+                .build_backing(leaky_get_aligned, leaky_get_large)
+                as SlabAlloc<_, _, LeakyBackingAlloc>
         };
         infer_allocator_type::<CorruptionTesterDefault<T>>(&mut new());
-        TestBuilder::new(new)
-            .quickcheck_tests(tests)
-            .quickcheck();
+        TestBuilder::new(new).quickcheck_tests(tests).quickcheck();
     };
     foreach_align::<CorruptionTesterDefault<T>, _>(f, self::sysconf::page::pagesize());
 }
@@ -134,8 +134,10 @@ macro_rules! make_test_quickcheck_memory_corruption {
 }
 
 call_for_all_types_prefix!(make_test_memory_corruption, test_memory_corruption);
-call_for_all_types_prefix!(make_test_quickcheck_memory_corruption,
-                           quickcheck_memory_corruption);
+call_for_all_types_prefix!(
+    make_test_quickcheck_memory_corruption,
+    quickcheck_memory_corruption
+);
 
 #[cfg_attr(not(feature = "build-ignored-tests"), allow(unused))]
 fn bench_alloc_no_free<T: Default>(b: &mut Bencher) {
@@ -171,10 +173,10 @@ fn bench_alloc_free_pairs<T: Default>(b: &mut Bencher) {
     // we're trying to bench the best-case performance, not the slab gc policy
     let t = unsafe { alloc.alloc().unwrap() };
     b.iter(|| unsafe {
-               let t = alloc.alloc().unwrap();
-               black_box(t);
-               alloc.dealloc(t);
-           });
+        let t = alloc.alloc().unwrap();
+        black_box(t);
+        alloc.dealloc(t);
+    });
     unsafe {
         alloc.dealloc(t);
     }
@@ -188,10 +190,10 @@ fn bench_alloc_free_pairs_no_init<T: Default>(b: &mut Bencher) {
     // we're trying to bench the best-case performance, not the slab gc policy
     let t = unsafe { alloc.alloc().unwrap() };
     b.iter(|| unsafe {
-               let t = alloc.alloc().unwrap();
-               black_box(t);
-               alloc.dealloc(t);
-           });
+        let t = alloc.alloc().unwrap();
+        black_box(t);
+        alloc.dealloc(t);
+    });
     unsafe {
         alloc.dealloc(t);
     }
@@ -201,10 +203,10 @@ fn bench_alloc_free_pairs_no_init<T: Default>(b: &mut Bencher) {
 fn bench_alloc_free_pairs_heap<T: Default>(b: &mut Bencher) {
     let layout = Layout::new::<T>();
     b.iter(|| unsafe {
-               let t = Heap.alloc(layout.clone()).unwrap();
-               black_box(t);
-               Heap.dealloc(t, layout.clone());
-           });
+        let t = Heap.alloc(layout.clone()).unwrap();
+        black_box(t);
+        Heap.dealloc(t, layout.clone());
+    });
 }
 
 macro_rules! make_bench_alloc_no_free {
@@ -263,11 +265,17 @@ macro_rules! make_bench_alloc_free_pairs_heap {
 }
 
 call_for_all_types_prefix!(make_bench_alloc_no_free, bench_alloc_no_free);
-call_for_all_types_prefix!(make_bench_alloc_no_free_no_init,
-                           bench_alloc_no_free_no_init);
+call_for_all_types_prefix!(
+    make_bench_alloc_no_free_no_init,
+    bench_alloc_no_free_no_init
+);
 call_for_all_types_prefix!(make_bench_alloc_no_free_heap, bench_alloc_no_free_heap);
 call_for_all_types_prefix!(make_bench_alloc_free_pairs, bench_alloc_free_pairs);
-call_for_all_types_prefix!(make_bench_alloc_free_pairs_no_init,
-                           bench_alloc_free_pairs_no_init);
-call_for_all_types_prefix!(make_bench_alloc_free_pairs_heap,
-                           bench_alloc_free_pairs_heap);
+call_for_all_types_prefix!(
+    make_bench_alloc_free_pairs_no_init,
+    bench_alloc_free_pairs_no_init
+);
+call_for_all_types_prefix!(
+    make_bench_alloc_free_pairs_heap,
+    bench_alloc_free_pairs_heap
+);

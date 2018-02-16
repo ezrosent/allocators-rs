@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -39,7 +39,7 @@ extern crate winapi;
 
 use self::alloc::allocator::{Alloc, AllocErr, CannotReallocInPlace, Excess, Layout};
 use self::object_alloc::{Exhausted, UntypedObjectAlloc};
-use core::ptr;
+use core::ptr::{self, NonNull};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use errno::errno;
@@ -533,17 +533,17 @@ unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
         }
     }
 
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
         // TODO: There's probably a method that does this more cleanly.
         match self.alloc_excess(self.layout()) {
-            Ok(Excess(ptr, _)) => Ok(ptr),
+            Ok(Excess(ptr, _)) => Ok(NonNull::new_unchecked(ptr)),
             Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
             Err(AllocErr::Unsupported { .. }) => unreachable!(),
         }
     }
 
-    unsafe fn dealloc(&mut self, ptr: *mut u8) {
-        unmap(ptr, self.obj_size);
+    unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
+        unmap(ptr.as_ptr(), self.obj_size);
     }
 }
 
@@ -601,11 +601,11 @@ unsafe impl UntypedObjectAlloc for MapAlloc {
         <&MapAlloc as UntypedObjectAlloc>::layout(&(&*self))
     }
 
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
         <&MapAlloc as UntypedObjectAlloc>::alloc(&mut (&*self))
     }
 
-    unsafe fn dealloc(&mut self, ptr: *mut u8) {
+    unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
         <&MapAlloc as UntypedObjectAlloc>::dealloc(&mut (&*self), ptr);
     }
 }

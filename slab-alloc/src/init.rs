@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -6,6 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 use core::marker::PhantomData;
+use core::ptr::NonNull;
 
 /// A system to perform initialization of objects.
 ///
@@ -35,7 +36,7 @@ pub trait InitSystem {
     ///
     /// `pack` packs a pointer and a status into a `usize`. `ptr` must be aligned to `min_align()`,
     /// or else the behavior of `pack` is undefined.
-    fn pack(ptr: *mut u8, status: Self::Status) -> usize;
+    fn pack(ptr: NonNull<u8>, status: Self::Status) -> usize;
 
     /// Unpack a `Status` from a packed `usize`.
     ///
@@ -47,20 +48,20 @@ pub trait InitSystem {
     ///
     /// `unpack_ptr` unpacks a pointer from `packed`. It should only be called on values that were
     /// previously returned from `pack`.
-    fn unpack_ptr(packed: usize) -> *mut u8;
+    fn unpack_ptr(packed: usize) -> NonNull<u8>;
 
     /// Initialize an object.
     ///
     /// For implementations that perform initialization, `init` initializes `obj` if it is
     /// currently uninitialized. For implementations that do not perform initialization, `init` is
     /// a no-op.
-    fn init(&self, obj: *mut u8, init_status: Self::Status);
+    fn init(&self, obj: NonNull<u8>, init_status: Self::Status);
 
     /// Drop an object.
     ///
     /// For implementations that perform initialization, `drop` drops `obj` if it is currently
     /// initialized. For implementations that do not perform initialization, `drop` is a no-op.
-    fn drop(obj: *mut u8, init_status: Self::Status);
+    fn drop(obj: NonNull<u8>, init_status: Self::Status);
 }
 
 pub struct NopInitSystem;
@@ -77,17 +78,17 @@ impl InitSystem for NopInitSystem {
     fn min_align() -> usize {
         1
     }
-    fn pack(ptr: *mut u8, _status: ()) -> usize {
-        ptr as usize
+    fn pack(ptr: NonNull<u8>, _status: ()) -> usize {
+        ptr.as_ptr() as usize
     }
     fn unpack_status(_packed: usize) -> () {
         ()
     }
-    fn unpack_ptr(packed: usize) -> *mut u8 {
-        packed as *mut u8
+    fn unpack_ptr(packed: usize) -> NonNull<u8> {
+        unsafe { NonNull::new_unchecked(packed as *mut u8) }
     }
-    fn init(&self, _obj: *mut u8, _init_status: ()) {}
-    fn drop(_obj: *mut u8, _init_status: ()) {}
+    fn init(&self, _obj: NonNull<u8>, _init_status: ()) {}
+    fn drop(_obj: NonNull<u8>, _init_status: ()) {}
 }
 
 pub struct InitInitSystem<T, I: Initializer<T>> {
@@ -117,38 +118,38 @@ impl<T, I: Initializer<T>> InitSystem for InitInitSystem<T, I> {
         2
     }
 
-    fn pack(ptr: *mut u8, status: bool) -> usize {
-        (ptr as usize) | if status { 1 } else { 0 }
+    fn pack(ptr: NonNull<u8>, status: bool) -> usize {
+        (ptr.as_ptr() as usize) | if status { 1 } else { 0 }
     }
 
     fn unpack_status(packed: usize) -> bool {
         packed & 1 == 1
     }
 
-    fn unpack_ptr(packed: usize) -> *mut u8 {
-        (packed & (<usize>::max_value() - 1)) as *mut u8
+    fn unpack_ptr(packed: usize) -> NonNull<u8> {
+        unsafe { NonNull::new_unchecked((packed & (<usize>::max_value() - 1)) as *mut u8) }
     }
 
-    fn init(&self, obj: *mut u8, init: bool) {
+    fn init(&self, obj: NonNull<u8>, init: bool) {
         if !init {
             unsafe {
-                self.init.init(obj as *mut T);
+                self.init.init(obj.cast());
             }
         }
     }
 
-    fn drop(obj: *mut u8, init: bool) {
+    fn drop(obj: NonNull<u8>, init: bool) {
         if init {
             unsafe {
                 use core::ptr::drop_in_place;
-                drop_in_place(obj as *mut T);
+                drop_in_place::<T>(obj.cast().as_ptr());
             }
         }
     }
 }
 
 pub unsafe trait Initializer<T> {
-    unsafe fn init(&self, ptr: *mut T);
+    unsafe fn init(&self, ptr: NonNull<T>);
 }
 
 #[derive(Default)]
@@ -158,14 +159,15 @@ pub struct DefaultInitializer<T: Default> {
 
 impl<T: Default> DefaultInitializer<T> {
     pub fn new() -> DefaultInitializer<T> {
-        DefaultInitializer { _marker: PhantomData }
+        DefaultInitializer {
+            _marker: PhantomData,
+        }
     }
 }
 
 unsafe impl<T: Default> Initializer<T> for DefaultInitializer<T> {
-    unsafe fn init(&self, ptr: *mut T) {
-        use core::ptr::write;
-        write(ptr, T::default());
+    unsafe fn init(&self, ptr: NonNull<T>) {
+        ::core::ptr::write(ptr.as_ptr(), T::default());
     }
 }
 
@@ -178,22 +180,21 @@ impl<T, F: Fn() -> T> FnInitializer<T, F> {
 }
 
 unsafe impl<T, F: Fn() -> T> Initializer<T> for FnInitializer<T, F> {
-    unsafe fn init(&self, ptr: *mut T) {
-        use core::ptr::write;
-        write(ptr, (self.0)());
+    unsafe fn init(&self, ptr: NonNull<T>) {
+        ::core::ptr::write(ptr.as_ptr(), (self.0)());
     }
 }
 
-pub struct UnsafeFnInitializer<T, F: Fn(*mut T)>(F, PhantomData<T>);
+pub struct UnsafeFnInitializer<T, F: Fn(NonNull<T>)>(F, PhantomData<T>);
 
-impl<T, F: Fn(*mut T)> UnsafeFnInitializer<T, F> {
+impl<T, F: Fn(NonNull<T>)> UnsafeFnInitializer<T, F> {
     pub fn new(f: F) -> UnsafeFnInitializer<T, F> {
         UnsafeFnInitializer(f, PhantomData)
     }
 }
 
-unsafe impl<T, F: Fn(*mut T)> Initializer<T> for UnsafeFnInitializer<T, F> {
-    unsafe fn init(&self, ptr: *mut T) {
+unsafe impl<T, F: Fn(NonNull<T>)> Initializer<T> for UnsafeFnInitializer<T, F> {
+    unsafe fn init(&self, ptr: NonNull<T>) {
         (self.0)(ptr);
     }
 }

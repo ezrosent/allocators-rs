@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -8,10 +8,12 @@
 #![no_std]
 #![feature(alloc, allocator_api)]
 #![feature(core_intrinsics)]
+#![feature(nonnull_cast)]
 
 extern crate alloc;
 use alloc::allocator::Layout;
 use core::intrinsics::abort;
+use core::ptr::NonNull;
 
 /// An error indicating that no memory is available.
 ///
@@ -72,7 +74,7 @@ pub unsafe trait ObjectAlloc<T> {
     ///
     /// The memory returned by `alloc` is guaranteed to be aligned according to the requirements of
     /// `T` (that is, according to `core::mem::align_of::<T>()`).
-    unsafe fn alloc(&mut self) -> Result<*mut T, Exhausted>;
+    unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted>;
 
     /// Deallocates an object previously returned by `alloc`.
     ///
@@ -85,7 +87,7 @@ pub unsafe trait ObjectAlloc<T> {
     /// objects), then `x` will be dropped at some point during the `ObjectAlloc`'s lifetime. This
     /// may happen during this call to `dealloc`, when the `ObjectAlloc` itself is dropped, or some
     /// time in between.
-    unsafe fn dealloc(&mut self, x: *mut T);
+    unsafe fn dealloc(&mut self, x: NonNull<T>);
 
     /// Allocator-specific method for signalling an out-of-memory condition.
     ///
@@ -128,13 +130,13 @@ pub unsafe trait UntypedObjectAlloc {
     ///
     /// The memory returned by `alloc` is guaranteed to abide by the `Layout` returned from
     /// `layout`.
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted>;
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted>;
 
     /// Deallocates an object previously returned by `alloc`.
     ///
     /// If `x` was not obtained through a call to `alloc`, or if `x` has already been `dealloc`'d,
     /// the behavior of `dealloc` is undefined.
-    unsafe fn dealloc(&mut self, x: *mut u8);
+    unsafe fn dealloc(&mut self, x: NonNull<u8>);
 
     /// Allocator-specific method for signalling an out-of-memory condition.
     ///
@@ -167,11 +169,11 @@ unsafe impl<T> UntypedObjectAlloc for ObjectAlloc<T> {
         Layout::new::<T>()
     }
 
-    unsafe fn alloc(&mut self) -> Result<*mut u8, Exhausted> {
-        ObjectAlloc::alloc(self).map(|x| x as *mut u8)
+    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+        ObjectAlloc::alloc(self).map(|x| x.cast())
     }
 
-    unsafe fn dealloc(&mut self, x: *mut u8) {
-        ObjectAlloc::dealloc(self, x as *mut T);
+    unsafe fn dealloc(&mut self, x: NonNull<u8>) {
+        ObjectAlloc::dealloc(self, x.cast());
     }
 }

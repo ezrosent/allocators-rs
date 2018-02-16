@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -27,57 +27,57 @@
 extern crate alloc;
 extern crate object_alloc;
 
-use {PAGE_SIZE, PAGE_ALIGN_MASK, OBJECTS_PER_SLAB};
+use {OBJECTS_PER_SLAB, PAGE_ALIGN_MASK, PAGE_SIZE};
 use stack;
-use stack::{SlabHeader, Layout};
+use stack::{Layout, SlabHeader};
 use init::InitSystem;
 use util::ptrmap::*;
-// use size::TypeSize;
 use self::alloc::allocator;
 use self::object_alloc::UntypedObjectAlloc;
+use core::ptr::NonNull;
 
 pub struct ConfigData {
-    pub map: Map<u8, SlabHeader>,
+    pub map: Map<u8, NonNull<SlabHeader>>,
     map_by_page_addr: bool,
 }
 
 impl stack::ConfigData for ConfigData {
-    fn post_alloc(&mut self, layout: &Layout, slab_size: usize, slab: *mut SlabHeader) {
+    fn post_alloc(&mut self, layout: &Layout, slab_size: usize, slab: NonNull<SlabHeader>) {
         if self.map_by_page_addr {
             for i in 0..(slab_size / *PAGE_SIZE) {
-                let page_ptr = ((slab as usize) + (i * *PAGE_SIZE)) as *mut u8;
+                let page_ptr = ((slab.as_ptr() as usize) + (i * *PAGE_SIZE)) as *mut u8;
                 debug_assert_eq!(page_ptr as usize % *PAGE_SIZE, 0);
                 self.map.insert(page_ptr, slab);
             }
         } else {
             for i in 0..layout.num_obj {
-                let ptr = layout.nth_obj(slab, unsafe { (*slab).get_color() }, i);
-                self.map.insert(ptr, slab);
+                let ptr = layout.nth_obj(slab, unsafe { (*slab.as_ptr()).get_color() }, i);
+                self.map.insert(ptr.as_ptr(), slab);
             }
         }
     }
 
-    fn pre_dealloc(&mut self, layout: &Layout, slab_size: usize, slab: *mut SlabHeader) {
+    fn pre_dealloc(&mut self, layout: &Layout, slab_size: usize, slab: NonNull<SlabHeader>) {
         if self.map_by_page_addr {
             for i in 0..(slab_size / *PAGE_SIZE) {
-                let page_ptr = ((slab as usize) + (i * *PAGE_SIZE)) as *mut u8;
+                let page_ptr = ((slab.as_ptr() as usize) + (i * *PAGE_SIZE)) as *mut u8;
                 debug_assert_eq!(page_ptr as usize % *PAGE_SIZE, 0);
                 self.map.delete(page_ptr);
             }
         } else {
             for i in 0..layout.num_obj {
-                let ptr = layout.nth_obj(slab, unsafe { (*slab).get_color() }, i);
-                self.map.delete(ptr);
+                let ptr = layout.nth_obj(slab, unsafe { (*slab.as_ptr()).get_color() }, i);
+                self.map.delete(ptr.as_ptr());
             }
         }
     }
 
-    fn ptr_to_slab(&self, _slab_size: usize, ptr: *mut u8) -> *mut SlabHeader {
+    fn ptr_to_slab(&self, _slab_size: usize, ptr: NonNull<u8>) -> NonNull<SlabHeader> {
         if self.map_by_page_addr {
             self.map
-                .get(((ptr as usize) & *PAGE_ALIGN_MASK) as *mut u8)
+                .get(((ptr.as_ptr() as usize) & *PAGE_ALIGN_MASK) as *mut u8)
         } else {
-            self.map.get(ptr)
+            self.map.get(ptr.as_ptr())
         }
     }
 }
@@ -88,20 +88,22 @@ pub const DEFAULT_MAP_SIZE: usize = 256;
 
 impl<A: UntypedObjectAlloc> System<A> {
     pub fn new(layout: allocator::Layout, alloc: A) -> Option<System<A>> {
-        if let Some((slab_layout, _)) =
-            Layout::for_slab_size(layout.clone(), alloc.layout().size()) {
+        if let Some((slab_layout, _)) = Layout::for_slab_size(layout.clone(), alloc.layout().size())
+        {
             let map_by_page_addr = layout.size() < *PAGE_SIZE;
             let map_key_align = if map_by_page_addr {
                 *PAGE_SIZE
             } else {
                 layout.size().next_power_of_two()
             };
-            Some(Self::from_config_data(ConfigData {
-                                            map: Map::new(DEFAULT_MAP_SIZE, map_key_align),
-                                            map_by_page_addr: map_by_page_addr,
-                                        },
-                                        slab_layout,
-                                        alloc))
+            Some(Self::from_config_data(
+                ConfigData {
+                    map: Map::new(DEFAULT_MAP_SIZE, map_key_align),
+                    map_by_page_addr: map_by_page_addr,
+                },
+                slab_layout,
+                alloc,
+            ))
         } else {
             None
         }
@@ -126,9 +128,8 @@ pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
     }
 
     let unused = |slab_size: usize| {
-        Layout::for_slab_size(layout.clone(), slab_size).map(|(layout, unused)| {
-                                                                 (layout.num_obj, unused)
-                                                             })
+        Layout::for_slab_size(layout.clone(), slab_size)
+            .map(|(layout, unused)| (layout.num_obj, unused))
     };
 
     // pick a reasonable lower bound on slab size to avoid wasting unnecessary work on slab sizes
@@ -161,11 +162,11 @@ mod tests {
 
             let layout = Layout::new::<T>();
             let backing_layout = Layout::from_size_align(pagesize(), pagesize()).unwrap();
-            let mut alloc =
-                SizedSlabAlloc::new(DefaultInitSystem::<T>::new(DefaultInitializer::new()),
-                                    layout.clone(),
-                                    super::System::new(layout, heap::get_large(backing_layout))
-                                        .unwrap());
+            let mut alloc = SizedSlabAlloc::new(
+                DefaultInitSystem::<T>::new(DefaultInitializer::new()),
+                layout.clone(),
+                super::System::new(layout, heap::get_large(backing_layout)).unwrap(),
+            );
             let mut ptrs = Vec::new();
 
             let size = super::DEFAULT_MAP_SIZE << i;
@@ -195,6 +196,8 @@ mod tests {
         );
     }
 
-    call_for_all_types_prefix!(make_test_hash_table_bucket_distribution,
-                               test_hash_table_bucket_distribution);
+    call_for_all_types_prefix!(
+        make_test_hash_table_bucket_distribution,
+        test_hash_table_bucket_distribution
+    );
 }

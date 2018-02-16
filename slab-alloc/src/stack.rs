@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -60,8 +60,9 @@ extern crate object_alloc;
 use SlabSystem;
 use init::InitSystem;
 use core::{mem, ptr};
+use core::ptr::NonNull;
 use util::stack::Stack;
-use util::color::{ColorSettings, Color};
+use util::color::{Color, ColorSettings};
 use util::list::*;
 use self::alloc::allocator;
 use self::object_alloc::UntypedObjectAlloc;
@@ -71,26 +72,27 @@ use self::object_alloc::UntypedObjectAlloc;
 /// `ConfigData` completes the stack-based slab implementation by providing post-alloc and
 /// pre-dealloc hooks and by providing a mechanism to look up an object's containing slab.
 pub trait ConfigData
-    where Self: Sized
+where
+    Self: Sized,
 {
     /// Perform per-slab post-allocation work.
     ///
     /// `post_alloc` is called after a newly-allocated slab has been initialized. It is optional,
     /// and defaults to a no-op.
     #[allow(unused)]
-    fn post_alloc(&mut self, layout: &Layout, slab_size: usize, slab: *mut SlabHeader) {}
+    fn post_alloc(&mut self, layout: &Layout, slab_size: usize, slab: NonNull<SlabHeader>) {}
 
     /// Perform per-slab pre-deallocation work.
     ///
     /// `pre_dealloc` is called before a slab is uninitialized and deallocated. It is optional, and
     /// defaults to a no-op.
     #[allow(unused)]
-    fn pre_dealloc(&mut self, layout: &Layout, slab_size: usize, slab: *mut SlabHeader) {}
+    fn pre_dealloc(&mut self, layout: &Layout, slab_size: usize, slab: NonNull<SlabHeader>) {}
 
     /// Look up an object's slab.
     ///
     /// Given an object, `ptr_to_slab` locates the slab containing that object.
-    fn ptr_to_slab(&self, slab_size: usize, ptr: *mut u8) -> *mut SlabHeader;
+    fn ptr_to_slab(&self, slab_size: usize, ptr: NonNull<u8>) -> NonNull<SlabHeader>;
 }
 
 pub struct System<A: UntypedObjectAlloc, C: ConfigData> {
@@ -112,75 +114,77 @@ impl<A: UntypedObjectAlloc, C: ConfigData> System<A, C> {
 impl<I: InitSystem, A: UntypedObjectAlloc, C: ConfigData> SlabSystem<I> for System<A, C> {
     type Slab = SlabHeader;
 
-    fn alloc_slab(&mut self) -> *mut SlabHeader {
+    fn alloc_slab(&mut self) -> Option<NonNull<SlabHeader>> {
         unsafe {
             let color = self.layout
                 .color_settings
                 .next_color(self.layout.layout.align());
             let slab = match self.alloc.alloc() {
-                Ok(slab) => slab as *mut SlabHeader,
-                Err(..) => return ptr::null_mut(),
+                Ok(slab) => slab.cast(),
+                Err(..) => return None,
             };
 
-            ptr::write(slab,
-                       SlabHeader {
-                           stack: Stack::new(),
-                           color: color,
-                           next: ptr::null_mut(),
-                           prev: ptr::null_mut(),
-                       });
+            ptr::write(
+                slab.as_ptr(),
+                SlabHeader {
+                    stack: Stack::new(),
+                    color: color,
+                    next: None,
+                    prev: None,
+                },
+            );
             let stack_data_ptr = self.layout.stack_begin(slab);
             for i in 0..self.layout.num_obj {
                 let ptr = self.layout.nth_obj(slab, color, i);
-                (*slab)
+                (*slab.as_ptr())
                     .stack
                     .push(stack_data_ptr, I::pack(ptr, I::status_uninitialized()));
             }
 
             self.data
                 .post_alloc(&self.layout, self.alloc.layout().size(), slab);
-            slab
+            Some(slab)
         }
     }
 
-    fn dealloc_slab(&mut self, slab: *mut SlabHeader) {
+    fn dealloc_slab(&mut self, slab: NonNull<SlabHeader>) {
         unsafe {
-            debug_assert_eq!((*slab).stack.size(), self.layout.num_obj);
+            debug_assert_eq!((*slab.as_ptr()).stack.size(), self.layout.num_obj);
             self.data
                 .pre_dealloc(&self.layout, self.alloc.layout().size(), slab);
             let stack_data_ptr = self.layout.stack_begin(slab);
             for _ in 0..self.layout.num_obj {
-                let packed = (*slab).stack.pop(stack_data_ptr);
+                let packed = (*slab.as_ptr()).stack.pop(stack_data_ptr);
                 I::drop(I::unpack_ptr(packed), I::unpack_status(packed));
             }
 
-            self.alloc.dealloc(slab as *mut u8);
+            self.alloc.dealloc(slab.cast());
         }
     }
 
-    fn is_full(&self, slab: *mut SlabHeader) -> bool {
-        unsafe { (*slab).stack.size() == self.layout.num_obj }
+    fn is_full(&self, slab: NonNull<SlabHeader>) -> bool {
+        unsafe { (*slab.as_ptr()).stack.size() == self.layout.num_obj }
     }
 
-    fn is_empty(&self, slab: *mut SlabHeader) -> bool {
-        unsafe { (*slab).stack.size() == 0 }
+    fn is_empty(&self, slab: NonNull<SlabHeader>) -> bool {
+        unsafe { (*slab.as_ptr()).stack.size() == 0 }
     }
 
-    fn alloc(&self, slab: *mut SlabHeader) -> (*mut u8, I::Status) {
+    fn alloc(&self, slab: NonNull<SlabHeader>) -> (NonNull<u8>, I::Status) {
         unsafe {
             let stack_data_ptr = self.layout.stack_begin(slab);
-            let packed = (*slab).stack.pop(stack_data_ptr);
+            let packed = (*slab.as_ptr()).stack.pop(stack_data_ptr);
             (I::unpack_ptr(packed), I::unpack_status(packed))
         }
     }
 
-    fn dealloc(&self, obj: *mut u8, init_status: I::Status) -> (*mut SlabHeader, bool) {
+    fn dealloc(&self, obj: NonNull<u8>, init_status: I::Status) -> (NonNull<SlabHeader>, bool) {
         unsafe {
             let slab = self.data.ptr_to_slab(self.alloc.layout().size(), obj);
-            let was_empty = (*slab).stack.size() == 0;
+            let was_empty = (*slab.as_ptr()).stack.size() == 0;
 
             let stack_data_ptr = self.layout.stack_begin(slab);
-            (*slab)
+            (*slab.as_ptr())
                 .stack
                 .push(stack_data_ptr, I::pack(obj, init_status));
             (slab, was_empty)
@@ -190,22 +194,22 @@ impl<I: InitSystem, A: UntypedObjectAlloc, C: ConfigData> SlabSystem<I> for Syst
 
 pub struct SlabHeader {
     stack: Stack<usize>, // note: this is only the metadata; the real stack comes after this header
-    color: Color, // extra padding added before array beginning
-    next: *mut SlabHeader,
-    prev: *mut SlabHeader,
+    color: Color,        // extra padding added before array beginning
+    next: Option<NonNull<SlabHeader>>,
+    prev: Option<NonNull<SlabHeader>>,
 }
 
 impl Linkable for SlabHeader {
-    fn next(&self) -> *mut SlabHeader {
+    fn next(&self) -> Option<NonNull<SlabHeader>> {
         self.next
     }
-    fn prev(&self) -> *mut SlabHeader {
+    fn prev(&self) -> Option<NonNull<SlabHeader>> {
         self.prev
     }
-    fn set_next(&mut self, next: *mut SlabHeader) {
+    fn set_next(&mut self, next: Option<NonNull<SlabHeader>>) {
         self.next = next;
     }
-    fn set_prev(&mut self, prev: *mut SlabHeader) {
+    fn set_prev(&mut self, prev: Option<NonNull<SlabHeader>>) {
         self.prev = prev;
     }
 }
@@ -276,23 +280,38 @@ impl Layout {
         };
 
         // assert that the objects fit within the slab
-        assert!(slab_size >=
-                l.array_begin_offset + l.color_settings.max_color().as_usize() +
-                (l.num_obj * obj_size));
+        assert!(
+            slab_size
+                >= l.array_begin_offset + l.color_settings.max_color().as_usize()
+                    + (l.num_obj * obj_size)
+        );
         Some((l, unused_space))
     }
 
-    fn array_begin(&self, slab: *mut SlabHeader, color: Color) -> *mut u8 {
+    fn array_begin(&self, slab: NonNull<SlabHeader>, color: Color) -> NonNull<u8> {
         debug_assert!(color.as_usize() <= self.color_settings.max_color().as_usize());
-        ((slab as usize) + self.array_begin_offset + color.as_usize()) as *mut u8
+        unsafe {
+            NonNull::new_unchecked(
+                ((slab.as_ptr() as usize) + self.array_begin_offset + color.as_usize()) as *mut u8,
+            )
+        }
     }
 
-    fn stack_begin(&self, slab: *mut SlabHeader) -> *mut usize {
-        ((slab as usize) + self.stack_begin_offset) as *mut usize
+    fn stack_begin(&self, slab: NonNull<SlabHeader>) -> NonNull<usize> {
+        unsafe {
+            NonNull::new_unchecked(
+                ((slab.as_ptr() as usize) + self.stack_begin_offset) as *mut usize,
+            )
+        }
     }
 
-    pub fn nth_obj(&self, slab: *mut SlabHeader, color: Color, n: usize) -> *mut u8 {
+    pub fn nth_obj(&self, slab: NonNull<SlabHeader>, color: Color, n: usize) -> NonNull<u8> {
         debug_assert!((n as usize) < self.num_obj);
-        (self.array_begin(slab, color) as usize + n * self.layout.size()) as *mut u8
+        unsafe {
+            NonNull::new_unchecked(
+                (self.array_begin(slab, color).as_ptr() as usize + n * self.layout.size())
+                    as *mut u8,
+            )
+        }
     }
 }

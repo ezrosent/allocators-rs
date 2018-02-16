@@ -26,6 +26,6 @@ errno = "0.2"
 kernel32-sys = "0.2"
 # use no_std libc
 libc = { version = "0.2", default-features = false }
-object-alloc = "0.1.0"
+object-alloc = { path = "../object-alloc" }
 sysconf = "0.3.1"
 winapi = "0.2"
