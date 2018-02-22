@@ -50,6 +50,27 @@ use errno::errno;
 /// constructed using `default`, and then various other methods are used to set various
 /// configuration options.
 ///
+/// # Committed and Uncommitted Memory
+///
+/// Memory pages allocated by the kernel are [virtual memory pages][virtual memory]. Virtual
+/// memory pages can be in two states - committed or uncommitted. When in the uncommitted state,
+/// there is not necessarily any physical memory or swap space on disk associated with the page.
+/// When in the committed state, there is. When a page is allocated, it starts off in the
+/// uncommitted state (although the `commit` method can be used to configure this behavior).
+/// When an uncommitted page is committed, a physical memory page or region of swap space is
+/// allocated and associated with it. This memory has its bytes initialized to zero. When a
+/// committed page is uncommitted, the kernel is free to reclaim these physical resources, and
+/// in doing so, may wipe away the contents of the page (such that, if the page is later committed
+/// again, its contents will have been set back to zero).
+///
+/// On Linux and Mac, if an uncommitted page is accessed (read, written, or executed), it is
+/// automatically committed by the kernel. Thus, while explicitly committing memory may improve
+/// performance, it does not change the behavior of the program in any observable way.
+///
+/// On Windows, if an uncommitted page is accessed, it will cause a fault. Thus, Windows memory
+/// must be explicitly committed before use, and the uncommitted/committed distinction affects
+/// the observable behavior of the program.
+///
 /// # Memory Permissions
 ///
 /// One aspect that can be configured is the permissions of allocated memory - readable, writable,
@@ -81,6 +102,35 @@ use errno::errno;
 /// In order to avoid this scenario, it is often necessary to explicitly flush the instruction
 /// cache before executing newly-written memory. The mechanism to accomplish this differs by
 /// system.
+///
+/// # Alignment
+///
+/// Since memory is allocated by mapping pages directly from the kernel, all allocations are
+/// automatically aligned to the size of a memory page. Since there is no way to request a
+/// higher alignment from the kernel, higher alignments are not supported by `MapAlloc` by default.
+///
+/// However, this crate provides the `large-align` feature (disabled by default) which works around
+/// this limitation to allow for arbitrarily large alignments. When an alignment larger than the page
+/// size is requested, `alignment - page size` extra bytes are allocated. There is guaranteed to be
+/// a properly-aligned chunk of memory of the requested size somewhere within this larger allocation.
+/// That chunk is located and returned. The `large-align` feature also provides an `object_align`
+/// method on `MapAllocBuilder` that configures the alignment of the `UntypedObjectAlloc` implementation.
+///
+/// ## Platform-specific behavior
+///
+/// On Linux and Mac, all extra leading and trailing memory surrounding the located chunk is
+/// deallocated, leaving only the requested object allocated. On Windows, that extra memory is left
+/// allocated, but is left in the uncommitted state. This should ensure that it does not consume any
+/// physical resources, although it will still consume virtual memory space, which may be scarce,
+/// especially on 32-bit platforms.
+///
+/// ## Limitations
+///
+/// Currently, the `large-align` feature does not support large alignments in the `realloc` method,
+/// although it is fine to pass an object which was previously allocated with a large alignment
+/// as the object to be reallocated (it may have a smaller alignment after being reallocated).
+///
+/// [virtual memory]: https://en.wikipedia.org/wiki/Virtual_memory
 pub struct MapAllocBuilder {
     read: bool,
     write: bool,
@@ -90,7 +140,9 @@ pub struct MapAllocBuilder {
     // sysconf::page::pagesize might be inefficient, so store a copy of the pagesize to ensure that
     // loading it is efficient
     pagesize: usize,
+    // used for the UntypedObjectAlloc implementation
     obj_size: Option<usize>,
+    obj_align: Option<usize>,
 }
 
 impl MapAllocBuilder {
@@ -107,6 +159,19 @@ impl MapAllocBuilder {
         } else {
             self.pagesize
         };
+        let obj_align = if let Some(obj_align) = self.obj_align {
+            assert_eq!(
+                obj_size % obj_align,
+                0,
+                "object size ({}) is not a multiple of the object alignment ({})",
+                obj_size,
+                obj_align,
+            );
+            obj_align
+        } else {
+            self.pagesize
+        };
+
         MapAlloc {
             pagesize: self.pagesize,
             read: self.read,
@@ -114,7 +179,7 @@ impl MapAllocBuilder {
             exec: self.exec,
             perms: perms::get_perm(self.read, self.write, self.exec),
             commit: self.commit,
-            obj_size: obj_size,
+            obj_layout: Layout::from_size_align(obj_size, obj_align).unwrap(),
         }
     }
 
@@ -170,10 +235,8 @@ impl MapAllocBuilder {
     /// `commit` configures whether the memory returned by `alloc` is already in a committed state.
     /// The default is to have memory be returned by `alloc` uncommitted.
     ///
-    /// # Platform-specific behavior
-    ///
-    /// `commit` is only supported on Linux and Windows.
-    #[cfg(any(target_os = "linux", windows))]
+    /// See the "Committed and Uncommitted Memory" section of the `MapAllocBuilder` documentation
+    /// for more details.
     pub fn commit(mut self, commit: bool) -> MapAllocBuilder {
         self.commit = commit;
         self
@@ -188,6 +251,17 @@ impl MapAllocBuilder {
         self.obj_size = Some(obj_size);
         self
     }
+
+    /// Sets the object alignment for the `UntypedObjectAlloc` implementation.
+    ///
+    /// See the "Alignment" section of the `MapAllocBuilder` documentation for more details.
+    ///
+    /// This method is only available when the `large-align` feature is enabled.
+    #[cfg(feature = "large-align")]
+    pub fn obj_align(mut self, obj_align: usize) -> MapAllocBuilder {
+        self.obj_align = Some(obj_align);
+        self
+    }
 }
 
 impl Default for MapAllocBuilder {
@@ -199,6 +273,7 @@ impl Default for MapAllocBuilder {
             commit: false,
             pagesize: sysconf::page::pagesize(),
             obj_size: None,
+            obj_align: None,
         }
     }
 }
@@ -207,12 +282,16 @@ pub struct MapAlloc {
     // sysconf::page::pagesize might be inefficient, so store a copy of the pagesize to ensure that
     // loading it is efficient
     pagesize: usize,
-    #[cfg_attr(target_os = "linux", allow(unused))] read: bool,
-    #[cfg_attr(target_os = "linux", allow(unused))] write: bool,
-    #[cfg_attr(target_os = "linux", allow(unused))] exec: bool,
+    #[cfg_attr(target_os = "linux", allow(unused))]
+    read: bool,
+    #[cfg_attr(target_os = "linux", allow(unused))]
+    write: bool,
+    #[cfg_attr(target_os = "linux", allow(unused))]
+    exec: bool,
     perms: perms::Perm,
     commit: bool,
-    obj_size: usize,
+    // used in UntypedObjectAlloc implementation
+    obj_layout: Layout,
 }
 
 impl Default for MapAlloc {
@@ -224,26 +303,23 @@ impl Default for MapAlloc {
 impl MapAlloc {
     /// Commits an existing allocated object.
     ///
-    /// `commit` moves the given object into the committed state. After `commit` has returned, the
-    /// object can be accessed without crashing the program. If this `MapAlloc` was configured with
-    /// the "commit" option disabled (the default), then allocated objects are unusable until they
-    /// have been committed by this method.
+    /// `commit` moves the given object into the committed state. If `commit` is called on an
+    /// already-committed object, it does nothing.
     ///
-    /// If `commit` is called on an already-committed object, it does nothing.
-    ///
-    /// # Platform-specific behavior
-    ///
-    /// `commit` is only present on Windows. On Linux and Mac, uncommitted memory is automatically
-    /// committed upon the first access.
-    #[cfg(windows)]
+    /// See the "Committed and Uncommitted Memory" section of the `MapAllocBuilder` documentation
+    /// for more details.
+    #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
     pub unsafe fn commit(&self, ptr: *mut u8, layout: Layout) {
         debug_assert!(layout.size() > 0, "commit: size of layout must be non-zero");
 
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
-        // allocations, and so they are legal to pass to uncommit, but will VirtualFree handle them
-        // properly?
+        // allocations, and so they are legal to pass to uncommit, but will madvise/VirtualFree
+        // handle them properly?
         #[cfg(debug_assertions)]
-        self.debug_verify_ptr(ptr, layout.clone());
+        self.debug_verify_ptr(ptr, &layout);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        commit(ptr, layout.size());
+        #[cfg(windows)]
         commit(ptr, layout.size(), self.perms);
     }
 
@@ -252,12 +328,9 @@ impl MapAlloc {
     /// `uncommit` moves the given object into the uncommitted state. If `uncommit` is called on
     /// an already-uncommitted object, it does nothing.
     ///
-    /// # Platform-specific behavior
-    ///
-    /// On Windows, after `uncommit` has returned, the object cannot be accessed without crashing
-    /// the program. On Linux and Mac, the memory can still safely be accessed, but it may have
-    /// been zeroed.
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    /// See the "Committed and Uncommitted Memory" section of the `MapAllocBuilder` documentation
+    /// for more details.
+    #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
     pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
         debug_assert!(
             layout.size() > 0,
@@ -268,7 +341,7 @@ impl MapAlloc {
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
         #[cfg(debug_assertions)]
-        self.debug_verify_ptr(ptr, layout.clone());
+        self.debug_verify_ptr(ptr, &layout);
         uncommit(ptr, layout.size());
     }
 
@@ -276,8 +349,8 @@ impl MapAlloc {
     unsafe fn resize_in_place(
         &self,
         ptr: *mut u8,
-        layout: Layout,
-        new_layout: Layout,
+        layout: &Layout,
+        new_layout: &Layout,
     ) -> Result<(), CannotReallocInPlace> {
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
@@ -300,7 +373,7 @@ impl MapAlloc {
     }
 
     #[cfg(debug_assertions)]
-    fn debug_verify_ptr(&self, ptr: *mut u8, layout: Layout) {
+    fn debug_verify_ptr(&self, ptr: *mut u8, layout: &Layout) {
         debug_assert_eq!(
             ptr as usize % self.pagesize,
             0,
@@ -316,16 +389,49 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
         debug_assert!(layout.size() > 0, "alloc: size of layout must be non-zero");
 
+        let size = next_multiple(layout.size(), self.pagesize);
+
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
-        if layout.align() > self.pagesize {
-            return Err(AllocErr::invalid_input(
+        if layout.align() <= self.pagesize {
+            map(size, self.perms, self.commit).ok_or(AllocErr::Exhausted { request: layout })
+        } else if cfg!(feature = "large-align") {
+            let extra = layout.align() - self.pagesize;
+            // Since we're allocating extra space, we don't commit this memory.
+            // We only commit the portion we're actually returning below.
+            let addr = map(size + extra, self.perms, false).ok_or(AllocErr::Exhausted {
+                request: layout.clone(),
+            })? as usize;
+            let aligned_addr = next_multiple(addr, layout.align());
+            let aligned_ptr = aligned_addr as *mut u8;
+            if !cfg!(windows) {
+                // We only do this on Linux and Mac because on Windows, you can only
+                // unmap entire regions allocated with VirtualAlloc. Thus, on Windows,
+                // the best we can do is to leave the unused portions of the allocation
+                // unmapped. This consumes extra virtual address space, which may be
+                // problematic on 32-bit platforms or when virtual address space is
+                // scarce for some other reason.
+                let prefix_size = aligned_addr - addr;
+                let suffix_size = extra - prefix_size;
+                if prefix_size > 0 {
+                    unmap(addr as *mut u8, prefix_size);
+                }
+                if suffix_size > 0 {
+                    unmap((aligned_addr + size) as *mut u8, suffix_size);
+                }
+            }
+            if self.commit {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                commit(aligned_ptr, layout.size());
+                #[cfg(windows)]
+                commit(aligned_ptr, layout.size(), self.perms);
+            }
+            Ok(aligned_ptr)
+        } else {
+            Err(AllocErr::invalid_input(
                 "cannot support alignment greater than a page",
-            ));
+            ))
         }
-
-        let size = next_multiple(layout.size(), self.pagesize);
-        map(size, self.perms, self.commit).ok_or(AllocErr::Exhausted { request: layout })
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
@@ -333,6 +439,31 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             layout.size() > 0,
             "dealloc: size of layout must be non-zero"
         );
+        #[cfg(all(feature = "large-align", windows))]
+        let ptr = {
+            use core::mem::{size_of, uninitialized};
+            use kernel32::{GetLastError, VirtualQuery};
+            use winapi::winnt::MEMORY_BASIC_INFORMATION;
+
+            // Because Windows' VirtualFree function requires its argument
+            // to be a value previously returned from VirtualAlloc, we cannot
+            // simply pass ptr, as the large-align feature means ptr might
+            // not be the value we originally allocated with VirtualAlloc.
+            // We use VirtualQuery here to recover the original value
+            // returned from VirtualAlloc.
+            let mut info: MEMORY_BASIC_INFORMATION = uninitialized();
+            let info_size = size_of::<MEMORY_BASIC_INFORMATION>() as u64;
+            let ret = VirtualQuery(ptr as *mut _, &mut info, info_size);
+            assert_eq!(
+                ret,
+                info_size,
+                "Call to VirtualQuery({:?}) failed with error code {}.",
+                ptr,
+                GetLastError()
+            );
+            info.AllocationBase as *mut _
+        };
+
         unmap(ptr, layout.size());
     }
 
@@ -369,6 +500,8 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             "realloc: size of new_layout must be non-zero"
         );
 
+        // TODO: Handle large-align feature
+
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
         if new_layout.align() > self.pagesize {
@@ -404,6 +537,8 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             new_layout.size() > 0,
             "realloc: size of new_layout must be non-zero"
         );
+
+        // TODO: Handle large-align feature
 
         // alignment less than a page is fine because page-aligned objects are also aligned to
         // any alignment less than a page
@@ -472,7 +607,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         debug_assert!(new_layout.size() >= layout.size());
         debug_assert_eq!(new_layout.align(), layout.align());
 
-        self.resize_in_place(ptr, layout, new_layout)
+        self.resize_in_place(ptr, &layout, &new_layout)
     }
 
     #[cfg(target_os = "linux")]
@@ -493,7 +628,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         debug_assert!(new_layout.size() <= layout.size());
         debug_assert_eq!(new_layout.align(), layout.align());
 
-        self.resize_in_place(ptr, layout, new_layout)
+        self.resize_in_place(ptr, &layout, &new_layout)
     }
 
     #[cfg(target_os = "macos")]
@@ -527,11 +662,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
 
 unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
     fn layout(&self) -> Layout {
-        if cfg!(debug_assertions) {
-            Layout::from_size_align(self.obj_size, self.pagesize).unwrap()
-        } else {
-            unsafe { Layout::from_size_align_unchecked(self.obj_size, self.pagesize) }
-        }
+        self.obj_layout.clone()
     }
 
     unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
@@ -544,7 +675,7 @@ unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
     }
 
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
-        unmap(ptr.as_ptr(), self.obj_size);
+        <&MapAlloc as Alloc>::dealloc(self, ptr.as_ptr(), self.obj_layout.clone());
     }
 }
 
@@ -664,12 +795,9 @@ unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<*mut u8> {
     }
 }
 
-// commit must be false
 #[cfg(target_os = "macos")]
-unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<*mut u8> {
+unsafe fn map(size: usize, perms: i32, do_commit: bool) -> Option<*mut u8> {
     use libc::{ENOMEM, MAP_ANON, MAP_FAILED, MAP_PRIVATE};
-
-    debug_assert!(!commit);
 
     let ptr = libc::mmap(ptr::null_mut(), size, perms, MAP_ANON | MAP_PRIVATE, -1, 0);
 
@@ -686,6 +814,11 @@ unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<*mut u8> {
         // implementation selects a value for pa, it never places a mapping at address 0, nor does
         // it replace any extant mapping."
         assert_ne!(ptr, ptr::null_mut(), "mmap returned NULL");
+        if do_commit {
+            // Mac mmap doesn't have an equivalent of the Linux MAP_POPULATE flag,
+            // so we commit memory in a separate step.
+            commit(ptr as *mut u8, size);
+        }
         Some(ptr as *mut u8)
     }
 }
@@ -801,6 +934,12 @@ unsafe fn protect(ptr: *mut u8, size: usize, perm: perms::Perm) {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+unsafe fn commit(ptr: *mut u8, size: usize) {
+    use libc::{madvise, MADV_WILLNEED};
+    madvise(ptr as *mut _, size, MADV_WILLNEED);
+}
+
 #[cfg(windows)]
 unsafe fn commit(ptr: *mut u8, size: usize, perms: u32) {
     use kernel32::VirtualAlloc;
@@ -812,17 +951,17 @@ unsafe fn commit(ptr: *mut u8, size: usize, perms: u32) {
 
 #[cfg(target_os = "linux")]
 unsafe fn uncommit(ptr: *mut u8, size: usize) {
-    use libc::MADV_DONTNEED;
+    use libc::{madvise, MADV_DONTNEED};
 
     // TODO: Other options such as MADV_FREE are available on newer versions of Linux. Is there
     // a way that we can use those when available? Is that even desirable?
-    libc::madvise(ptr as *mut _, size, MADV_DONTNEED);
+    madvise(ptr as *mut _, size, MADV_DONTNEED);
 }
 
 #[cfg(target_os = "macos")]
 unsafe fn uncommit(ptr: *mut u8, size: usize) {
-    use libc::MADV_FREE;
-    libc::madvise(ptr as *mut _, size, MADV_FREE);
+    use libc::{madvise, MADV_FREE};
+    madvise(ptr as *mut _, size, MADV_FREE);
 }
 
 #[cfg(windows)]
