@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
 # Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -17,4 +17,6 @@ fi
 export RUST_TEST_THREADS=1
 
 cargo build
-RUST_BACKTRACE=1 cargo test
+for feature in '' large-align; do
+  RUST_BACKTRACE=1 cargo test --features "$feature"
+done

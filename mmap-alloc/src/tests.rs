@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -41,13 +41,9 @@ unsafe fn test_read(ptr: *mut u8, size: usize) {
         let got = *ptr.offset(i as isize);
         let want = (i & 0xff) as u8;
         assert_eq!(
-            got,
-            want,
+            got, want,
             "mismatch at byte {} in block {:?}: got {}, want {}",
-            i,
-            ptr,
-            got,
-            want
+            i, ptr, got, want
         );
     }
 }
@@ -145,12 +141,14 @@ fn test_realloc_small() {
         #[cfg(any(target_os = "linux", windows))]
         let perm = get_perm(read, write, exec);
 
-        let test_contents = |ptr: *mut u8, size: usize| if read && write {
-            test_write_read(ptr, size);
-        } else if read {
-            test_zero_filled(ptr, size);
-        } else if write {
-            test_write(ptr, size);
+        let test_contents = |ptr: *mut u8, size: usize| {
+            if read && write {
+                test_write_read(ptr, size);
+            } else if read {
+                test_zero_filled(ptr, size);
+            } else if write {
+                test_write(ptr, size);
+            }
         };
 
         let small = Layout::array::<u8>(1).unwrap();
@@ -235,12 +233,14 @@ fn test_realloc_large() {
         #[cfg(any(target_os = "linux", windows))]
         let perm = get_perm(read, write, exec);
 
-        let test_contents = |ptr: *mut u8, size: usize| if read && write {
-            test_write_read(ptr, size);
-        } else if read {
-            test_zero_filled(ptr, size);
-        } else if write {
-            test_write(ptr, size);
+        let test_contents = |ptr: *mut u8, size: usize| {
+            if read && write {
+                test_write_read(ptr, size);
+            } else if read {
+                test_zero_filled(ptr, size);
+            } else if write {
+                test_write(ptr, size);
+            }
         };
 
         let small = Layout::array::<u8>(alloc.pagesize).unwrap();
@@ -350,14 +350,31 @@ fn test_realloc_large() {
     }
 
     unsafe {
-        // test(false, false, false);
-        // test(true, false, false);
-        // test(false, true, false);
-        // test(false, false, true);
+        test(false, false, false);
+        test(true, false, false);
+        test(false, true, false);
+        test(false, false, true);
         test(true, true, false);
-        // test(true, false, true);
-        // test(false, true, true);
-        // test(true, true, true);
+        test(true, false, true);
+        test(false, true, true);
+        test(true, true, true);
+    }
+}
+
+#[cfg(feature = "large-align")]
+#[test]
+fn test_large_align() {
+    let mut alloc = MapAllocBuilder::default().commit(true).build();
+    // test with a large alignment so that the probability of getting this
+    // alignment by chance is low.
+    const MB64: usize = 1 << 25;
+    let layout = Layout::from_size_align(MB64, MB64).unwrap();
+    unsafe {
+        let ptr = <MapAlloc as Alloc>::alloc(&mut alloc, layout.clone()).unwrap();
+        assert_eq!(ptr as usize % MB64, 0, "ptr: {:?}", ptr);
+        test_zero_filled(ptr, MB64);
+        test_write_read(ptr, MB64);
+        <MapAlloc as Alloc>::dealloc(&mut alloc, ptr, layout.clone());
     }
 }
 
@@ -365,13 +382,12 @@ fn test_realloc_large() {
 fn test_commit() {
     unsafe {
         // Check that:
-        // - Mapping and committing a single page works (except on Mac, which doesn't support
-        //   committing)
+        // - Mapping and committing a single page works
         // - The returned pointer is non-null
         // - The returned pointer is page-aligned
         // - We can read that page, and it is zero-filled (on Unix, this test is trivial, but
         //   on Windows, it ensures that map properly committed the page)
-        let mut ptr = map(pagesize(), PROT_READ_WRITE, !cfg!(target_os = "macos")).unwrap();
+        let mut ptr = map(pagesize(), PROT_READ_WRITE, true).unwrap();
         test_valid_map_address(ptr);
         test_zero_filled(ptr, pagesize());
         unmap(ptr, pagesize());

@@ -13,9 +13,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Added support for committing on Linux and Mac
+- Added support for configuring commit on allocation on Mac
+- Added support for alignments larger than a memory page (`large-align`
+  feature)
+
 ### Changed
 - Upgraded to new `UntypedObjectAlloc` trait that uses `NonNull<u8>` instead
   of `*mut u8`
+- Improved documentation on committed vs. uncommitted memory
 
 ## 0.2.0
 
