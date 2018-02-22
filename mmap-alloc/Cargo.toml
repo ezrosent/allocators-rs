@@ -21,6 +21,11 @@ repository = "https://github.com/ezrosent/allocators-rs/tree/master/mmap-alloc"
 
 exclude = ["appveyor.sh", "travis.sh"]
 
+[features]
+# Support alignments larger than a page size by mapping a larger region
+# and then unmapping all but a properly-aligned subset of the region.
+large-align = []
+
 [dependencies]
 errno = "0.2"
 kernel32-sys = "0.2"
