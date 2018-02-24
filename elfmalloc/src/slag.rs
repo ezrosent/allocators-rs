@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -59,12 +59,14 @@
 //! See the `frontends` module for how the slag subsystem is used to construct allocators.
 //!
 //! [1]: https://arxiv.org/abs/1503.09006
+extern crate alloc;
+use alloc::allocator::{Alloc, Layout};
 use std::mem;
 use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
 use super::bagpipe::bag::{Revocable, WeakBag};
 use super::bagpipe::{BagPipe, BagCleanup};
 use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
-use super::utils::{mmap, LazyInitializable, unlikely};
+use super::utils::{self, MMAP, LazyInitializable, unlikely};
 use super::alloc_type::AllocType;
 use super::sources::MemorySource;
 use std::marker::PhantomData;
@@ -75,20 +77,23 @@ pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>, PageCleanup<T>>;
 pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>, PageCleanup<T>>;
 
 #[derive(Copy, Clone)]
-pub struct PageCleanup<T>(usize, PhantomData<T>);
+pub struct PageCleanup<T> {
+    size: usize,
+    align: usize,
+    _marker: PhantomData<T>,
+}
 
 impl<T> PageCleanup<T> {
-    pub fn new(page_size: usize) -> PageCleanup<T> {
-        PageCleanup(page_size, PhantomData)
+    pub fn new(page_size: usize, align: usize) -> PageCleanup<T> {
+        PageCleanup { size: page_size, align, _marker: PhantomData }
     }
 }
 
 impl<T> BagCleanup for PageCleanup<T> {
     type Item = *mut T;
     fn cleanup(&self, it: *mut T) {
-        unsafe {
-            mmap::unmap(it as *mut u8, self.0);
-        }
+        let layout = Layout::from_size_align(self.size, self.align).unwrap();
+        unsafe { (&*MMAP).dealloc(it as *mut u8, layout) };
     }
 }
 
@@ -99,26 +104,17 @@ pub trait CoarseAllocator
 where
     Self: Clone,
 {
-    /// The concrete type representing backing memory for the allocator.
-    type Block: MemorySource;
-
-    /// The start of a new block of memory of size `backing_memory().page_size()`.
-    ///
-    /// Furthermore, all memory returned by `alloc` must satisfy
-    /// `c.backing_memory().contains(c.alloc())`*.
-    ///
-    /// *That is, if that code actually compiled and didn't have a lifetime issue.
-    unsafe fn alloc(&mut self) -> *mut u8;
+    /// Allocate a new block of memory of size `page_size()`.
+    unsafe fn alloc(&mut self) -> Option<*mut u8>;
 
     /// Free a page of memory back to the allocator.
     ///
-    /// If `item` is not contained in `self.backing_memory()`, the behavior of `free` is undefined.
     /// The `uncommit` flag is a hint to the allocator to uncommit the memory. It need not be
     /// observed.
     unsafe fn free(&mut self, item: *mut u8, uncommit: bool);
 
     /// Get access to the backing memory for the allocator.
-    fn backing_memory(&self) -> &Self::Block;
+    fn page_size(&self) -> usize;
 }
 
 
@@ -905,22 +901,22 @@ where
     // bagpipes of byte slices of size creek.page_size
     clean: SlagPipe<u8>,
     dirty: SlagPipe<u8>,
-    aligned_source: C,
     pages_per: usize,
+    page_size: usize,
     ty: AllocType,
     _marker: PhantomData<D>,
 }
 
 impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
     type Params = (usize, usize, usize, usize, AllocType);
-    fn init(&(page_size, target_overhead, pipe_size, aligned_source, ty): &Self::Params) -> Self {
+    fn init(&(page_size, target_overhead, pipe_size, aligned_source, ty): &Self::Params) -> Option<Self> {
         Self::new_aligned(page_size, target_overhead, pipe_size, aligned_source, ty)
     }
 }
 
 impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     /// Create a new `PageAlloc`.
-    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize, ty: AllocType) -> Self {
+    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize, ty: AllocType) -> Option<Self> {
         Self::new_aligned(page_size, target_overhead, pipe_size, page_size, ty)
     }
 
@@ -930,42 +926,39 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
         pipe_size: usize,
         align: usize,
         ty: AllocType,
-    ) -> Self {
+    ) -> Option<Self> {
         alloc_debug_assert!(align >= page_size);
         alloc_debug_assert!(page_size.is_power_of_two());
         alloc_debug_assert!(align.is_power_of_two());
         let pages_per = align / page_size;
-        let clean = PageCleanup::new(page_size);
-        let creek = C::new(page_size);
-        let creek_2 = if pages_per > 1 {
-            C::new(align)
+        let clean = PageCleanup::new(page_size, align);
+        let creek = C::new(if pages_per == 1 {
+            page_size
         } else {
-            creek.clone()
-        };
-        PageAlloc {
-            target_overhead: target_overhead,
-            creek: creek,
-            pages_per: pages_per,
-            aligned_source: creek_2,
+            align
+        })?;
+        Some(PageAlloc {
+            target_overhead,
+            creek,
+            pages_per,
+            page_size,
             clean: SlagPipe::new_size_cleanup(2, clean),
             dirty: SlagPipe::new_size_cleanup(pipe_size, clean),
-            ty: ty,
+            ty,
             _marker: PhantomData,
-        }
+        })
     }
 
     /// Get more clean pages from the backing memory.
     ///
     /// One of these pages is returned to the caller for allocation. The rest are added to the
     /// clean `BagPipe`.
-    fn refresh_pages(&mut self) -> *mut u8 {
+    fn refresh_pages(&mut self) -> Option<*mut u8> {
         // If we are using a higher alignment, just allocate a single higher-aligned page. If not,
         // allocate two pages.
         let npages = cmp::max(self.pages_per, 2);
-        let creek = &self.aligned_source;
-        let pages = creek
-            .carve(if self.pages_per == 1 { 2 } else { 1 })
-            .expect("out of memory!");
+        let pages = self.creek
+            .carve(if self.pages_per == 1 { 2 } else { 1 })?;
         let page_size = self.creek.page_size();
         // Write the required AllocType to the aligned boundary. In some settings this is
         // unnecessary, but refresh_pages is not called in the hot path and the cost of writing
@@ -976,48 +969,47 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
             pages.offset(page_size as isize * (i as isize))
         });
         self.clean.bulk_add(iter);
-        pages
+        Some(pages)
     }
 }
 
 impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
-    type Block = C;
-
-    fn backing_memory(&self) -> &C {
-        &self.creek
+    fn page_size(&self) -> usize {
+        self.page_size
     }
 
-    unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe fn alloc(&mut self) -> Option<*mut u8> {
         if let Ok(ptr) = self.dirty.try_pop_mut() {
             trace_event!(grabbed_dirty);
-            return ptr;
-        }
-        if let Ok(ptr) = self.clean.try_pop_mut() {
+            Some(ptr)
+        } else if let Ok(ptr) = self.clean.try_pop_mut() {
             trace_event!(grabbed_clean);
             D::dirty(ptr);
-            return ptr;
+            Some(ptr)
+        } else {
+            self.refresh_pages()
         }
-        self.refresh_pages()
     }
 
     unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
-        use self::mmap::uncommit;
         use std::cmp;
-        let minor_page_size = mmap::page_size() as isize;
+        let minor_page_size = utils::page_size() as isize;
         if self.dirty.size_guess() >= self.target_overhead as isize {
-            uncommit(ptr, self.backing_memory().page_size());
+            let layout = Layout::from_size_align(self.page_size, self.page_size).unwrap();
+            (&*MMAP).uncommit(ptr, layout);
             self.clean.push_mut(ptr);
             return;
         }
         if decommit {
             let uncommit_len = cmp::max(
                 0,
-                self.backing_memory().page_size() as isize - minor_page_size,
+                self.page_size as isize - minor_page_size,
             ) as usize;
             if uncommit_len == 0 {
                 self.dirty.push_mut(ptr);
             } else {
-                uncommit(ptr.offset(minor_page_size), uncommit_len);
+                let layout = Layout::from_size_align(uncommit_len, minor_page_size as usize).unwrap();
+                (&*MMAP).uncommit(ptr.offset(minor_page_size), layout);
                 self.dirty.push_mut(ptr);
             }
         } else {
@@ -1073,18 +1065,18 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         decommit: usize,
         mut pa: CA,
         avail: RevocablePipe<Slag>,
-    ) -> Self {
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+    ) -> Option<Self> {
+        let first_slag = unsafe { pa.alloc()? } as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
-        SlagAllocator {
+        Some(SlagAllocator {
             m: meta,
             slag: first_slag,
             pages: pa,
             available: avail,
             eager_decommit_threshold: decommit,
-        }
+        })
     }
     pub fn new(
         max_objects: usize,
@@ -1093,33 +1085,33 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         cutoff_factor: f64,
         eager_decommit: usize,
         mut pa: CA,
-    ) -> Self {
+    ) -> Option<Self> {
         // This is a bit wasteful as one metadata object consumes will wind up consuming a page. In
         // the dynamic allocator these are packed more tightly.
         let meta = Box::into_raw(Box::new(compute_metadata(
             object_size,
-            pa.backing_memory().page_size(),
+            pa.page_size(),
             index,
             cutoff_factor,
             max_objects,
             AllocType::SmallSlag,
         )));
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pa.alloc()? } as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
-        let cleanup = PageCleanup::new(pa.backing_memory().page_size());
-        SlagAllocator {
+        let cleanup = PageCleanup::new(pa.page_size(), pa.page_size());
+        Some(SlagAllocator {
             m: meta,
             slag: first_slag,
             pages: pa,
             available: RevocablePipe::new_size_cleanup(8, cleanup),
             eager_decommit_threshold: eager_decommit,
-        }
+        })
     }
 
     /// Re-initialize a non-empty `AllocIter`; potentially getting a new `Slag` to do so.
-    pub unsafe fn refresh(&mut self) -> AllocIter {
+    pub unsafe fn refresh(&mut self) -> Option<AllocIter> {
         let s_ref = &*self.slag;
         let meta = &*self.m;
         let (_claimed, was) = s_ref.rc.unclaim();
@@ -1156,7 +1148,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
                 _claimed,
                 "claiming slag either during initialization or due to being over cutoff"
             );
-            s_ref.refresh(meta)
+            Some(s_ref.refresh(meta))
         } else {
             // we need a new slag!
             // first we try and get a slag from the available slagpipe. If it is empty, then we get
@@ -1168,7 +1160,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
                     slab
                 }
                 Err(_) => {
-                    let new_raw = self.pages.alloc() as *mut Slag;
+                    let new_raw = self.pages.alloc()? as *mut Slag;
                     if (*new_raw).meta.load(Ordering::Relaxed) != self.m {
                         Slag::init(new_raw, meta);
                     }
@@ -1179,7 +1171,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
             let claimed = s_ref.rc.claim();
             alloc_debug_assert!(claimed, "claiming new slag after refresh");
-            s_ref.refresh(meta)
+            Some(s_ref.refresh(meta))
         }
     }
 
@@ -1262,7 +1254,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
 impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
     fn clone(&self) -> Self {
         let mut new_page_handle = self.pages.clone();
-        let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
+        let first_slag = unsafe { new_page_handle.alloc().expect("failed to allocate slag") as *mut Slag };
         unsafe {
             Slag::init(
                 first_slag,

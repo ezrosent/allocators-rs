@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -6,50 +6,58 @@
 // copied, modified, or distributed except according to those terms.
 
 //! Some basic utilities used throughout the allocator code.
-use std::cmp;
+extern crate alloc;
+extern crate mmap_alloc;
+extern crate sysconf;
+use alloc::allocator::{Alloc, Layout};
 use std::ops::{Deref, DerefMut};
 use std::cell::UnsafeCell;
 
-pub mod mmap {
-    extern crate mmap_alloc;
-    extern crate sysconf;
-    use self::mmap_alloc::MapAllocBuilder;
-    use super::super::alloc::allocator::{Alloc, Layout};
+lazy_static!{ pub static ref MMAP: mmap_alloc::MapAlloc = mmap_alloc::MapAlloc::default(); }
 
-    pub fn page_size() -> usize {
-        self::sysconf::page::pagesize()
-    }
-
-    pub fn map(size: usize) -> *mut u8 {
-        fallible_map(size).expect("mmap should not fail")
-    }
-
-    pub fn fallible_map(size: usize) -> Option<*mut u8> {
-        unsafe {
-            if let Ok(s) = MapAllocBuilder::default()
-                   .exec(true)
-                   .build()
-                   .alloc(Layout::from_size_align(size, 1).unwrap()) {
-                Some(s)
-            } else {
-                None
-            }
-        }
-    }
-
-    pub unsafe fn unmap(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec(true).build().dealloc(
-            p,
-            Layout::from_size_align(len, 1).unwrap(),
-        )
-    }
-    pub unsafe fn uncommit(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec(true).build().uncommit(
-            p,
-            Layout::from_size_align(len, 1).unwrap(),
-        )
-    }
+pub fn page_size() -> usize {
+    self::sysconf::page::pagesize()
 }
+// pub mod mmap {
+//     extern crate mmap_alloc;
+//     extern crate sysconf;
+//     use self::mmap_alloc::MapAllocBuilder;
+//     use super::super::alloc::allocator::{Alloc, Layout};
+
+//     pub fn page_size() -> usize {
+//         self::sysconf::page::pagesize()
+//     }
+
+//     pub fn map(size: usize, align: usize) -> *mut u8 {
+//         fallible_map(size, align).expect("mmap should not fail")
+//     }
+
+//     pub fn fallible_map(size: usize, align: usize) -> Option<*mut u8> {
+//         unsafe {
+//             if let Ok(s) = MapAllocBuilder::default()
+//                    .exec(true)
+//                    .build()
+//                    .alloc(Layout::from_size_align(size, align).unwrap()) {
+//                 Some(s)
+//             } else {
+//                 None
+//             }
+//         }
+//     }
+
+//     pub unsafe fn unmap(p: *mut u8, size: usize, align: usize) {
+//         MapAllocBuilder::default().exec(true).build().dealloc(
+//             p,
+//             Layout::from_size_align(size, align).unwrap(),
+//         )
+//     }
+//     pub unsafe fn uncommit(p: *mut u8, size: usize, align: usize) {
+//         MapAllocBuilder::default().exec(true).build().uncommit(
+//             p,
+//             Layout::from_size_align(size, align).unwrap(),
+//         )
+//     }
+// }
 
 // we use the unlikely intrinsic if it is available.
 
@@ -73,9 +81,9 @@ pub unsafe fn likely(b: bool) -> bool {
 /// A `LazyInitializable` type can be constructed from `Params`.
 ///
 /// Types that implement this trate can be wrapped in the `Lazy` construct.
-pub trait LazyInitializable {
+pub trait LazyInitializable: Sized {
     type Params;
-    fn init(p: &Self::Params) -> Self;
+    fn init(p: &Self::Params) -> Option<Self>;
 }
 
 /// A `Lazy` instance of a type `T` keeps `T::Params` strict but only initializes the value with
@@ -120,7 +128,7 @@ impl<T: LazyInitializable> Deref for Lazy<T> {
     fn deref(&self) -> &T {
         let state = unsafe { &mut *self.val.get() };
         if unsafe { unlikely(state.is_none()) } {
-            *state = Some(T::init(&self.params));
+            *state = T::init(&self.params);
         }
         state.as_ref().unwrap()
     }
@@ -132,7 +140,7 @@ impl<T: LazyInitializable> DerefMut for Lazy<T> {
     fn deref_mut(&mut self) -> &mut T {
         let state = unsafe { &mut *self.val.get() };
         if unsafe { unlikely(state.is_none()) } {
-            *state = Some(T::init(&self.params));
+            *state = T::init(&self.params);
         }
         state.as_mut().unwrap()
     }
@@ -152,23 +160,17 @@ pub struct TypedArray<T> {
     // TODO: replace with non-null once that stabilizes.
     data: *mut T,
     len: usize,
-    mapped: usize,
 }
 
 impl<T> TypedArray<T> {
-    pub fn new(size: usize) -> TypedArray<T> {
-        use std::mem::size_of;
-        let page_size = mmap::page_size();
-        let bytes = size_of::<T>() * size;
-        let rem = bytes % page_size;
-        let n_pages = bytes / page_size + cmp::min(1, rem);
-        let region_size = n_pages * page_size;
-        let mem = mmap::map(region_size);
-        TypedArray {
+    pub fn new(size: usize) -> Option<TypedArray<T>> {
+        alloc_assert!(::std::mem::size_of::<T>() > 0);
+        let layout = Layout::new::<T>().repeat(size).unwrap().0;
+        let mem = unsafe { (&*MMAP).alloc(layout).ok()? };
+        Some(TypedArray {
             data: mem as *mut T,
             len: size,
-            mapped: region_size,
-        }
+        })
     }
 
     pub fn iter(&self) -> TypedArrayIter<T> {
@@ -189,7 +191,8 @@ impl<T> TypedArray<T> {
     }
 
     pub unsafe fn destroy(&self) {
-        mmap::unmap(self.data as *mut u8, self.mapped);
+        let layout = Layout::new::<T>().repeat(self.len).unwrap().0;
+        (&*MMAP).dealloc(self.data as *mut u8, layout);
     }
 }
 
@@ -197,8 +200,8 @@ impl<T> TypedArray<T> {
 pub struct OwnedArray<T>(TypedArray<T>);
 
 impl<T> OwnedArray<T> {
-    pub fn new(size: usize) -> OwnedArray<T> {
-        OwnedArray(TypedArray::new(size))
+    pub fn new(size: usize) -> Option<OwnedArray<T>> {
+        Some(OwnedArray(TypedArray::new(size)?))
     }
 }
 
@@ -241,8 +244,8 @@ mod tests {
     struct DefaultInit<T: Default>(T);
     impl<T: Default> LazyInitializable for DefaultInit<T> {
         type Params = ();
-        fn init(_p: &()) -> Self {
-            DefaultInit(T::default())
+        fn init(_p: &()) -> Option<Self> {
+            Some(DefaultInit(T::default()))
         }
     }
 

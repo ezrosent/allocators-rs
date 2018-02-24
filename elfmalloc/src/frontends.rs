@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -12,9 +12,11 @@
 //! a particular object size. These object-specific allocators can be used as a specialized
 //! allocator, but their main use-case is as a building block for a general dynamic allocator. This
 //! latter task is implemented in the `general` module.
+extern crate alloc;
+use alloc::allocator::{Alloc, Layout};
 use super::slag::*;
 use super::sources::MmapSource;
-use super::utils::{likely, OwnedArray, LazyInitializable, mmap};
+use super::utils::{self, likely, OwnedArray, LazyInitializable, MMAP};
 use super::alloc_type::AllocType;
 use std::marker::PhantomData;
 use std::mem;
@@ -22,7 +24,7 @@ use std::ptr;
 use std::cmp;
 
 pub trait Frontend: LazyInitializable + Clone {
-    unsafe fn alloc(&mut self) -> *mut u8;
+    unsafe fn alloc(&mut self) -> Option<*mut u8>;
     unsafe fn free(&mut self, item: *mut u8);
 }
 
@@ -57,20 +59,20 @@ impl<CA: CoarseAllocator> Drop for LocalCache<CA> {
 }
 impl<CA: CoarseAllocator> Clone for LocalCache<CA> {
     fn clone(&self) -> LocalCache<CA> {
-        LocalCache::new(self.alloc.clone())
+        LocalCache::new(self.alloc.clone()).expect("failed to allocate new LocalCache")
     }
 }
 
 impl<CA: CoarseAllocator> LocalCache<CA> {
-    fn new(mut alloc: SlagAllocator<CA>) -> Self {
+    fn new(mut alloc: SlagAllocator<CA>) -> Option<Self> {
         unsafe {
-            let stack = PtrStack::new((*alloc.m).n_objects);
-            let iter = alloc.refresh();
-            LocalCache {
+            let stack = PtrStack::new((*alloc.m).n_objects)?;
+            let iter = alloc.refresh()?;
+            Some(LocalCache {
                 alloc: alloc,
                 vals: stack,
                 iter: iter,
-            }
+            })
         }
     }
 }
@@ -84,14 +86,14 @@ impl<CA: CoarseAllocator> Frontend for LocalCache<CA> {
         }
     }
 
-    unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe fn alloc(&mut self) -> Option<*mut u8> {
         self.vals
             .pop()
             .or_else(|| self.iter.next())
-            .unwrap_or_else(|| {
-                let next_iter = self.alloc.refresh();
+            .or_else(|| {
+                let next_iter = self.alloc.refresh()?;
                 self.iter = next_iter;
-                self.iter.next().expect("New iterator should have values")
+                Some(self.iter.next().expect("New iterator should have values"))
             })
     }
 }
@@ -115,16 +117,16 @@ pub struct MagazineCache<CA: CoarseAllocator> {
 
 impl<CA: CoarseAllocator> LazyInitializable for MagazineCache<CA> {
     type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
-    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
-        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
+    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Option<Self> {
+        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone())?;
         Self::new(salloc)
     }
 }
 
 impl<CA: CoarseAllocator> LazyInitializable for LocalCache<CA> {
     type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
-    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
-        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
+    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Option<Self> {
+        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone())?;
         Self::new(salloc)
     }
 }
@@ -148,26 +150,26 @@ impl<CA: CoarseAllocator> Drop for MagazineCache<CA> {
 
 impl<CA: CoarseAllocator> Clone for MagazineCache<CA> {
     fn clone(&self) -> Self {
-        MagazineCache::new_sized(self.alloc.clone(), self.stack_size)
+        MagazineCache::new_sized(self.alloc.clone(), self.stack_size).expect("failed to allocate new MagazineCache")
     }
 }
 
 impl<CA: CoarseAllocator> MagazineCache<CA> {
-    pub fn new_sized(mut alloc: SlagAllocator<CA>, magazine_size: usize) -> Self {
+    pub fn new_sized(mut alloc: SlagAllocator<CA>, magazine_size: usize) -> Option<Self> {
         alloc_assert!(magazine_size > 0);
-        let s = PtrStack::new(magazine_size);
-        let iter = unsafe { alloc.refresh() };
-        let buckets = Coalescer::new(magazine_size * 2);
-        MagazineCache {
+        let s = PtrStack::new(magazine_size)?;
+        let iter = unsafe { alloc.refresh()? };
+        let buckets = Coalescer::new(magazine_size * 2)?;
+        Some(MagazineCache {
             stack_size: magazine_size,
             s: s,
             iter: iter,
             alloc: alloc,
             coalescer: buckets,
-        }
+        })
     }
 
-    pub fn new(alloc: SlagAllocator<CA>) -> Self {
+    pub fn new(alloc: SlagAllocator<CA>) -> Option<Self> {
         use std::cmp;
         let object_size = unsafe { (*alloc.m).object_size };
         const CUTOFF: usize = 32 << 10;
@@ -183,11 +185,11 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
     ///
     /// This amounts to getting memory from the current alloc iterator. If the iterator is
     /// exhausted, a new `Slag` is acquired.
-    unsafe fn slag_alloc(&mut self) -> *mut u8 {
+    unsafe fn slag_alloc(&mut self) -> Option<*mut u8> {
         for _ in 0..2 {
             match self.iter.next() {
-                Some(ptr) => return ptr,
-                None => self.iter = self.alloc.refresh(),
+                Some(ptr) => return Some(ptr),
+                None => self.iter = self.alloc.refresh()?,
             }
         }
         alloc_panic!(
@@ -225,10 +227,10 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
 }
 
 impl<CA: CoarseAllocator> Frontend for MagazineCache<CA> {
-    unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe fn alloc(&mut self) -> Option<*mut u8> {
         if let Some(ptr) = self.s.pop() {
             trace_event!(cache_alloc);
-            ptr
+            Some(ptr)
         } else {
             trace_event!(slag_alloc);
             self.slag_alloc()
@@ -275,11 +277,11 @@ impl Default for RemoteFreeCell {
 }
 
 impl Coalescer {
-    fn new(size: usize) -> Self {
-        Coalescer(
-            OwnedArray::new(size.next_power_of_two()),
-            PtrStack::new(size),
-        )
+    fn new(size: usize) -> Option<Self> {
+        Some(Coalescer(
+            OwnedArray::new(size.next_power_of_two())?,
+            PtrStack::new(size)?,
+        ))
     }
 
     fn bucket_num(&self, word: usize) -> usize {
@@ -345,11 +347,11 @@ struct PtrStack {
 }
 
 impl PtrStack {
-    fn new(max_objects: usize) -> PtrStack {
-        PtrStack {
-            data: OwnedArray::new(max_objects),
+    fn new(max_objects: usize) -> Option<PtrStack> {
+        Some(PtrStack {
+            data: OwnedArray::new(max_objects)?,
             top: 0,
-        }
+        })
     }
 
     unsafe fn push(&mut self, item: *mut u8) {
@@ -436,15 +438,16 @@ mod magazine {
     }
 
     impl Magazine {
-        unsafe fn new(size: usize) -> *mut Magazine {
-            let page_size = mmap::page_size();
+        unsafe fn new(size: usize) -> Option<*mut Magazine> {
+            let page_size = utils::page_size();
             alloc_debug_assert!(page_size.is_power_of_two());
             let bytes = mem::size_of::<Magazine>() + mem::size_of::<*mut u8>() * size;
             let rem = bytes & (page_size - 1);
             let n_pages = (bytes >> page_size.trailing_zeros()) + cmp::min(1, rem);
             let region_size = n_pages * page_size;
             alloc_debug_assert!(bytes <= region_size);
-            let mem = mmap::map(region_size) as *mut Magazine;
+            let layout = Layout::from_size_align(region_size, page_size).unwrap();
+            let mem = (&*MMAP).alloc(layout).map(|ptr| ptr as *mut Magazine).ok()?;
             ptr::write(
                 mem,
                 Magazine {
@@ -454,12 +457,11 @@ mod magazine {
                     base: mem.offset(1) as *mut u8,
                 },
             );
-            mem
+            Some(mem)
         }
 
-        unsafe fn default() -> *mut Magazine {
-            let res = Magazine::new(3068);
-            res
+        unsafe fn default() -> Option<*mut Magazine> {
+            Magazine::new(3068)
         }
 
         /// Unmap the memory associated with the `Magazine`.
@@ -468,8 +470,9 @@ mod magazine {
         /// nonempty.
         unsafe fn destroy(slf: *mut Magazine) {
             alloc_debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
-            alloc_debug_assert_eq!(slf as usize % mmap::page_size(), 0);
-            mmap::unmap(slf as *mut u8, (*slf).mapped)
+            alloc_debug_assert_eq!(slf as usize % utils::page_size(), 0);
+            let layout = Layout::from_size_align((*slf).mapped, utils::page_size()).unwrap();
+            (&*MMAP).dealloc(slf as *mut u8, layout);
         }
 
         fn push(&mut self, item: *mut u8) -> bool {
@@ -582,15 +585,15 @@ mod magazine {
 
         /// Allocate a full `Magazine` from the `Depot`, constructing a new one if none are
         /// present.
-        fn alloc_empty(&mut self) -> *mut Magazine {
-            let res = self.empty.pop_mut().unwrap_or_else(|| {
+        fn alloc_empty(&mut self) -> Option<*mut Magazine> {
+            let res = self.empty.pop_mut().or_else(|| {
                 unsafe {
                     Magazine::default()
                 }
             });
-            unsafe {
-                alloc_debug_assert_eq!((*res).top, 0)
-            };
+            if let Some(res) = res {
+                unsafe { alloc_debug_assert_eq!((*res).top, 0) };
+            }
             res
         }
 
@@ -611,7 +614,7 @@ mod magazine {
         /// If the `Depot` is at capacity, `None` is returned and `m` is not freed.
         fn swap_full(&mut self, m: *mut Magazine) -> Option<*mut Magazine> {
             if self.free_full(m) {
-                Some(self.alloc_empty())
+                self.alloc_empty()
             } else {
                 None
             }
@@ -631,32 +634,32 @@ mod magazine {
 
     impl<FE: Frontend> LazyInitializable for DepotCache<FE> {
         type Params = (FE::Params, Depot);
-        fn init(&(ref backing, ref depot): &(FE::Params, Depot)) -> DepotCache<FE> {
-            Self::new(FE::init(backing.clone()), depot.clone())
+        fn init(&(ref backing, ref depot): &(FE::Params, Depot)) -> Option<DepotCache<FE>> {
+            Self::new(FE::init(backing.clone())?, depot.clone())
         }
     }
 
     impl<FE: Frontend> DepotCache<FE> {
-        fn new(backing: FE, mut depot: Depot) -> DepotCache<FE> {
-            let m1 = depot.alloc_full().unwrap_or_else(|| depot.alloc_empty());
-            let m2 = depot.alloc_empty();
-            DepotCache {
+        fn new(backing: FE, mut depot: Depot) -> Option<DepotCache<FE>> {
+            let m1 = depot.alloc_full().or_else(|| depot.alloc_empty())?;
+            let m2 = depot.alloc_empty()?;
+            Some(DepotCache {
                 backing: backing,
                 depot: depot,
                 m1: m1,
                 m2: m2,
-            }
+            })
         }
     }
 
     impl<FE: Frontend> Frontend for DepotCache<FE> {
-        unsafe fn alloc(&mut self) -> *mut u8 {
+        unsafe fn alloc(&mut self) -> Option<*mut u8> {
             if let Some(p) = (*self.m1).pop() {
-                return p;
+                return Some(p);
             }
             mem::swap(&mut self.m1, &mut self.m2);
             if let Some(p) = (*self.m1).pop() {
-                return p;
+                return Some(p);
             }
 
             if let Some(m) = self.depot.swap_empty(self.m1) {
@@ -664,11 +667,11 @@ mod magazine {
             } else {
                 let cap = (*self.m1).cap;
                 for _ in 0..cap {
-                    let _r = (*self.m1).push(self.backing.alloc());
+                    let _r = (*self.m1).push(self.backing.alloc()?);
                     alloc_debug_assert!(_r);
                 }
             }
-            (*self.m1).pop().expect("new full magazine is empty")
+            Some((*self.m1).pop().expect("new full magazine is empty"))
         }
 
         unsafe fn free(&mut self, item: *mut u8) {
@@ -700,7 +703,7 @@ mod magazine {
         #[test]
         fn magazine_stack() {
             unsafe {
-                let m = Magazine::default();
+                let m = Magazine::default().unwrap();
                 let m_ref = &mut*m;
                 let goal = m_ref.cap;
                 // start at 1 because we debug_assert that the pointer is non-null
@@ -770,7 +773,7 @@ impl<T> AllocBuilder<T> {
     }
 
     /// Build a `LocalAllocator<T>` from the current configuration.
-    pub fn build_local(&self) -> LocalAllocator<T> {
+    pub fn build_local(&self) -> Option<LocalAllocator<T>> {
         LocalAllocator::new_standalone(
             self.cutoff_factor,
             self.page_size,
@@ -781,7 +784,7 @@ impl<T> AllocBuilder<T> {
     }
 
     /// Build a `MagazineAllocator<T>` from the current configuration.
-    pub fn build_magazine(&self) -> MagazineAllocator<T> {
+    pub fn build_magazine(&self) -> Option<MagazineAllocator<T>> {
         MagazineAllocator::new_standalone(
             self.cutoff_factor,
             self.page_size,
@@ -807,15 +810,15 @@ macro_rules! typed_wrapper {
                                   target_overhead: usize,
                                   eager_decommit: usize,
                                   max_objects: usize)
-                -> Self {
-                    let pa = PageAlloc::new(page_size, target_overhead, 8, AllocType::SmallSlag);
+                -> Option<Self> {
+                    let pa = PageAlloc::new(page_size, target_overhead, 8, AllocType::SmallSlag)?;
                     let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
-                                                  cutoff_factor, eager_decommit, pa);
-                    $name($wrapped::new(slag), PhantomData)
+                                                  cutoff_factor, eager_decommit, pa)?;
+                    Some($name($wrapped::new(slag)?, PhantomData))
                 }
 
-            pub unsafe fn alloc(&mut self) -> *mut T {
-                self.0.alloc() as *mut T
+            pub unsafe fn alloc(&mut self) -> Option<*mut T> {
+                self.0.alloc().map(|ptr| ptr as *mut T)
             }
 
             pub unsafe fn free(&mut self, item: *mut T) {
@@ -842,9 +845,10 @@ mod tests {
         let _ = env_logger::init();
         let mut oa = AllocBuilder::<usize>::default()
             .page_size(4096)
-            .build_local();
+            .build_local()
+            .unwrap();
         unsafe {
-            let item = oa.alloc();
+            let item = oa.alloc().unwrap();
             write_volatile(item, 10);
             oa.free(item);
         }
@@ -868,12 +872,12 @@ mod tests {
     fn obj_alloc_many_pages_single_threaded<T: 'static>() {
         let _ = env_logger::init();
         const N_ITEMS: usize = 4096 * 20;
-        let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local();
+        let mut oa = AllocBuilder::<T>::default().page_size(4096).build_local().unwrap();
         alloc_assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         // stay in a local cache
         for _ in 0..N_ITEMS {
             unsafe {
-                let item = oa.alloc();
+                let item = oa.alloc().unwrap();
                 write_volatile(item as *mut usize, 10);
                 oa.free(item);
             }
@@ -883,7 +887,7 @@ mod tests {
         let mut h = HashSet::new();
         for i in 0..N_ITEMS {
             unsafe {
-                let item = oa.alloc();
+                let item = oa.alloc().unwrap();
                 write_volatile(item as *mut usize, i + 1);
                 v.push(item);
                 let item_num = item as usize;
@@ -921,7 +925,8 @@ mod tests {
         // TODO make macros for these tests and test both MagazineAllocator and LocalAllocator
         let oa = AllocBuilder::<T>::default()
             .page_size(4096)
-            .build_magazine();
+            .build_magazine()
+            .unwrap();
         // stay in a local cache
         alloc_assert!(mem::size_of::<T>() >= mem::size_of::<usize>());
         let mut threads = Vec::new();
@@ -930,7 +935,7 @@ mod tests {
             threads.push(thread::spawn(move || {
                 for _ in 0..N_ITEMS {
                     unsafe {
-                        let item = my_alloc.alloc();
+                        let item = my_alloc.alloc().unwrap();
                         write_volatile(item as *mut usize, 10);
                         my_alloc.free(item);
                     }
@@ -940,7 +945,7 @@ mod tests {
                 let mut h = HashSet::new();
                 for i in 0..N_ITEMS {
                     unsafe {
-                        let item = my_alloc.alloc();
+                        let item = my_alloc.alloc().unwrap();
                         write_volatile(item as *mut usize, i);
                         v.push(item);
                         let item_num = item as usize;

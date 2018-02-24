@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -6,17 +6,21 @@
 // copied, modified, or distributed except according to those terms.
 
 //! Low-level data-structures for getting more memory from the system.
+extern crate alloc;
+extern crate mmap_alloc;
+use alloc::allocator::{Alloc, Layout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::mem;
-use super::utils::{likely, mmap};
+use super::utils::{likely, MMAP};
 
 /// A generator of chunks of memory providing an `sbrk`-like interface.
 pub trait MemorySource
 where
     Self: Clone,
 {
-    fn new(page_size: usize) -> Self;
+    /// Create a new `MemorySource` or return `None` if allocation failed.
+    fn new(page_size: usize) -> Option<Self>;
     /// The smallest unit of memory that can be `carve`d.
     fn page_size(&self) -> usize;
     /// Return `npages` fresh pages from the `Creek`. Each of these pages is aligned to
@@ -44,8 +48,9 @@ pub struct MmapSource {
 unsafe impl Send for MmapSource {}
 
 impl MemorySource for MmapSource {
-    fn new(page_size: usize) -> MmapSource {
-        MmapSource { page_size: page_size.next_power_of_two() }
+    fn new(page_size: usize) -> Option<MmapSource> {
+        alloc_assert!(page_size.is_power_of_two());
+        Some(MmapSource { page_size })
     }
     fn page_size(&self) -> usize {
         self.page_size
@@ -53,57 +58,27 @@ impl MemorySource for MmapSource {
 
     fn carve(&self, npages: usize) -> Option<*mut u8> {
         trace!("carve({:?})", npages);
-        // faster mod for power-of-2 sizes.
-        fn mod_size(x: usize, n: usize) -> usize {
-            x & (n - 1)
-        }
 
-        // There is a faster path available when our local page size is less than or equal to the
-        // system one.
-        let system_page_size = mmap::page_size();
-        if self.page_size <= system_page_size {
-            return mmap::fallible_map(npages * self.page_size);
-        }
-        // We want to return pages aligned to our page size, which is larger than the
-        // system page size. As a result, we want to allocate an extra page to guarantee a slice of
-        // the memory that is aligned to the larger page size.
-        let target_size = npages * self.page_size;
-        let req_size = target_size + self.page_size;
-        mmap::fallible_map(req_size).and_then(|mem| {
-            let mem_num = mem as usize;
-
-            alloc_debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
-
-            // region at the end that is not needed.
-            let rem1 = mod_size(mem_num, self.page_size);
-            // region at the beginning that is not needed.
-            let rem2 = self.page_size - rem1;
-            unsafe {
-                let res = mem.offset(rem2 as isize);
-                alloc_debug_assert_eq!(mod_size(res as usize, self.page_size), 0);
-                if rem1 > 0 {
-                    mmap::unmap(res.offset(target_size as isize), rem1);
-                }
-                if rem2 > 0 {
-                    mmap::unmap(mem, rem2);
-                }
-                Some(res)
-            }
-        })
+        // Even if self.page_size is larger than the system page size, that's OK
+        // because we're using mmap-alloc's large-align feature, which allows
+        // allocations to be aligned to any alignment, even larger than the page size.
+        unsafe { (&*MMAP).alloc(Layout::from_size_align(npages * self.page_size, self.page_size).unwrap()).ok() }
     }
 }
 
-/// Base address and size of a memory map.
+/// Base address and layout of a memory map.
 ///
-/// This could also just be a `*mut [u8]`, but having two fields is more explicit. We need a new
-/// type because the `Drop` implementation calls `unmap`.
+/// We need a new type because the `Drop` implementation calls `unmap`.
 #[derive(Debug)]
-struct MapAddr(*mut u8, usize);
+struct MapAddr{
+    base: *mut u8,
+    layout: Layout,
+}
 
 impl Drop for MapAddr {
     fn drop(&mut self) {
         unsafe {
-            mmap::unmap(self.0, self.1);
+            (&*MMAP).dealloc(self.base, self.layout.clone());
         }
     }
 }
@@ -160,7 +135,7 @@ impl MemorySource for Creek {
                 .as_ref()
                 .unwrap()
                 .fetch_add(npages, Ordering::Relaxed);
-            if likely((new_bump + npages) * self.page_size < self.map_info.1) {
+            if likely((new_bump + npages) * self.page_size < self.map_info.layout.size()) {
                 Some(self.base.offset((new_bump * self.page_size) as isize))
             } else {
                 None
@@ -175,23 +150,28 @@ impl MemorySource for Creek {
     /// Page size and heap size should be powers of two. The allocator may want to reserve some
     /// pages for itself (or for alignment reasons), as a result it is a good idea to have
     /// heap_size be much larger than page_size.
-    fn new(page_size: usize) -> Self {
-        use self::mmap::fallible_map;
-        let get_heap = || {
-            let mut heap_size: usize = 2 << 40;
-            while heap_size > (1 << 30) {
-                if let Some(heap) = fallible_map(heap_size) {
-                    return (heap, heap_size);
-                }
-                heap_size /= 2;
-            }
-            alloc_panic!("unable to map heap")
-        };
+    fn new(page_size: usize) -> Option<Self> {
         // lots of stuff breaks if this isn't true
         alloc_assert!(page_size.is_power_of_two());
         alloc_assert!(page_size > mem::size_of::<usize>());
+
         // first, let's grab some memory;
-        let (orig_base, heap_size) = get_heap();
+        let (orig_base, heap_size) = {
+            let mut heap_size: usize = 2 << 40;
+            loop {
+                if heap_size <= (1 << 30) {
+                    return None;
+                }
+                let layout = Layout::from_size_align(heap_size, page_size).unwrap();
+                if let Ok(heap) = unsafe { (&*MMAP).alloc(layout) } {
+                    break (heap, heap_size);
+                }
+                heap_size /= 2;
+            }
+        };
+
+        
+        // let (orig_base, heap_size) = get_heap();
         info!("created heap of size {}", heap_size);
         let orig_addr = orig_base as usize;
         let (slush_addr, real_addr) = {
@@ -213,12 +193,12 @@ impl MemorySource for Creek {
             };
             (base as *mut u8, (base + page_size) as *mut u8)
         };
-        Creek {
+        Some(Creek {
             page_size: page_size,
-            map_info: Arc::new(MapAddr(orig_base, heap_size)),
+            map_info: Arc::new(MapAddr{base: orig_base, layout: Layout::from_size_align(heap_size, page_size).unwrap()}),
             base: real_addr,
             bump: AtomicPtr::new(slush_addr as *mut AtomicUsize),
-        }
+        })
     }
 }
 
@@ -227,7 +207,7 @@ impl MemoryBlock for Creek {
         check_bump!(self);
         let it_num = it as usize;
         let base_num = self.base as usize;
-        it_num >= base_num && it_num < base_num + self.map_info.1
+        it_num >= base_num && it_num < base_num + self.map_info.layout.size()
     }
 }
 

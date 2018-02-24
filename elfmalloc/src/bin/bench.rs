@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -101,11 +101,12 @@ unsafe impl<T> Send for ElfClone<T> {}
 impl<T: 'static> AllocLike for ElfClone<T> {
     type Item = T;
     fn create() -> Self {
-        ElfClone(DynamicAllocator::new(), marker::PhantomData)
+        ElfClone(DynamicAllocator::new().unwrap(), marker::PhantomData)
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        self.0.alloc(mem::size_of::<T>()) as *mut T
+        // TODO: Do something other than unwrap?
+        self.0.alloc(mem::size_of::<T>()).unwrap() as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
