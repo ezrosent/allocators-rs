@@ -1,4 +1,4 @@
-<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the
+<!-- Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 README.md file at the top-level directory of this repository.
 
 Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -34,7 +34,8 @@ More detailed information on each crate can be found in the crate's `README.md`.
 
 | Crate | Description |
 |-------|-------------|
-| [`alloc-fmt`](https://github.com/ezrosent/allocators-rs/blob/master/alloc-fmt) | Allocation-safe formatting and debugging macros (unreleased) |
+| [`alloc-fmt`](https://github.com/ezrosent/allocators-rs/blob/master/alloc-fmt) | Allocation-safe formatting and debugging macros |
+| [`alloc-tls`](https://github.com/ezrosent/allocators-rs/blob/master/alloc-tls) | Allocation-safe thread-local storage |
 | [`bagpipe`](https://github.com/ezrosent/allocators-rs/blob/master/bagpipe) | Fast, concurrent data structures including queues and a weakly-ordered bag data structure ([design](https://github.com/ezrosent/allocators-rs/blob/master/info/bagpipes.md)) |
 | [`malloc-bind`](https://github.com/ezrosent/allocators-rs/blob/master/malloc-bind) | Bindings to allow a Rust `Alloc` to implement the C `malloc` API |
 | [`object-alloc`](https://github.com/ezrosent/allocators-rs/blob/master/object-alloc) | Traits representing type-specific variants of the `Alloc` trait |
