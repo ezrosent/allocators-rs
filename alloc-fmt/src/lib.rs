@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -148,7 +148,7 @@ pub static IS_PANICKING: AtomicBool = ATOMIC_BOOL_INIT;
 
 #[macro_export]
 macro_rules! alloc_panic {
-    () => (panic!("explicit panic"));
+    () => (alloc_panic!("explicit panic"));
     ($msg:expr) => ({
         // in case we're called from inside an unsafe block
         #[allow(unused_unsafe)]
