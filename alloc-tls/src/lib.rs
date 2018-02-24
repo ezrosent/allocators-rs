@@ -424,4 +424,16 @@ mod tests {
             });
         })
     }
+
+    #[bench]
+    fn bench_tls_fast_with(b: &mut Bencher) {
+        alloc_thread_local!{ static FOO: UnsafeCell<usize> = UnsafeCell::new(0); }
+        b.iter(|| unsafe {
+            alloc_tls_fast_with!(FOO, foo, {
+                let inner = foo.get();
+                (*inner) += 1;
+                black_box(*inner);
+            });
+        })
+    }
 }
