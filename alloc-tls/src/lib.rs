@@ -144,7 +144,8 @@ pub struct TLSSlot<T> {
     // This field is a pointer to the T in slot (in state Initialized) or NULL (in any other
     // state). This allows us to make the fast path a single pointer comparison, which is faster in
     // practice than matching on a four-variant enum.
-    #[doc(hidden)] pub ptr: UnsafeCell<*const T>,
+    #[doc(hidden)]
+    pub ptr: UnsafeCell<*const T>,
     // The actual value itself.
     slot: UnsafeCell<TLSValue<T>>,
     init: fn() -> T,
@@ -387,6 +388,18 @@ mod tests {
         alloc_thread_local!{ static FOO: UnsafeCell<usize> = UnsafeCell::new(0); }
         b.iter(|| unsafe {
             FOO.with(|foo| {
+                let inner = foo.get();
+                (*inner) += 1;
+                black_box(*inner);
+            });
+        })
+    }
+
+    #[bench]
+    fn bench_tls_fast_with(b: &mut Bencher) {
+        alloc_thread_local!{ static FOO: UnsafeCell<usize> = UnsafeCell::new(0); }
+        b.iter(|| unsafe {
+            alloc_tls_fast_with!(FOO, foo, {
                 let inner = foo.get();
                 (*inner) += 1;
                 black_box(*inner);
