@@ -7,7 +7,7 @@
 
 //! Allocator-safe thread-local storage.
 //!
-//! The `tls` module implements thread-local storage that, unlike the standard library's
+//! `alloc-tls` implements thread-local storage that, unlike the standard library's
 //! implementation, is safe for use in a global allocator.
 
 #![feature(allow_internal_unsafe)]
@@ -37,8 +37,12 @@ use std::ptr;
 ///
 /// For example,
 ///
-/// ```rust,ignore
+/// ```rust
+/// # #![feature(thread_local)]
+/// # #[macro_use] extern crate alloc_tls;
+/// # fn main() {
 /// alloc_thread_local!{ static FOO: usize = 0; }
+/// # }
 /// ```
 ///
 /// Thread-local variables follow a distinct lifecycle, and can be in one of four states:
@@ -54,6 +58,9 @@ use std::ptr;
 /// *uninitialized* or *initialized* states, the variable can be accessed. Otherwise, it cannot,
 /// and it is the caller's responsibility to figure out a workaround for its task that does not
 /// involve accessing the thread-local variable.
+///
+/// Note that this macro uses the `#[thread_local]` attribute; in order to use it, you must put
+/// `#![feature(thread_local)]` at the root of your crate.
 #[macro_export]
 #[allow_internal_unsafe]
 macro_rules! alloc_thread_local {
@@ -114,9 +121,32 @@ pub use std::intrinsics::likely;
 /// found that that method is not always optimized as much as it could be, and using a macro is
 /// friendlier to the optimizer.
 ///
+/// `$slot` is the `TLSSlot` to be accessed. `$blk` is a block of code that will be executed,
+/// and the TLS value will be bound to a variable named `$name` in that block.
+///
+/// Note that this macro uses core intrinsics; in order to use it, you must put
+/// `#![feature(core_intrinsics)]` at the root of your crate.
+///
 /// # Safety
+///
 /// `alloc_tls_fast_with` must be called from an `unsafe` block. It is unsafe because if `f`
 /// panics, it causes undefined behavior.
+///
+/// # Example
+///
+/// ```rust
+/// # #![feature(core_intrinsics)]
+/// # #![feature(thread_local)]
+/// # #[macro_use] extern crate alloc_tls;
+/// # fn main() {
+/// alloc_thread_local!{ static FOO: usize = 0; }
+/// unsafe {
+///     alloc_tls_fast_with!(FOO, foo, {
+///         println!("foo: {}", foo);
+///     });
+/// }
+/// # }
+/// ```
 #[macro_export]
 macro_rules! alloc_tls_fast_with {
     ($slot:expr, $name:ident, $blk:block) => {
@@ -144,7 +174,8 @@ pub struct TLSSlot<T> {
     // This field is a pointer to the T in slot (in state Initialized) or NULL (in any other
     // state). This allows us to make the fast path a single pointer comparison, which is faster in
     // practice than matching on a four-variant enum.
-    #[doc(hidden)] pub ptr: UnsafeCell<*const T>,
+    #[doc(hidden)]
+    pub ptr: UnsafeCell<*const T>,
     // The actual value itself.
     slot: UnsafeCell<TLSValue<T>>,
     init: fn() -> T,
