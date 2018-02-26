@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
 # Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -43,7 +43,9 @@ function check_comments_line {
     else
       echo "${FIRST_YEAR}-${LAST_YEAR}"
     fi)
-    COMMENT="$2 Copyright $YEAR"
+    # Including " the authors." is important, or else "Copyright 2017-2018 the authors."
+    # would be spuriously matched if the correct $YEAR was 2017.
+    COMMENT="$2 Copyright $YEAR the authors."
 
     head -n "$3" "$file" | tail -n 1 | grep "$COMMENT" >/dev/null
     if [ $? -ne 0 ]; then
