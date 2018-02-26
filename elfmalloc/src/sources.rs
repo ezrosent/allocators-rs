@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -16,7 +16,7 @@ pub trait MemorySource
 where
     Self: Clone,
 {
-    fn new(page_size: usize) -> Self;
+    fn new(page_size: usize) -> Option<Self>;
     /// The smallest unit of memory that can be `carve`d.
     fn page_size(&self) -> usize;
     /// Return `npages` fresh pages from the `Creek`. Each of these pages is aligned to
@@ -44,8 +44,8 @@ pub struct MmapSource {
 unsafe impl Send for MmapSource {}
 
 impl MemorySource for MmapSource {
-    fn new(page_size: usize) -> MmapSource {
-        MmapSource { page_size: page_size.next_power_of_two() }
+    fn new(page_size: usize) -> Option<MmapSource> {
+        Some(MmapSource { page_size: page_size.next_power_of_two() })
     }
     fn page_size(&self) -> usize {
         self.page_size
@@ -62,14 +62,14 @@ impl MemorySource for MmapSource {
         // system one.
         let system_page_size = mmap::page_size();
         if self.page_size <= system_page_size {
-            return mmap::fallible_map(npages * self.page_size);
+            return mmap::map(npages * self.page_size);
         }
         // We want to return pages aligned to our page size, which is larger than the
         // system page size. As a result, we want to allocate an extra page to guarantee a slice of
         // the memory that is aligned to the larger page size.
         let target_size = npages * self.page_size;
         let req_size = target_size + self.page_size;
-        mmap::fallible_map(req_size).and_then(|mem| {
+        mmap::map(req_size).and_then(|mem| {
             let mem_num = mem as usize;
 
             alloc_debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
@@ -175,23 +175,22 @@ impl MemorySource for Creek {
     /// Page size and heap size should be powers of two. The allocator may want to reserve some
     /// pages for itself (or for alignment reasons), as a result it is a good idea to have
     /// heap_size be much larger than page_size.
-    fn new(page_size: usize) -> Self {
-        use self::mmap::fallible_map;
-        let get_heap = || {
-            let mut heap_size: usize = 2 << 40;
-            while heap_size > (1 << 30) {
-                if let Some(heap) = fallible_map(heap_size) {
-                    return (heap, heap_size);
-                }
-                heap_size /= 2;
-            }
-            alloc_panic!("unable to map heap")
-        };
+    fn new(page_size: usize) -> Option<Self> {
         // lots of stuff breaks if this isn't true
         alloc_assert!(page_size.is_power_of_two());
         alloc_assert!(page_size > mem::size_of::<usize>());
         // first, let's grab some memory;
-        let (orig_base, heap_size) = get_heap();
+        let (orig_base, heap_size) = {
+            let mut heap_size: usize = 2 << 40;
+            loop {
+                if let Some(heap) = self::mmap::map(heap_size) {
+                    break (heap, heap_size);
+                } else if heap_size <= (1 << 30) {
+                    return None;
+                }
+                heap_size /= 2;
+            }
+        };
         info!("created heap of size {}", heap_size);
         let orig_addr = orig_base as usize;
         let (slush_addr, real_addr) = {
@@ -213,12 +212,12 @@ impl MemorySource for Creek {
             };
             (base as *mut u8, (base + page_size) as *mut u8)
         };
-        Creek {
+        Some(Creek {
             page_size: page_size,
             map_info: Arc::new(MapAddr(orig_base, heap_size)),
             base: real_addr,
             bump: AtomicPtr::new(slush_addr as *mut AtomicUsize),
-        }
+        })
     }
 }
 
