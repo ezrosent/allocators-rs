@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -25,6 +25,8 @@ use super::general::global;
 use std::mem;
 #[cfg(feature = "c-api")]
 use std::intrinsics::unlikely;
+#[cfg(feature = "c-api")]
+use std::ptr;
 
 #[cfg(feature = "c-api")]
 use self::libc::{size_t, c_void};
@@ -39,10 +41,10 @@ unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
         // two up to 1MiB are aligned to their size. Past that size, only page-alignment is
         // guaranteed.
         if l.size().is_power_of_two() || l.align() <= mem::size_of::<usize>() {
-            Ok(global::alloc(l.size()))
+            global::alloc(l.size())
         } else {
-            Ok(global::alloc(l.size().next_power_of_two()))
-        }
+            global::alloc(l.size().next_power_of_two())
+        }.ok_or(AllocErr::Exhausted { request: l })
     }
 
     unsafe fn dealloc(&mut self, p: *mut u8, _l: Layout) {
@@ -50,14 +52,14 @@ unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
     }
 
     unsafe fn realloc(&mut self, p: *mut u8, _l1: Layout, l2: Layout) -> Result<*mut u8, AllocErr> {
-        Ok(global::aligned_realloc(p, l2.size(), l2.align()))
+        global::aligned_realloc(p, l2.size(), l2.align()).ok_or(AllocErr::Exhausted { request: l2 })
     }
 }
 
 #[cfg(feature = "c-api")]
 unsafe impl Malloc for ElfMallocGlobal {
     unsafe fn c_malloc(&self, size: size_t) -> *mut c_void {
-        let p = global::alloc(size as usize) as *mut c_void;
+        let p = global::alloc(size as usize).unwrap_or(ptr::null_mut()) as *mut c_void;
         alloc_debug_assert_eq!((p as usize) % MIN_ALIGN,
                          0,
                          "object does not have the required alignment of {}: {:?}",
@@ -82,7 +84,7 @@ unsafe impl Malloc for ElfMallocGlobal {
                          "object does not have the required alignment of {}: {:?}",
                          MIN_ALIGN,
                          p);
-        global::realloc(p as *mut u8, new_size as usize) as *mut c_void
+        global::realloc(p as *mut u8, new_size as usize).unwrap_or(ptr::null_mut()) as *mut c_void
     }
 }
 
