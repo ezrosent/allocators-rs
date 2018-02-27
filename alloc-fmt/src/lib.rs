@@ -38,17 +38,16 @@ extern crate backtrace;
 extern crate libc;
 extern crate spin;
 
-use core::fmt::*;
+use core::fmt::{Arguments, Result as FmtResult, Write};
 use core::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT};
+use core::sync::atomic::Ordering::SeqCst;
 
 // Import items that macros need to reference. They will reference them as $crate::foo instead of
 // core::foo since core isn't guaranteed to be imported in the user's scope.
 #[doc(hidden)]
 pub use core::mem::drop;
 #[doc(hidden)]
-pub use core::fmt::Write;
-#[doc(hidden)]
-pub use core::sync::atomic::Ordering::SeqCst;
+pub use core::fmt::write;
 
 #[doc(hidden)]
 pub static STDERR_MTX: spin::Mutex<()> = spin::Mutex::new(());
@@ -65,7 +64,7 @@ pub struct FDWriter(pub libc::c_int);
 
 impl Write for FDWriter {
     #[inline]
-    fn write_str(&mut self, s: &str) -> Result {
+    fn write_str(&mut self, s: &str) -> FmtResult {
         let mut buf = s.as_bytes();
         while !buf.is_empty() {
             unsafe {
@@ -94,15 +93,14 @@ pub unsafe fn abort() -> ! {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! print_internal {
-    ($file:expr, $mtx:expr, $($arg:tt)*) => {
+    ($file:expr, $mtx:expr, $fmt:expr) => {
         // in case we're called from inside an unsafe block
         #[allow(unused_unsafe)]
         unsafe {
             let guard = $mtx.lock();
 
             let mut fd = $crate::FDWriter($file);
-            use $crate::Write;
-            let _ = write!(&mut fd, $($arg)*).map_err(|_| {
+            let _ = $crate::write(&mut fd, $fmt).map_err(|_| {
                 $crate::abort();
             });
 
@@ -116,12 +114,12 @@ macro_rules! print_internal {
 
 #[macro_export]
 macro_rules! alloc_print {
-    ($($arg:tt)*) => (print_internal!($crate::STDOUT, $crate::STDOUT_MTX, $($arg)*))
+    ($($arg:tt)*) => (print_internal!($crate::STDOUT, $crate::STDOUT_MTX, format_args!($($arg)*)))
 }
 
 #[macro_export]
 macro_rules! alloc_eprint {
-    ($($arg:tt)*) => (print_internal!($crate::STDERR, $crate::STDERR_MTX, $($arg)*))
+    ($($arg:tt)*) => (print_internal!($crate::STDERR, $crate::STDERR_MTX, format_args!($($arg)*)))
 }
 
 #[macro_export]
@@ -150,48 +148,29 @@ pub static IS_PANICKING: AtomicBool = ATOMIC_BOOL_INIT;
 macro_rules! alloc_panic {
     () => (alloc_panic!("explicit panic"));
     ($msg:expr) => ({
-        // in case we're called from inside an unsafe block
-        #[allow(unused_unsafe)]
-        unsafe {
-            alloc_eprintln!("thread panicked at '{}', {}:{}:{}", $msg, file!(), line!(), column!());
-
-            if $crate::IS_PANICKING.compare_and_swap(false, true, $crate::SeqCst) {
-                // compare_and_swap returns the old value; true means somebody's already panicking.
-                alloc_eprintln!("thread panicked while panicking");
-                $crate::abort();
-            }
-
-            $crate::print_backtrace_and_abort();
-        }
+        $crate::panic(&(format_args!($msg), file!(), line!(), column!()))
     });
     ($fmt:expr, $($arg:tt)*) => ({
-        // in case we're called from inside an unsafe block
-        #[allow(unused_unsafe)]
-        unsafe {
-            // If we wanted to do this in a single line, we'd have two options:
-            //   eprintln!(concat!("thread panicked at '", $fmt, "', {}:{}:{}"), $($arg)*, file!(), line!(), column!());
-            //   eprintln!(concat!("thread panicked at '", $fmt, "', {}:{}:{}"), $($arg)* file!(), line!(), column!());
-            // (the latter without a comma after $($arg)*). The first one breaks on invocations
-            // like:
-            //   alloc_panic!(
-            //       "bar: {}",
-            //       baz,
-            //   );
-            // While the second one breaks on invocations like:
-            //   alloc_panic!("bar: {}", baz);
-            // Thus, we just do it this (slightly less efficient) way.
-            alloc_eprint!(concat!("thread panicked at '", $fmt, "'"), $($arg)*);
-            alloc_eprintln!(", {}:{}:{}", file!(), line!(), column!());
-
-            if $crate::IS_PANICKING.compare_and_swap(false, true, $crate::SeqCst) {
-                // compare_and_swap returns the old value; true means somebody's already panicking.
-                alloc_eprintln!("thread panicked while panicking");
-                $crate::abort();
-            }
-
-            $crate::print_backtrace_and_abort();
-        }
+        $crate::panic(&(format_args!($fmt, $($arg)*), file!(), line!(), column!()))
     })
+}
+
+#[doc(hidden)]
+#[inline(never)]
+#[cold]
+pub fn panic(fmt_file_line_col: &(Arguments, &'static str, u32, u32)) -> ! {
+    let (fmt, file, line, col) = *fmt_file_line_col;
+    alloc_eprint!("thread panicked at '");
+    print_internal!(STDERR, STDERR_MTX, fmt);
+    alloc_eprint!("', {}:{}:{}", file, line, col);
+    unsafe {
+        if IS_PANICKING.compare_and_swap(false, true, SeqCst) {
+            // compare_and_swap returns the old value; true means somebody's already panicking.
+            alloc_eprintln!("thread panicked while panicking");
+            core::intrinsics::abort();
+        }
+        print_backtrace_and_abort()
+    }
 }
 
 #[macro_export]
@@ -296,6 +275,81 @@ macro_rules! alloc_debug_assert_ne {
     }
 }
 
+/// Types that can be unwrapped in an allocation-safe manner.
+///
+/// `AllocUnwrap` provides the `alloc_unwrap` and `alloc_expect` methods, which are allocation-safe
+/// equivalents of the `unwrap` and `expect` methods on `Option` and `Result`. `AllocUnwrap` is
+/// implemented for `Option` and `Result`.
+///
+/// # Examples
+///
+/// ```rust
+/// use alloc_fmt::AllocUnwrap;
+/// println!("{}", Some(1).alloc_unwrap());
+/// ```
+pub trait AllocUnwrap {
+    type Item;
+    fn alloc_unwrap(self) -> Self::Item;
+    fn alloc_expect(self, msg: &str) -> Self::Item;
+}
+
+// The implementations for Option and Result are adapted from the Rust standard library.
+impl<T> AllocUnwrap for Option<T> {
+    type Item = T;
+
+    #[inline]
+    fn alloc_unwrap(self) -> T {
+        match self {
+            Some(val) => val,
+            None => alloc_panic!("called `Option::alloc_unwrap()` on a `None` value"),
+        }
+    }
+
+    #[inline]
+    fn alloc_expect(self, msg: &str) -> T {
+        // This is a separate function to reduce the code size of alloc_expect itself
+        #[inline(never)]
+        #[cold]
+        fn failed(msg: &str) -> ! {
+            alloc_panic!("{}", msg);
+        }
+
+        match self {
+            Some(val) => val,
+            None => failed(msg),
+        }
+    }
+}
+
+impl<T, E: ::core::fmt::Debug> AllocUnwrap for Result<T, E> {
+    type Item = T;
+
+    #[inline]
+    fn alloc_unwrap(self) -> T {
+        match self {
+            Ok(val) => val,
+            Err(err) => {
+                result_unwrap_failed("called `Result::alloc_unwrap()` on an `Err` value", err)
+            }
+        }
+    }
+
+    #[inline]
+    fn alloc_expect(self, msg: &str) -> T {
+        match self {
+            Ok(val) => val,
+            Err(err) => result_unwrap_failed(msg, err),
+        }
+    }
+}
+
+// This is a separate function to reduce the code size of alloc_{expect,unwrap}
+#[inline(never)]
+#[cold]
+fn result_unwrap_failed<E: ::core::fmt::Debug>(msg: &str, err: E) -> ! {
+    alloc_panic!("{}: {:?}", msg, err)
+}
+
 /// Print a backtrace and then abort the process.
 ///
 /// `print_backtrace_and_abort` should be called after any relevant output has been flushed to
@@ -363,4 +417,13 @@ fn never_called() {
     alloc_debug_assert_eq!(1 + 2, 3);
     alloc_debug_assert_eq!(1 + 2, 3, "foo");
     alloc_debug_assert_eq!(1 + 2, 3, "foo: {}", "bar");
+
+    Some(0).alloc_unwrap();
+    Some(0).alloc_expect("None");
+    let _: usize = None.alloc_unwrap();
+    let _: usize = None.alloc_expect("None");
+    (Ok(0) as Result<_, &'static str>).alloc_unwrap();
+    (Ok(0) as Result<_, &'static str>).alloc_expect("None");
+    (Err("") as Result<usize, _>).alloc_unwrap();
+    (Err("") as Result<usize, _>).alloc_expect("None");
 }

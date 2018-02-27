@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -7,6 +7,7 @@
 
 #[macro_use]
 extern crate alloc_fmt;
+use alloc_fmt::AllocUnwrap;
 
 #[cfg_attr(feature = "cargo-clippy", allow(cyclomatic_complexity))]
 fn main() {
@@ -31,6 +32,23 @@ fn main() {
         "debug_assert_ne" => alloc_debug_assert_ne!(1 + 2, 3),
         "debug_assert_ne_fmt" => alloc_debug_assert_ne!(1 + 2, 3, "foo"),
         "debug_assert_ne_fmt_args" => alloc_debug_assert_ne!(1 + 2, 3, "foo: {}", "bar"),
+        "option_alloc_unwrap_success" => assert_eq!(Some(0).alloc_unwrap(), 0),
+        "option_alloc_unwrap_failure" => assert_eq!((None as Option<usize>).alloc_unwrap(), 0),
+        "option_alloc_expect_success" => assert_eq!(Some(0).alloc_expect("expect failed"), 0),
+        "option_alloc_expect_failure" => {
+            assert_eq!((None as Option<usize>).alloc_expect("expect failed"), 0)
+        }
+        "result_alloc_unwrap_success" => assert_eq!((Ok(0) as Result<_, ()>).alloc_unwrap(), 0),
+        "result_alloc_unwrap_failure" => {
+            assert_eq!((Err("") as Result<usize, _>).alloc_unwrap(), 0)
+        }
+        "result_alloc_expect_success" => {
+            assert_eq!((Ok(0) as Result<_, ()>).alloc_expect("expect failed"), 0)
+        }
+        "result_alloc_expect_failure" => assert_eq!(
+            (Err("") as Result<usize, _>).alloc_expect("expect failed"),
+            0
+        ),
         _ => eprintln!("see source code for available arguments"),
     }
 }
