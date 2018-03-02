@@ -1,4 +1,4 @@
-<!-- Copyright 2017 the authors. See the 'Copyright and license' section of the
+<!-- Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 README.md file at the top-level directory of this repository.
 
 Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   experimental; it is almost always slower than `LocalCache` and
   `MagazineCache`
 - Added `c-api` feature to optimize for the C malloc API
+
+### Changed
+- Changed error reporting so that more OOM errors are bubbled up and result
+  in top-level errors rather than panics
 
 ### Fixed
 - Fixed a bug preventing non-nightly builds from compiling

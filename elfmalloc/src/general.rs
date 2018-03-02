@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -156,8 +156,8 @@ pub(crate) mod global {
     // methods.
     unsafe impl Sync for GlobalAllocProvider {}
     impl GlobalAllocProvider {
-        fn new() -> GlobalAllocProvider {
-            GlobalAllocProvider { inner: Some(ElfMalloc::new()) }
+        fn new() -> Option<GlobalAllocProvider> {
+            Some(GlobalAllocProvider { inner: Some(ElfMalloc::new()?) })
         }
     }
 
@@ -210,14 +210,14 @@ pub(crate) mod global {
     }
 
     pub unsafe fn get_layout(item: *mut u8) -> (usize /* size */, usize /* alignment */) {
-        let m_block = match get_type(item) {
+        let page_size = match get_type(item) {
             // TODO(ezrosent): this duplicates some work..
             AllocType::SmallSlag | AllocType::Large => {
                 with_local_or_clone(|h| {
                     (*h.get())
                         .alloc
                         .small_pages
-                        .backing_memory()
+                        .page_size()
                 })
             }
             AllocType::BigSlag => {
@@ -225,11 +225,11 @@ pub(crate) mod global {
                     (*h.get())
                         .alloc
                         .large_pages
-                        .backing_memory()
+                        .page_size()
                 })
             }
         };
-        super::elfmalloc_get_layout(m_block, item)
+        super::elfmalloc_get_layout(page_size, item)
     }
 
     fn new_handle() -> GlobalAllocator {
@@ -246,7 +246,7 @@ pub(crate) mod global {
     }
 
     lazy_static! {
-        static ref ELF_HEAP: GlobalAllocProvider = GlobalAllocProvider::new();
+        static ref ELF_HEAP: GlobalAllocProvider = GlobalAllocProvider::new().expect("could not create heap");
         static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk>> = {
             // Background thread code: block on a channel waiting for memory reclamation messages
             // (Husks).
@@ -283,16 +283,16 @@ pub(crate) mod global {
         }
     }
 
-    pub unsafe fn alloc(size: usize) -> *mut u8 {
+    pub unsafe fn alloc(size: usize) -> Option<*mut u8> {
         alloc_tls_fast_with!(LOCAL_ELF_HEAP, h, { (*h.get()).alloc.alloc(size) })
             .unwrap_or_else(|| super::large_alloc::alloc(size))
     }
 
-    pub unsafe fn realloc(item: *mut u8, new_size: usize) -> *mut u8 {
+    pub unsafe fn realloc(item: *mut u8, new_size: usize) -> Option<*mut u8> {
         aligned_realloc(item, new_size, mem::size_of::<usize>())
     }
 
-    pub unsafe fn aligned_realloc(item: *mut u8, new_size: usize, new_alignment: usize) -> *mut u8 {
+    pub unsafe fn aligned_realloc(item: *mut u8, new_size: usize, new_alignment: usize) -> Option<*mut u8> {
         with_local_or_clone(|h| (*h.get()).alloc.realloc(item, new_size, new_alignment))
     }
 
@@ -319,8 +319,8 @@ where
     type Key;
 
     /// Create and initialize the map.
-    fn init<F: FnMut(Self::Key) -> T>(start: Self::Key, n_classes: usize, f: F) -> Self {
-        Self::init_conserve(start, n_classes, f).1
+    fn init<F: FnMut(Self::Key) -> T>(start: Self::Key, n_classes: usize, f: F) -> Option<Self> {
+        Some(Self::init_conserve(start, n_classes, f)?.1)
     }
 
     /// Create and initialize the map, handing back ownership of the constructor.
@@ -328,7 +328,7 @@ where
         start: Self::Key,
         n_classes: usize,
         f: F,
-    ) -> (F, Self);
+    ) -> Option<(F, Self)>;
 
     /// Get an unchecked raw pointer to the class corresponding to `k`.
     unsafe fn get_raw(&self, k: Self::Key) -> *mut T;
@@ -384,19 +384,19 @@ struct TieredSizeClasses<T> {
 
 impl<T> AllocMap<T> for TieredSizeClasses<T> {
     type Key = usize;
-    fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, f: F) -> (F, Self) {
+    fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, f: F) -> Option<(F, Self)> {
         let n_small_classes = cmp::min((ELFMALLOC_SMALL_CUTOFF / MULTIPLE) - (start / MULTIPLE), n_classes / 2);
         let n_medium_classes = n_classes - n_small_classes;
-        let (f2, small_classes) = Multiples::init_conserve(start, n_small_classes, f);
+        let (f2, small_classes) = Multiples::init_conserve(start, n_small_classes, f)?;
         // mutability is unnecessary when we don't execute the 'let word_objs = f3(8)' line
         #[allow(unused_mut)]
         let (mut f3, medium_classes) =
-            PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2);
+            PowersOfTwo::init_conserve(small_classes.max_key() + 1, n_medium_classes, f2)?;
         #[cfg(any(not(feature = "c-api"),
                     not(any(target_os = "macos",
                                 all(windows, target_pointer_width = "64")))))]
         let word_objs = f3(8);
-        (
+        Some((
             f3,
             TieredSizeClasses {
                 // When compiling for the C API, the minimum alignment is 16 on Mac and 64-bit Windows.
@@ -407,7 +407,7 @@ impl<T> AllocMap<T> for TieredSizeClasses<T> {
                 small_objs: small_classes,
                 medium_objs: medium_classes,
             },
-        )
+        ))
     }
 
     unsafe fn get_raw(&self, n: usize) -> *mut T {
@@ -469,7 +469,7 @@ impl<T: Clone> Clone for Multiples<T> {
     fn clone(&self) -> Self {
         Multiples::init(self.starting_size, self.classes.len(), |size| unsafe {
             self.get(size).clone()
-        })
+        }).expect("could not initialize Multiples")
     }
 }
 
@@ -481,13 +481,13 @@ fn round_up(n: usize) -> usize {
 
 impl<T> AllocMap<T> for Multiples<T> {
     type Key = usize;
-    fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, mut f: F) -> (F, Self) {
+    fn init_conserve<F: FnMut(usize) -> T>(start: usize, n_classes: usize, mut f: F) -> Option<(F, Self)> {
         alloc_debug_assert!(n_classes >= 1);
         let starting_size = round_up(start);
         let res = Multiples {
             starting_size: starting_size,
             max_size: n_classes * MULTIPLE + starting_size - MULTIPLE,
-            classes: TypedArray::new(n_classes),
+            classes: TypedArray::new(n_classes)?,
         };
         let mut cur_size = res.starting_size;
         for p in res.classes.iter() {
@@ -497,7 +497,7 @@ impl<T> AllocMap<T> for Multiples<T> {
             cur_size += MULTIPLE;
         }
         alloc_debug_assert_eq!(res.max_size, cur_size - MULTIPLE);
-        (f, res)
+        Some((f, res))
     }
 
     #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
@@ -536,7 +536,7 @@ impl<T: Clone> Clone for PowersOfTwo<T> {
     fn clone(&self) -> Self {
         PowersOfTwo::init(self.starting_size, self.classes.len(), |size| unsafe {
             self.get(size).clone()
-        })
+        }).expect("failed to initialize PowersOfTwo")
     }
 }
 
@@ -555,12 +555,12 @@ impl Drop for DynamicAllocator {
 }
 
 impl<T> PowersOfTwo<T> {
-    fn new(start_from: usize, n_classes: usize) -> PowersOfTwo<T> {
-        PowersOfTwo {
+    fn new(start_from: usize, n_classes: usize) -> Option<PowersOfTwo<T>> {
+        Some(PowersOfTwo {
             starting_size: start_from.next_power_of_two(),
             max_size: 0, // currently uninitialized
-            classes: TypedArray::new(n_classes),
-        }
+            classes: TypedArray::new(n_classes)?,
+        })
     }
 }
 
@@ -570,8 +570,8 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
         start: usize,
         n_classes: usize,
         mut f: F,
-    ) -> (F, Self) {
-        let mut res = Self::new(start, n_classes);
+    ) -> Option<(F, Self)> {
+        let mut res = Self::new(start, n_classes)?;
         let mut cur_size = res.starting_size;
         unsafe {
             for item in res.classes.iter() {
@@ -580,7 +580,7 @@ impl<T> AllocMap<T> for PowersOfTwo<T> {
             }
         }
         res.max_size = cur_size / 2;
-        (f, res)
+        Some((f, res))
     }
 
     #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
@@ -617,17 +617,17 @@ pub struct DynamicAllocator(ElfMalloc<PageAlloc<Source>, TieredSizeClasses<Objec
 unsafe impl Send for DynamicAllocator {}
 
 impl DynamicAllocator {
-    pub fn new() -> Self {
-        DynamicAllocator(ElfMalloc::new())
+    pub fn new() -> Option<Self> {
+        Some(DynamicAllocator(ElfMalloc::new()?))
     }
-    pub unsafe fn alloc(&mut self, size: usize) -> *mut u8 {
+    pub unsafe fn alloc(&mut self, size: usize) -> Option<*mut u8> {
         self.0.alloc(size)
     }
     pub unsafe fn free(&mut self, item: *mut u8) {
         self.0.free(item)
     }
 
-    pub unsafe fn realloc(&mut self, item: *mut u8, new_size: usize) -> *mut u8 {
+    pub unsafe fn realloc(&mut self, item: *mut u8, new_size: usize) -> Option<*mut u8> {
         self.0.realloc(item, new_size, mem::size_of::<usize>())
     }
 
@@ -636,7 +636,7 @@ impl DynamicAllocator {
         item: *mut u8,
         new_size: usize,
         new_alignment: usize,
-    ) -> *mut u8 {
+    ) -> Option<*mut u8> {
         self.0.realloc(item, new_size, new_alignment)
     }
 }
@@ -678,7 +678,7 @@ struct ElfMalloc<CA: CoarseAllocator, AM: AllocMap<ObjectAlloc<CA>>> {
 
 impl Default for DynamicAllocator {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("could not create new DynamicAllocator")
     }
 }
 
@@ -689,8 +689,8 @@ const ELFMALLOC_SMALL_CUTOFF: usize = ELFMALLOC_SMALL_PAGE_SIZE / 4;
 
 impl<M: MemorySource, D: DirtyFn>
     ElfMalloc<PageAlloc<M, D>, TieredSizeClasses<ObjectAlloc<PageAlloc<M, D>>>> {
-    fn new() -> Self {
-        let pa_large = PageAlloc::new(ELFMALLOC_PAGE_SIZE, 1 << 20, 8, AllocType::BigSlag);
+    fn new() -> Option<Self> {
+        let pa_large = PageAlloc::new(ELFMALLOC_PAGE_SIZE, 1 << 20, 8, AllocType::BigSlag)?;
         // The small pages are allocated in groups where the first page is aligned to
         // ELFMALLOC_PAGE_SIZE; this page will be stamped with AllocType::SmallSlag, allowing type
         // lookups to work as expected.
@@ -700,7 +700,7 @@ impl<M: MemorySource, D: DirtyFn>
             8,
             ELFMALLOC_PAGE_SIZE,
             AllocType::SmallSlag,
-        );
+        )?;
         Self::new_internal(0.6, pa_small, pa_large, 8, 25)
     }
 }
@@ -727,7 +727,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
     fn clone(&self) -> Self {
         let new_map = AM::init(self.start_from, self.n_classes, |size: usize| unsafe {
             self.allocs.get(size).clone()
-        });
+        }).expect("could not initialize AM");
         ElfMalloc {
             small_pages: self.small_pages.clone(),
             large_pages: self.large_pages.clone(),
@@ -739,10 +739,10 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
     }
 }
 
-unsafe fn elfmalloc_get_layout<M: MemorySource>(m_block: &M, item: *mut u8) -> (usize, usize) {
+unsafe fn elfmalloc_get_layout(page_size: usize, item: *mut u8) -> (usize, usize) {
     match get_type(item) {
         AllocType::SmallSlag | AllocType::BigSlag => {
-            let meta = (*Slag::find(item, m_block.page_size())).get_metadata();
+            let meta = (*Slag::find(item, page_size)).get_metadata();
             (
                 meta.object_size,
                 if meta.object_size.is_power_of_two() {
@@ -765,16 +765,16 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         pa_large: PageAlloc<M, D>,
         start_from: usize,
         n_classes: usize,
-    ) -> Self {
+    ) -> Option<Self> {
         use self::mmap::map;
-        let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes) as *mut Metadata;
-        let small_page_size = pa_small.backing_memory().page_size();
+        let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes)? as *mut Metadata;
+        let small_page_size = pa_small.page_size();
         let am = AM::init(start_from, n_classes, |size: usize| {
             let (u_size, pa, ty) = if size < ELFMALLOC_SMALL_CUTOFF {
                 (small_page_size, pa_small.clone(), AllocType::SmallSlag)
             } else {
                 (
-                    pa_large.backing_memory().page_size(),
+                    pa_large.page_size(),
                     pa_large.clone(),
                     AllocType::BigSlag,
                 )
@@ -786,7 +786,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                     m_ptr,
                     compute_metadata(
                         size,
-                        pa.backing_memory().page_size(),
+                        pa.page_size(),
                         0,
                         cutoff_factor,
                         u_size,
@@ -794,7 +794,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
                     ),
                 );
             }
-            let clean = PageCleanup::new(pa.backing_memory().page_size());
+            let clean = PageCleanup::new(pa.page_size());
             // TODO(ezrosent); new_size(8) is a good default, but a better one would take
             // num_cpus::get() into account when picking this size, as in principle this will run
             // into scaling limits at some point.
@@ -812,16 +812,15 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
             {
                 ObjectAlloc::new((params, Depot::default()))
             }
-        });
-        let max_size = am.max_key();
-        ElfMalloc {
+        })?;
+        Some(ElfMalloc {
             small_pages: pa_small.clone(),
             large_pages: pa_large.clone(),
+            max_size: am.max_key(),
             allocs: am,
-            max_size: max_size,
             start_from: start_from,
             n_classes: n_classes,
-        }
+        })
     }
 
     #[inline]
@@ -839,18 +838,18 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
         match get_type(item) {
             AllocType::SmallSlag => {
-                alloc_debug_assert_eq!(self.small_pages.backing_memory().page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
+                alloc_debug_assert_eq!(self.small_pages.page_size(), ELFMALLOC_SMALL_PAGE_SIZE);
                 Some(ELFMALLOC_SMALL_PAGE_SIZE)
             },
             AllocType::BigSlag => {
-                alloc_debug_assert_eq!(self.large_pages.backing_memory().page_size(), ELFMALLOC_PAGE_SIZE);
+                alloc_debug_assert_eq!(self.large_pages.page_size(), ELFMALLOC_PAGE_SIZE);
                 Some(ELFMALLOC_PAGE_SIZE)
             },
             AllocType::Large => None,
         }
     }
 
-    unsafe fn alloc(&mut self, bytes: usize) -> *mut u8 {
+    unsafe fn alloc(&mut self, bytes: usize) -> Option<*mut u8> {
         if likely(bytes <= self.max_size) {
             self.allocs.get_mut(bytes).alloc()
         } else {
@@ -863,7 +862,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         item: *mut u8,
         mut new_size: usize,
         new_alignment: usize,
-    ) -> *mut u8 {
+    ) -> Option<*mut u8> {
         if item.is_null() {
             let alloc_size = if new_alignment <= mem::size_of::<usize>() {
                 new_size
@@ -874,16 +873,16 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         }
         if new_size == 0 {
             self.free(item);
-            return ptr::null_mut();
+            return None;
         }
         let (old_size, old_alignment) = global::get_layout(item);
         if old_alignment >= new_alignment && old_size >= new_size {
-            return item;
+            return Some(item);
         }
         if new_alignment > mem::size_of::<usize>() {
             new_size = new_size.next_power_of_two();
         }
-        let new_mem = self.alloc(new_size);
+        let new_mem = self.alloc(new_size)?;
         ptr::copy_nonoverlapping(item, new_mem, ::std::cmp::min(old_size, new_size));
         self.free(item);
         #[cfg(debug_assertions)]
@@ -891,7 +890,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
             let (size, _) = global::get_layout(new_mem);
             alloc_debug_assert!(new_size <= size, "Realloc for {} got memory with size {}", new_size, size);
         }
-        new_mem
+        Some(new_mem)
     }
 
     unsafe fn free(&mut self, item: *mut u8) {
@@ -922,6 +921,7 @@ mod large_alloc {
     use super::super::sources::{MemorySource, MmapSource};
     use super::{ELFMALLOC_PAGE_SIZE, ELFMALLOC_SMALL_CUTOFF, round_to_page};
     use super::super::alloc_type::AllocType;
+    use super::mmap;
 
     // For debugging, we keep around a thread-local map of pointers to lengths. This helps us
     // scrutinize if various header data is getting propagated correctly.
@@ -929,9 +929,6 @@ mod large_alloc {
     thread_local! {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
     }
-    use super::mmap::unmap;
-    #[cfg(debug_assertions)]
-    use super::mmap::page_size;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -941,12 +938,12 @@ mod large_alloc {
         region_size: usize,
     }
 
-    pub unsafe fn alloc(size: usize) -> *mut u8 {
+    pub unsafe fn alloc(size: usize) -> Option<*mut u8> {
         // TODO(ezrosent) round up to page size
         let region_size = size + ELFMALLOC_PAGE_SIZE;
         // We need a pointer aligned to the SMALL_CUTOFF, so we use an `MmapSource` to map the
         // memory. See the comment in get_page_size.
-        let src = MmapSource::new(ELFMALLOC_SMALL_CUTOFF);
+        let src = MmapSource::new(ELFMALLOC_SMALL_CUTOFF)?;
         let n_pages = region_size / ELFMALLOC_SMALL_CUTOFF + cmp::min(1, region_size % ELFMALLOC_SMALL_CUTOFF);
         let mem = src.carve(n_pages).expect("[lage_alloc::alloc] mmap failed");
         let res = mem.offset(ELFMALLOC_PAGE_SIZE as isize);
@@ -969,7 +966,7 @@ mod large_alloc {
         alloc_debug_assert_eq!(get_commitment(res), (size + ELFMALLOC_PAGE_SIZE, mem));
         #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, region_size));
         // end extra debugging information
-        res
+        Some(res)
     }
 
     pub unsafe fn free(item: *mut u8) {
@@ -985,11 +982,11 @@ mod large_alloc {
         {
             ptr::write_volatile(item, 10);
             alloc_debug_assert_eq!(
-                base_ptr as usize % page_size(),
+                base_ptr as usize % mmap::page_size(),
                 0,
                 "base_ptr ({:?}) not a multiple of the page size ({})",
                 base_ptr,
-                page_size()
+                mmap::page_size()
             );
         }
         #[cfg(test)]
@@ -1005,7 +1002,7 @@ mod large_alloc {
             });
         }
         // end extra debugging information
-        unmap(base_ptr, size);
+        mmap::unmap(base_ptr, size);
     }
 
     pub unsafe fn get_size(item: *mut u8) -> usize {
@@ -1036,7 +1033,7 @@ mod tests {
     fn layout_lookup() {
         fn test_and_free<F: Fn(usize, usize)>(inp: usize, tester: F) {
             unsafe {
-                let obj = global::alloc(inp);
+                let obj = global::alloc(inp).unwrap();
                 let (size, align) = global::get_layout(obj);
                 tester(size, align);
                 global::free(obj);
@@ -1065,7 +1062,7 @@ mod tests {
         let _ = env_logger::init();
         for size in ((1 << 13) - 8)..((1 << 13) + 1) {
             unsafe {
-                let item = global::alloc(size * 8);
+                let item = global::alloc(size * 8).unwrap();
                 write_volatile(item, 10);
                 global::free(item);
             }
@@ -1075,11 +1072,11 @@ mod tests {
     #[test]
     fn general_alloc_basic_clone_single_threaded() {
         let _ = env_logger::init();
-        let da_c = DynamicAllocator::new();
+        let da_c = DynamicAllocator::new().unwrap();
         let mut da = da_c.clone();
         for size in ((1 << 13) - 8)..((1 << 13) + 1) {
             unsafe {
-                let item = da.alloc(size * 8);
+                let item = da.alloc(size * 8).unwrap();
                 write_volatile(item, 10);
                 da.free(item);
             }
@@ -1101,7 +1098,7 @@ mod tests {
                         for size in 1..(1 << 13) {
                             // ((1 << 9) + 1)..((1 << 18) + 1) {
                             unsafe {
-                                let item = global::alloc(size * 8);
+                                let item = global::alloc(size * 8).unwrap();
                                 write_volatile(item, 10);
                                 global::free(item);
                             }
@@ -1133,7 +1130,7 @@ mod tests {
                     .spawn(move || unsafe {
                         for _ in 0..2 {
                             let ptrs: Vec<*mut u8> =
-                                (0..(1 << 20)).map(|_| global::alloc(8)).collect();
+                                (0..(1 << 20)).map(|_| global::alloc(8).unwrap()).collect();
                             for p in ptrs {
                                 global::free(p);
                             }
@@ -1153,7 +1150,7 @@ mod tests {
         let _ = env_logger::init();
         use std::thread;
         const N_THREADS: usize = 8;
-        let alloc = DynamicAllocator::new();
+        let alloc = DynamicAllocator::new().unwrap();
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
@@ -1169,7 +1166,7 @@ mod tests {
                         }
                         unsafe {
                             for _ in 0..N_ITERS {
-                                let item = da.alloc(alloc_size);
+                                let item = da.alloc(alloc_size).unwrap();
                                 write_bytes(item, 0xFF, alloc_size);
                                 v1.push(item);
                             }
@@ -1180,7 +1177,7 @@ mod tests {
                                         8
                                     } else {
                                         (alloc_size * 2).next_power_of_two()
-                                    });
+                                    }).unwrap();
                                 write_bytes(new_item.offset(alloc_size as isize), 0xFE, alloc_size);
                                 da.free(new_item);
                             }
@@ -1199,7 +1196,7 @@ mod tests {
         use std::thread;
 
         const N_THREADS: usize = 32;
-        let alloc = DynamicAllocator::new();
+        let alloc = DynamicAllocator::new().unwrap();
         let mut threads = Vec::with_capacity(N_THREADS);
         for t in 0..N_THREADS {
             let mut da = alloc.clone();
@@ -1210,7 +1207,7 @@ mod tests {
                         for size in 1..(1 << 13) {
                             // ((1 << 9) + 1)..((1 << 18) + 1) {
                             unsafe {
-                                let item = da.alloc(size * 8);
+                                let item = da.alloc(size * 8).unwrap();
                                 write_bytes(item, 0xFF, size * 8);
                                 da.free(item);
                             }
@@ -1233,7 +1230,7 @@ mod tests {
         let _ = env_logger::init();
         for size in 1..((1 << 21) + 1) {
             unsafe {
-                let item = global::alloc(size);
+                let item = global::alloc(size).unwrap();
                 write_volatile(item, 10);
                 global::free(item);
                 if size + 2 > 1 << 20 {

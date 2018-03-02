@@ -1,4 +1,4 @@
-# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
 # Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -49,7 +49,7 @@ alloc-fmt = { path = "../alloc-fmt" }
 alloc-tls = { path = "../alloc-tls" }
 bagpipe = { path = "../bagpipe" }
 bsalloc = "0.1.0"
-lazy_static = "1.0.0"
+lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
 libc = "0.2"
 log = "0.3.8"
 malloc-bind = { path = "../malloc-bind" }

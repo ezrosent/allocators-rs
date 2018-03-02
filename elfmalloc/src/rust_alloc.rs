@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -110,14 +110,14 @@ impl<M: MemorySource> PageSource<M> {
         target_size: usize,
         pipe_size: usize,
         page_size: usize,
-    ) -> PageSource<M> {
-        let m = M::new(page_size);
-        PageSource {
+    ) -> Option<PageSource<M>> {
+        let m = M::new(page_size)?;
+        Some(PageSource {
             cutoff_bytes: cutoff_bytes,
             target_size: target_size,
             pages: SlagPipe::new_size_cleanup(pipe_size, PageCleanup::new(m.page_size())),
             source: m,
-        }
+        })
     }
 
     unsafe fn free(&mut self, p: *mut u8, old_size: usize) {
@@ -167,15 +167,15 @@ impl<M: MemorySource> PageFrontend<M> {
         max_overhead: usize,
         pipe_size: usize,
         parent: PageSource<M>,
-    ) -> PageFrontend<M> {
+    ) -> Option<PageFrontend<M>> {
         alloc_debug_assert!(size <= parent.source.page_size());
         alloc_debug_assert!(size.is_power_of_two());
-        PageFrontend {
+        Some(PageFrontend {
             parent: parent,
             pages: SlagPipe::new_size_cleanup(pipe_size, PageCleanup::new(size)),
             local_size: size,
             max_overhead: max_overhead,
-        }
+        })
     }
 
     unsafe fn alloc(&mut self) -> Option<*mut u8> {
@@ -195,7 +195,7 @@ impl<M: MemorySource> PageFrontend<M> {
 
 impl<M: MemorySource + Clone> LazyInitializable for PageFrontend<M> {
     type Params = (usize, usize, usize, PageSource<M>);
-    fn init(&(size, max_overhead, pipe_size, ref parent): &Self::Params) -> Self {
+    fn init(&(size, max_overhead, pipe_size, ref parent): &Self::Params) -> Option<Self> {
         PageFrontend::new(size, max_overhead, pipe_size, parent.clone())
     }
 }
@@ -272,20 +272,18 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
         case_analyze!(
             self,
             l,
-            small Ok(
-                self.small
+            small self.small
                     .get_mut(if l.align() > mem::size_of::<usize>() {
                         l.size().next_power_of_two()
                     } else {
                         l.size()
                     })
-                    .alloc(),
-            );
+                    .alloc().ok_or(AllocErr::Exhausted { request: l });
             medium match self.large.get_mut(l.size()).alloc() {
                 Some(p) => Ok(p),
                 None => Err(AllocErr::Exhausted { request: l }),
             };
-            large match mmap::fallible_map(l.size()) {
+            large match mmap::map(l.size()) {
                 Some(p) => Ok(p),
                 None => Err(AllocErr::Exhausted { request: l }),
             };
@@ -397,11 +395,11 @@ impl ElfMallocBuilder {
         self
     }
 
-    pub fn build<M: MemorySource>(&self) -> ElfMalloc<M> {
-        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size, AllocType::SmallSlag);
+    pub fn build<M: MemorySource>(&self) -> Option<ElfMalloc<M>> {
+        let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size, AllocType::SmallSlag)?;
         let n_small_classes = (self.page_size / 4) / MULTIPLE;
         alloc_assert!(n_small_classes > 0);
-        let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes) as
+        let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes)? as
             *mut Metadata;
         let small_classes = Multiples::init(MULTIPLE, n_small_classes, |size: usize| {
             let meta = meta_pointers;
@@ -433,7 +431,7 @@ impl ElfMallocBuilder {
             {
                 ObjectAlloc::new((params, Depot::default()))
             }
-        });
+        })?;
         let next_size_class = (small_classes.max_key() + 1).next_power_of_two();
         let max_size = self.max_object_size.next_power_of_two();
         let n_classes = max_size.trailing_zeros() - next_size_class.trailing_zeros();
@@ -442,22 +440,22 @@ impl ElfMallocBuilder {
             self.large_obj_target_size,
             self.large_pipe_size,
             max_size,
-        );
+        )?;
         let large_classes = PowersOfTwo::init(next_size_class, n_classes as usize, |size: usize| {
             let target_size: usize = cmp::max(1, self.target_pipe_overhead / size);
             Lazy::<PageFrontend<M>>::new(
                 (size, target_size, self.small_pipe_size, p_source.clone()),
             )
-        });
+        })?;
         alloc_debug_assert!(small_classes.max_key().is_power_of_two());
-        ElfMalloc {
+        Some(ElfMalloc {
             small: small_classes,
             large: large_classes,
-        }
+        })
     }
 
-    pub fn build_owned<M: MemorySource>(&self) -> OwnedElfMalloc<M> {
-        OwnedElfMalloc(self.build())
+    pub fn build_owned<M: MemorySource>(&self) -> Option<OwnedElfMalloc<M>> {
+        Some(OwnedElfMalloc(self.build()?))
     }
 }
 
@@ -513,7 +511,7 @@ mod global {
     lazy_static! {
         static ref GLOBAL_HANDLE: ElfCloner = ElfCloner(ElfMallocBuilder::default()
                                                         .page_size(16 << 10)
-                                                        .build());
+                                                        .build().expect("failed to build global handle"));
 
         /// We still have a crossbeam dependency, which means that we may have to reclaim a
         /// thread's cached memory after it is destroyed. See the comments in `general::global` for
@@ -602,7 +600,7 @@ mod tests {
     #[test]
     fn basic_alloc_functionality() {
         let word_size = mem::size_of::<usize>();
-        let mut alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
+        let mut alloc = ElfMallocBuilder::default().build_owned::<MmapSource>().unwrap();
         let layouts: Vec<_> = (word_size..(8 << 10))
             .map(|size| {
                 Layout::from_size_align(size * 128, word_size).unwrap()
@@ -623,7 +621,7 @@ mod tests {
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
         const N_THREADS: usize = 64;
-        let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
+        let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>().unwrap();
 
         let mut threads = Vec::new();
         for _ in 0..N_THREADS {
