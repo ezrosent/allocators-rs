@@ -1,4 +1,4 @@
-# Copyright 2017 the authors. See the 'Copyright and license' section of the
+# Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 # README.md file at the top-level directory of this repository.
 #
 # Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -38,6 +38,9 @@ local_cache = []
 use_default_allocator = []
 print_stats = []
 magazine_layer = []
+# Limit the amount of memory used by tests to avoid running out.
+# This is used primarily in Travis.
+low-memory-tests = []
 # Implement the C allocation API (malloc, free, etc) by implementing the
 # malloc-bind crate's Malloc trait. This feature will enable certain
 # optimizations that will make the C API faster but result in worse memory
