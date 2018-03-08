@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -622,11 +622,15 @@ mod tests {
     }
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
-        const N_THREADS: usize = 64;
+        let n_threads: usize = if cfg!(feature = "low-memory-tests") {
+            32
+        } else {
+            64
+        };
         let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
 
         let mut threads = Vec::new();
-        for _ in 0..N_THREADS {
+        for _ in 0..n_threads {
             let mut my_alloc = alloc.clone();
             let my_layouts = layouts.clone();
             threads.push(thread::spawn(move || unsafe {
@@ -652,8 +656,13 @@ mod tests {
     #[test]
     fn many_threads_many_sizes() {
         let word_size = mem::size_of::<usize>();
+        let max = if cfg!(feature = "low-memory-tests") {
+            2 << 4
+        } else {
+            2 << 10
+        };
         multi_threaded_alloc_test(
-            (word_size..(2 << 10))
+            (word_size..max)
                 .map(|size| {
                     Layout::from_size_align(size * 1024, word_size).unwrap()
                 })
