@@ -622,15 +622,11 @@ mod tests {
     }
 
     fn multi_threaded_alloc_test(layouts: Vec<Layout>) {
-        let n_threads: usize = if cfg!(feature = "low-memory-tests") {
-            32
-        } else {
-            64
-        };
+        const N_THREADS: usize = 64;
         let alloc = ElfMallocBuilder::default().build_owned::<MmapSource>();
 
         let mut threads = Vec::new();
-        for _ in 0..n_threads {
+        for _ in 0..N_THREADS {
             let mut my_alloc = alloc.clone();
             let my_layouts = layouts.clone();
             threads.push(thread::spawn(move || unsafe {
@@ -654,15 +650,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "low-memory-tests", ignore)]
     fn many_threads_many_sizes() {
         let word_size = mem::size_of::<usize>();
-        let max = if cfg!(feature = "low-memory-tests") {
-            2 << 4
-        } else {
-            2 << 10
-        };
         multi_threaded_alloc_test(
-            (word_size..max)
+            (word_size..2 << 10)
                 .map(|size| {
                     Layout::from_size_align(size * 1024, word_size).unwrap()
                 })

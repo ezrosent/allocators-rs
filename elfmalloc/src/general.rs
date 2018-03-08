@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -967,7 +967,7 @@ mod large_alloc {
         alloc_debug_assert_eq!(mem as usize % upage, 0);
         alloc_debug_assert_eq!(res as usize % upage, 0);
         alloc_debug_assert_eq!(get_commitment(res), (size + ELFMALLOC_PAGE_SIZE, mem));
-        #[cfg(test)] SEEN_PTRS.with(|hs| hs.borrow_mut().insert(mem, region_size));
+        #[cfg(test)] SEEN_PTRS.try_with(|hs| hs.borrow_mut().insert(mem, region_size));
         // end extra debugging information
         res
     }
@@ -994,7 +994,7 @@ mod large_alloc {
         }
         #[cfg(test)]
         {
-            SEEN_PTRS.with(|hm| {
+            SEEN_PTRS.try_with(|hm| {
                 let mut hmap = hm.borrow_mut();
                 {
                     if let Some(len) = hmap.get(&base_ptr) {

@@ -350,7 +350,12 @@ mod tests {
         }
         b.iter(|| {
             let mut big_vec = VV::default();
-            for _ in 0..128 {
+            let range = if cfg!(feature = "low-memory-tests") {
+                0..64
+            } else {
+                0..128
+            };
+            for _ in range {
                 let mut vec = V::default();
                 for x in 0..(1 << 10) {
                     push_noinline(&mut vec, x);
