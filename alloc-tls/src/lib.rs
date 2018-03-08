@@ -111,9 +111,9 @@ impl<T> TLSValue<T> {
     }
 }
 
-// Make likely available to the alloc_tls_fast_with macro.
+// Make likely and unlikely available to the alloc_tls_fast_with macro.
 #[doc(hidden)]
-pub use std::intrinsics::likely;
+pub use std::intrinsics::{likely, unlikely};
 
 /// Access the TLS slot with maximum performance.
 ///
@@ -150,15 +150,36 @@ pub use std::intrinsics::likely;
 #[macro_export]
 macro_rules! alloc_tls_fast_with {
     ($slot:expr, $name:ident, $blk:block) => {
-        if $crate::likely(!(*$slot.ptr.get()).is_null()) {
-            let $name = &**$slot.ptr.get();
-            Some($blk)
-        } else {
-            $slot.with_slow(|$name| {
-                // ensure that type inference on $name succeeds regardless of the contents of $blk
-                if $name as *const _ == &**$slot.ptr.get() as *const _ {}
-                $blk
-            })
+        {
+            #[cfg(all(feature = "dylib", target_os = "macos"))]
+            {
+                if $crate::unlikely(!$crate::dyld_loaded()) {
+                    None
+                } else if $crate::likely(!(*$slot.ptr.get()).is_null()) {
+                    let $name = &**$slot.ptr.get();
+                    Some($blk)
+                } else {
+                    $slot.with_slow(|$name| {
+                        // ensure that type inference on $name succeeds regardless of the contents of $blk
+                        if $name as *const _ == &**$slot.ptr.get() as *const _ {}
+                        $blk
+                    })
+                }
+            }
+
+            #[cfg(not(all(feature = "dylib", target_os = "macos")))]
+            {
+                if $crate::likely(!(*$slot.ptr.get()).is_null()) {
+                    let $name = &**$slot.ptr.get();
+                    Some($blk)
+                } else {
+                    $slot.with_slow(|$name| {
+                        // ensure that type inference on $name succeeds regardless of the contents of $blk
+                        if $name as *const _ == &**$slot.ptr.get() as *const _ {}
+                        $blk
+                    })
+                }
+            }
         }
     };
 }
@@ -320,7 +341,7 @@ impl Drop for CallOnDrop {
 // TODO: Modify this comment to include links to relevant docs/issues
 
 // On Mac, TLS cannot be accessed while a dynamic library is being loaded (at least, that's what it
-// appears from our own experimentation with DYLD_INSERT_LIBRARIES). Unfortunately, the code is
+// appears from our own experimentation with DYLD_INSERT_LIBRARIES). Unfortunately, the code that is
 // used to load dynamic libraries performs allocations. Thus, when producing a Mac dynamic library
 // (.dylib), we need to be able to detect whether we're being called from the loader itself. We
 // accomplish this by using a global static (DYLD_LOADED) that indicates whether we've been loaded,
@@ -330,7 +351,8 @@ impl Drop for CallOnDrop {
 static mut DYLD_LOADED: bool = false;
 
 #[cfg(all(feature = "dylib", target_os = "macos"))]
-fn dyld_loaded() -> bool {
+#[doc(hidden)]
+pub fn dyld_loaded() -> bool {
     unsafe { DYLD_LOADED }
 }
 
