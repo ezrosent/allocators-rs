@@ -67,17 +67,6 @@ pub(crate) mod global {
     //! (TLS) to store handles to this global instance. While this is essentially the architecture
     //! we use, a number of hacks have been added to ensure correctness.
     //!
-    //! ## TLS Destructors
-    //!
-    //! Thread-local handles are stored in TLS. In their destructors, they potentially call into
-    //! crossbeam code. This code too requires the use of TLS. We are not guaranteed any order in
-    //! which these destructors can be run, and we have observed that crossbeam's can be run before
-    //! ours, resulting in a panic.
-    //!
-    //! To avoid this we spawn a background thread that services `free` operations sent from
-    //! threads in circumstances like this. While this is undoubtedly a code smell, it may be used
-    //! in the future to collect statistics regarding the running allocator.
-    //!
     //! ## Recursive `malloc` calls
     //!
     //! When used as a standard `malloc` implementation through the `elfc` crate via `LD_PRELOAD`,
@@ -85,9 +74,10 @@ pub(crate) mod global {
     //! problem is that the code that enqueues destructors for pthread TSD calls `calloc`; this
     //! causes all such calls to stack overflow.
     //!
-    //! The fix for this is to use the thread-local attribute to create a thread-local boolean that
-    //! indicates if the current thread's value has been initialized. If this value is false, a
-    //! slower fallback algorithm is used.
+    //! In order to avoid thisi problem, we use the `alloc-tls` crate, which can detect this
+    //! recursion. When such recursion is detected, we fall back on a slow path of creating a new
+    //! one-time-use instance of the value that is normally stored in thread-local storage in
+    //! order to perform the operation and then discard it.
     #[allow(unused_imports)]
     use super::{CoarseAllocator, DynamicAllocator, DirtyFn, ElfMalloc, MemorySource, ObjectAlloc,
                 PageAlloc, TieredSizeClasses, TypedArray, AllocType, get_type, Source, AllocMap};
@@ -101,10 +91,6 @@ pub(crate) mod global {
     use std::thread;
 
     type PA = PageAlloc<Source, ()>;
-    // For debugging purposes: run a callback to eagerly dirty several pages. This is generally bad
-    // for performance.
-    //
-    // type PA = PageAlloc<Source, BackgroundDirty>;
 
     unsafe fn dirty_slag(mem: *mut u8) {
         trace!("dirtying {:?}", mem);
@@ -117,26 +103,13 @@ pub(crate) mod global {
         }
     }
 
-    #[derive(Clone)]
-    struct BackgroundDirty;
-    impl DirtyFn for BackgroundDirty {
-        fn dirty(_mem: *mut u8) {
-            let _ = unsafe { LOCAL_DESTRUCTOR_CHAN.with(|h| h.send(Husk::Slag(_mem))).unwrap() };
-        }
-    }
-
-    #[derive(Clone)]
     /// A wrapper like `DynamicAllocator` in the parent module.
     ///
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
+    #[derive(Clone)]
     struct GlobalAllocator {
-        // GlobalAllocator's Drop implementation reads this field (using ptr::read) and sends it
-        // over a channel. This invalidates the underlying memory, but of course Rust doesn't know
-        // that, so if this field were of the type ElfMalloc<...>, the field's drop method would be
-        // run after GlobalAllocator's drop method returned. We use ManuallyDrop to prevent that
-        // from happening.
-        alloc: ManuallyDrop<ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>>,
+        alloc: ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>,
         // In some rare cases, we've observed that a thread-local GlobalAllocator is spuriously
         // dropped twice. Until we figure out why and fix it, we just detect when it's happening
         // and make the second drop call a no-op.
@@ -162,51 +135,20 @@ pub(crate) mod global {
         }
     }
 
-    /// The type for messages sent to the background thread. These can either be arrays of size
-    /// classes to be cleaned up (in the case of thread destruction) or pointers to be freed (in
-    /// the case of a recursive call to `free`).
-    enum Husk {
-        Array(ElfMalloc<PA, TieredSizeClasses<ObjectAlloc<PA>>>),
-        #[allow(dead_code)]
-        Ptr(*mut u8),
-        #[allow(dead_code)]
-        Slag(*mut u8),
-    }
-
-    unsafe impl Send for Husk {}
-
     impl Drop for GlobalAllocator {
         fn drop(&mut self) {
-            unsafe fn with_chan<F: FnMut(&Sender<Husk>)>(mut f: F) {
-                LOCAL_DESTRUCTOR_CHAN
-                    .with(|chan| f(chan))
-                    .unwrap_or_else(|| {
-                        let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                        f(&chan);
-                    })
-            }
-
             // XXX: Why this check?
             //
             // We have found that for some reason, this destructor can be called more than once on
             // the same value. This could be a peculiarity of the TLS implementation, or it could
             // be a bug in the code here. Regardless; without this check there are some cases in
             // which this benchmark drops Arc-backed data-structures multiple times, leading to
-            // segfaults either here or in the background thread.
+            // segfaults.
             if self.dropped {
                 alloc_eprintln!("{:?} dropped twice!", self as *const _);
                 return;
             }
-            unsafe {
-                with_chan(|chan| {
-                    // After we read the alloc field with ptr::read, the underlying memory should
-                    // be treated as uninitialized, but Rust doesn't know this. We use ManuallyDrop
-                    // to ensure that Rust doesn't try to drop the field after this method returns.
-                    let dyn = ManuallyDrop::into_inner(ptr::read(&self.alloc));
-                    let _ = chan.send(Husk::Array(dyn));
-                });
-                self.dropped = true;
-            };
+            self.dropped = true;
         }
     }
 
@@ -235,7 +177,7 @@ pub(crate) mod global {
 
     fn new_handle() -> GlobalAllocator {
         GlobalAllocator {
-            alloc: ManuallyDrop::new(ELF_HEAP.inner.as_ref().expect("heap uninitialized").clone()),
+            alloc: ELF_HEAP.inner.as_ref().expect("heap uninitialized").clone(),
             dropped: false,
         }
     }
@@ -246,33 +188,7 @@ pub(crate) mod global {
         }
     }
 
-    lazy_static! {
-        static ref ELF_HEAP: GlobalAllocProvider = GlobalAllocProvider::new();
-        static ref DESTRUCTOR_CHAN: Mutex<Sender<Husk>> = {
-            // Background thread code: block on a channel waiting for memory reclamation messages
-            // (Husks).
-            let (sender, receiver) = channel();
-            thread::spawn(move || unsafe {
-                let mut local_alloc = new_handle();
-                loop {
-                    if let Ok(msg) = receiver.recv() {
-                        let msg: Husk = msg;
-                        match msg {
-                            Husk::Array(alloc) => mem::drop(DynamicAllocator(alloc)),
-                            Husk::Ptr(p) => local_alloc.alloc.free(p),
-                            Husk::Slag(s) => dirty_slag(s),
-                        }
-                        continue
-                    }
-                    mem::forget(local_alloc);
-                    return;
-                }
-            });
-            Mutex::new(sender)
-        };
-    }
-
-    alloc_thread_local!{ static LOCAL_DESTRUCTOR_CHAN: Sender<Husk> = DESTRUCTOR_CHAN.lock().unwrap().clone(); }
+    lazy_static! { static ref ELF_HEAP: GlobalAllocProvider = GlobalAllocProvider::new(); }
     alloc_thread_local!{ static LOCAL_ELF_HEAP: UnsafeCell<GlobalAllocator> = UnsafeCell::new(new_handle()); }
 
     fn with_local_or_clone<F, R>(f: F) -> R
@@ -298,16 +214,7 @@ pub(crate) mod global {
     }
 
     pub unsafe fn free(item: *mut u8) {
-        alloc_tls_fast_with!(LOCAL_ELF_HEAP, h, { (*h.get()).alloc.free(item) })
-            .unwrap_or_else(|| match get_type(item) {
-                AllocType::Large => {
-                    super::large_alloc::free(item);
-                }
-                AllocType::SmallSlag | AllocType::BigSlag => {
-                    let chan = DESTRUCTOR_CHAN.lock().unwrap().clone();
-                    let _ = chan.send(Husk::Ptr(item));
-                }
-            });
+        with_local_or_clone(|h| (*h.get()).alloc.free(item));
     }
 }
 
@@ -925,7 +832,7 @@ mod large_alloc {
     use super::super::alloc_type::AllocType;
 
     // For debugging, we keep around a thread-local map of pointers to lengths. This helps us
-    // scrutinize if various header data is getting propagated correctly.
+    // scrutinize whether various header data is getting propagated correctly.
     #[cfg(test)]
     thread_local! {
         pub static SEEN_PTRS: RefCell<HashMap<*mut u8, usize>> = RefCell::new(HashMap::new());
