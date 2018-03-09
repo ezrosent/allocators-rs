@@ -299,6 +299,7 @@ impl MapAlloc {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn debug_verify_ptr(&self, ptr: *mut u8, layout: Layout) {
         debug_assert_eq!(
             ptr as usize % self.pagesize,
