@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -29,15 +29,17 @@ pub struct GlobalAllocator {
 
 impl GlobalAllocator {
     fn new() -> Self {
+        // On Windows, memory must be explicitly committed - it will not simply be committed on
+        // first use like on Linux and Mac.
+        #[cfg(windows)]
+        let ma = MapAllocBuilder::default().commit(true).build();
+        #[cfg(not(windows))]
+        let ma = MapAlloc::default();
+
         GlobalAllocator {
-            small_objs: large::Cache::new(1 << 10),
-            large_objs: small::Cache::new(18 << 10),
-            // On Windows, memory must be explicitly committed - it will not simply be committed on
-            // first use like on Linux and Mac.
-            #[cfg(windows)]
-            ma: MapAllocBuilder::default().commit(true).build(),
-            #[cfg(not(windows))]
-            ma: MapAlloc::default(),
+            small_objs: large::Cache::new(ma.usable_size(&Layout::from_size_align(1<<10, 1).unwrap()).1),
+            large_objs: small::Cache::new(ma.usable_size(&Layout::from_size_align(18<<10, 1).unwrap()).1),
+            ma,
         }
     }
 
