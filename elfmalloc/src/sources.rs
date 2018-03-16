@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -10,6 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::mem;
 use super::utils::{likely, mmap};
+
+use alloc::allocator::{Alloc, Layout};
+use mmap_alloc::MapAlloc;
 
 /// A generator of chunks of memory providing an `sbrk`-like interface.
 pub trait MemorySource
@@ -53,43 +56,11 @@ impl MemorySource for MmapSource {
 
     fn carve(&self, npages: usize) -> Option<*mut u8> {
         trace!("carve({:?})", npages);
-        // faster mod for power-of-2 sizes.
-        fn mod_size(x: usize, n: usize) -> usize {
-            x & (n - 1)
-        }
-
-        // There is a faster path available when our local page size is less than or equal to the
-        // system one.
-        let system_page_size = mmap::page_size();
-        if self.page_size <= system_page_size {
-            return mmap::fallible_map(npages * self.page_size);
-        }
-        // We want to return pages aligned to our page size, which is larger than the
-        // system page size. As a result, we want to allocate an extra page to guarantee a slice of
-        // the memory that is aligned to the larger page size.
-        let target_size = npages * self.page_size;
-        let req_size = target_size + self.page_size;
-        mmap::fallible_map(req_size).and_then(|mem| {
-            let mem_num = mem as usize;
-
-            alloc_debug_assert_eq!(mod_size(mem_num, system_page_size), 0);
-
-            // region at the end that is not needed.
-            let rem1 = mod_size(mem_num, self.page_size);
-            // region at the beginning that is not needed.
-            let rem2 = self.page_size - rem1;
-            unsafe {
-                let res = mem.offset(rem2 as isize);
-                alloc_debug_assert_eq!(mod_size(res as usize, self.page_size), 0);
-                if rem1 > 0 {
-                    mmap::unmap(res.offset(target_size as isize), rem1);
-                }
-                if rem2 > 0 {
-                    mmap::unmap(mem, rem2);
-                }
-                Some(res)
-            }
-        })
+        // Even if self.page_size is larger than the system page size, that's OK
+        // because we're using mmap-alloc's large-align feature, which allows
+        // allocations to be aligned to any alignment, even larger than the page size.
+        let layout = Layout::from_size_align(npages * self.page_size, self.page_size).unwrap();
+        unsafe { MapAlloc::default().alloc(layout).ok() }
     }
 }
 

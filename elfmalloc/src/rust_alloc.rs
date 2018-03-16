@@ -465,7 +465,7 @@ pub use self::global::{DynamicAlloc, SharedAlloc, new_owned_handle};
 
 mod global {
     //! This module provides an interface to global instances of allocators in the parent module.
-    //! Two interfaces are provides. All allocations from either of these allocators share the same
+    //! Two interfaces are provided. All allocations from either of these allocators share the same
     //! global data-structures.
     //!
     //! # `DynamicAlloc`
