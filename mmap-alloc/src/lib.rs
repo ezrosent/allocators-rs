@@ -765,7 +765,8 @@ unsafe fn unmap(ptr: *mut u8, _size: usize) {
     assert_ne!(
         ret,
         0,
-        "Call to VirtualFree failed with error code {}.",
+        "Call to VirtualFree({:?}, 0, MEM_RELEASE) failed with error code {}.",
+        ptr,
         GetLastError()
     );
 }
@@ -791,7 +792,11 @@ unsafe fn protect(ptr: *mut u8, size: usize, perm: perms::Perm) {
     assert_ne!(
         ret,
         0,
-        "Call to VirtualProtect failed with error code {}.",
+        "Call to VirtualProtect({:?}, {}, {}, {}) failed with error code {}.",
+        ptr,
+        size,
+        perm,
+        _old_perm,
         GetLastError()
     );
 }
@@ -829,7 +834,9 @@ unsafe fn uncommit(ptr: *mut u8, size: usize) {
     assert_ne!(
         ret,
         0,
-        "Call to VirtualFree failed with error code {}.",
+        "Call to VirtualFree({:?}, {}, MEM_DECOMMIT) failed with error code {}.",
+        ptr,
+        size,
         GetLastError()
     );
 }
