@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -11,13 +11,17 @@ use std::ops::{Deref, DerefMut};
 use std::cell::UnsafeCell;
 
 pub mod mmap {
-    extern crate mmap_alloc;
-    extern crate sysconf;
-    use self::mmap_alloc::MapAllocBuilder;
-    use super::super::alloc::allocator::{Alloc, Layout};
+    use mmap_alloc::{MapAlloc, MapAllocBuilder};
+    use alloc::allocator::{Alloc, Layout};
+
+    lazy_static!{ 
+        static ref MMAP: MapAlloc = MapAllocBuilder::default()
+            .commit(cfg!(windows))
+            .build();
+    }
 
     pub fn page_size() -> usize {
-        self::sysconf::page::pagesize()
+        ::sysconf::page::pagesize()
     }
 
     pub fn map(size: usize) -> *mut u8 {
@@ -25,30 +29,24 @@ pub mod mmap {
     }
 
     pub fn fallible_map(size: usize) -> Option<*mut u8> {
-        unsafe {
-            if let Ok(s) = MapAllocBuilder::default()
-                   .exec(true)
-                   .build()
-                   .alloc(Layout::from_size_align(size, 1).unwrap()) {
-                Some(s)
-            } else {
-                None
-            }
-        }
+        unsafe { (&*MMAP).alloc(layout_for_size(size)).ok() }
     }
 
-    pub unsafe fn unmap(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec(true).build().dealloc(
-            p,
-            Layout::from_size_align(len, 1).unwrap(),
-        )
+    pub unsafe fn unmap(p: *mut u8, size: usize) {
+        (&*MMAP).dealloc(p, layout_for_size(size));
     }
-    pub unsafe fn uncommit(p: *mut u8, len: usize) {
-        MapAllocBuilder::default().exec(true).build().uncommit(
-            p,
-            Layout::from_size_align(len, 1).unwrap(),
-        )
+
+    pub unsafe fn commit(p: *mut u8, size: usize) {
+        (&*MMAP).commit(p, layout_for_size(size))
     }
+
+    pub unsafe fn uncommit(p: *mut u8, size: usize) {
+        (&*MMAP).uncommit(p, layout_for_size(size));
+    }
+
+    fn layout_for_size(size: usize) -> Layout {
+        Layout::from_size_align(size, page_size()).unwrap()
+     }
 }
 
 // we use the unlikely intrinsic if it is available.
