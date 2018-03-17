@@ -155,6 +155,7 @@ pub(crate) mod global {
     // safe only because ElfMalloc (and PageAlloc, and TieredSizeClasses) have thread-safe clone
     // methods.
     unsafe impl Sync for GlobalAllocProvider {}
+    unsafe impl Send for GlobalAllocProvider {}
     impl GlobalAllocProvider {
         fn new() -> GlobalAllocProvider {
             GlobalAllocProvider { inner: Some(ElfMalloc::new()) }
