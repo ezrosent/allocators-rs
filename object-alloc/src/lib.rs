@@ -15,14 +15,6 @@ use alloc::allocator::Layout;
 use core::intrinsics::abort;
 use core::ptr::NonNull;
 
-/// An error indicating that no memory is available.
-///
-/// The `Exhausted` error indicates that an allocation request has failed due to resources being
-/// unavailable. It strongly implies that *some* sequence of deallocations would allow a subsequent
-/// reissuing of the original allocation request to succeed.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Exhausted;
-
 /// Allocators which allocate objects of a particular type.
 ///
 /// `ObjectAlloc`s provide an interface which is slightly different than the interface provided by
@@ -74,7 +66,7 @@ pub unsafe trait ObjectAlloc<T> {
     ///
     /// The memory returned by `alloc` is guaranteed to be aligned according to the requirements of
     /// `T` (that is, according to `core::mem::align_of::<T>()`).
-    unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted>;
+    unsafe fn alloc(&mut self) -> Option<NonNull<T>>;
 
     /// Deallocates an object previously returned by `alloc`.
     ///
@@ -130,7 +122,7 @@ pub unsafe trait UntypedObjectAlloc {
     ///
     /// The memory returned by `alloc` is guaranteed to abide by the `Layout` returned from
     /// `layout`.
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted>;
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>>;
 
     /// Deallocates an object previously returned by `alloc`.
     ///
@@ -169,7 +161,7 @@ unsafe impl<T> UntypedObjectAlloc for ObjectAlloc<T> {
         Layout::new::<T>()
     }
 
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
         ObjectAlloc::alloc(self).map(|x| x.cast())
     }
 

@@ -38,7 +38,7 @@ extern crate kernel32;
 extern crate winapi;
 
 use self::alloc::allocator::{Alloc, AllocErr, CannotReallocInPlace, Excess, Layout};
-use self::object_alloc::{Exhausted, UntypedObjectAlloc};
+use self::object_alloc::UntypedObjectAlloc;
 use core::ptr::{self, NonNull};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -665,11 +665,11 @@ unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
         self.obj_layout.clone()
     }
 
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
         // TODO: There's probably a method that does this more cleanly.
         match self.alloc_excess(self.layout()) {
-            Ok(Excess(ptr, _)) => Ok(NonNull::new_unchecked(ptr)),
-            Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
+            Ok(Excess(ptr, _)) => Some(NonNull::new_unchecked(ptr)),
+            Err(AllocErr::Exhausted { .. }) => None,
             Err(AllocErr::Unsupported { .. }) => unreachable!(),
         }
     }
@@ -733,7 +733,7 @@ unsafe impl UntypedObjectAlloc for MapAlloc {
         <&MapAlloc as UntypedObjectAlloc>::layout(&(&*self))
     }
 
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
         <&MapAlloc as UntypedObjectAlloc>::alloc(&mut (&*self))
     }
 

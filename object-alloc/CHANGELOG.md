@@ -18,3 +18,4 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - Switched from `*mut u8` to `NonNull<u8>` for pointer values
+- Switched from returning `Result`s to returning `Option`s

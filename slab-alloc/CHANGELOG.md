@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - Upgraded to new `ObjectAlloc` and `UntypedObjectAlloc` traits that use
-  `NonNull<u8>` instead of `*mut u8`
+  `Option<NonNull<T>>` instead of `Result<*mut T, Exhausted>`
 - Switch from `*mut T` to `NonNull<T>` or `Option<NonNull<T>>` for various
   internal pointers
 - Make `PtrHashMap` support any value type that is `Copy`, not just raw

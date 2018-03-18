@@ -85,7 +85,7 @@ use self::util::list::*;
 use util::workingset::WorkingSet;
 use init::*;
 use self::init::InitSystem;
-use self::object_alloc::{Exhausted, ObjectAlloc, UntypedObjectAlloc};
+use self::object_alloc::{ObjectAlloc, UntypedObjectAlloc};
 use self::alloc::allocator::Layout;
 
 pub use backing::BackingAlloc;
@@ -431,7 +431,7 @@ impl UntypedSlabAllocBuilder<NopInitSystem> {
 }
 
 unsafe impl<T, I: InitSystem, B: BackingAlloc> ObjectAlloc<T> for SlabAlloc<T, I, B> {
-    unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<T>> {
         match self.alloc {
             PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
             PrivateSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
@@ -454,7 +454,7 @@ unsafe impl<T, I: InitSystem, B: BackingAlloc> UntypedObjectAlloc for SlabAlloc<
         }
     }
 
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
         match self.alloc {
             PrivateSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
             PrivateSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
@@ -477,7 +477,7 @@ unsafe impl<I: InitSystem, B: BackingAlloc> UntypedObjectAlloc for UntypedSlabAl
         }
     }
 
-    unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
         match self.alloc {
             PrivateUntypedSlabAlloc::Aligned(ref mut alloc) => alloc.alloc(),
             PrivateUntypedSlabAlloc::Large(ref mut alloc) => alloc.alloc(),
@@ -520,11 +520,11 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
         }
     }
 
-    fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+    fn alloc(&mut self) -> Option<NonNull<u8>> {
         if self.freelist.size() == 0 {
             let ok = self.alloc_slab();
             if !ok {
-                return Err(Exhausted);
+                return None;
             }
         }
 
@@ -541,7 +541,7 @@ impl<I: InitSystem, S: SlabSystem<I>> SizedSlabAlloc<I, S> {
         self.refcnt += 1;
         debug_assert_eq!(obj.as_ptr() as usize % self.layout.align(), 0);
         self.init_system.init(obj, init_status);
-        Ok(obj)
+        Some(obj)
     }
 
     /// Allocate a new slab.

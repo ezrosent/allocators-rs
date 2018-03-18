@@ -119,10 +119,7 @@ impl<I: InitSystem, A: UntypedObjectAlloc, C: ConfigData> SlabSystem<I> for Syst
             let color = self.layout
                 .color_settings
                 .next_color(self.layout.layout.align());
-            let slab = match self.alloc.alloc() {
-                Ok(slab) => slab.cast(),
-                Err(..) => return None,
-            };
+            let slab = self.alloc.alloc()?.cast();
 
             ptr::write(
                 slab.as_ptr(),
