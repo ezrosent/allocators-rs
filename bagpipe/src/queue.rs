@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -28,8 +28,8 @@
 //! respectively) both for benchmarking purposes and to facilitate
 //! documentation; it does not seem possible to generate custom doc
 //! comments for those data-structures.
-use super::crossbeam::mem::epoch::{Shared, Atomic, Owned, Guard};
-use super::crossbeam::mem::epoch;
+
+use super::crossbeam_epoch::{Shared, Atomic, Owned, Guard};
 use super::crossbeam::mem::CachePadded;
 use bag::{PopResult, PopStatus, SharedWeakBag, Revocable, RevocableWeakBag};
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
@@ -216,10 +216,13 @@ pub struct YangCrummeyQueue<T: Node> {
 impl<T: Node> Drop for YangCrummeyQueue<T> {
     fn drop(&mut self) {
         // This method will do very bad things if it ever gets called
-        // with parts of the queue still reachable.
-        let guard = epoch::pin();
-        let head = self.head_data.load(Ordering::Relaxed, &guard).unwrap();
-        let tail = self.tail_data.load(Ordering::Relaxed, &guard).unwrap();
+        // with parts of the queue still reachable. Since we have exclusive
+        // access (&mut parameter), however, we're guaranteed that can't
+        // happen. Thus, use a dummy Guard.
+        let guard = unsafe { ::crossbeam_epoch::unprotected() };
+
+        let head = unsafe { self.head_data.load(Ordering::Relaxed, &guard).deref() };
+        let tail = unsafe { self.tail_data.load(Ordering::Relaxed, &guard).deref() };
         let mut cur_node = if head.id.load(Ordering::Relaxed) < tail.id.load(Ordering::Relaxed) {
             head
         } else {
@@ -227,12 +230,13 @@ impl<T: Node> Drop for YangCrummeyQueue<T> {
         };
         loop {
             unsafe {
-                guard.unlinked(cur_node);
+                guard.defer(move || mem::drop(cur_node));
             }
-            match cur_node.next.load(Ordering::Relaxed, &guard) {
-                Some(shared) => cur_node = shared,
-                None => break,
+            let shared = cur_node.next.load(Ordering::Relaxed, &guard);
+            if shared.is_null() {
+                break;
             }
+            cur_node = unsafe { shared.deref() };
         }
     }
 }
@@ -249,28 +253,28 @@ impl<T: Node> YangCrummeyQueue<T> {
     /// corresponding memory if necessary.
     fn try_cleanup<'a>(&self, seg: &Atomic<Segment<T>>, data: Shared<'a, Segment<T>>, g: &Guard) {
         // TODO(ezr) relaxed semantics may be sufficient here.
-        let next = data.next.load(Ordering::Acquire, g);
+        let next = unsafe { data.deref().next.load(Ordering::Acquire, g) };
         // if next is null, then it means that something very strange
         // has happened and it is best to walk away. Recall that
         // try_cleanup is only called if some thread actually followed
         // seg's next pointer. Even for a very long stall in execution,
         // some segment must be there. Given the use of relaxed ordering
         // in push and pop I am not sure that this can be ruled out.
-        if next.is_some()
+        if !next.is_null()
             // next we try and CAS data to its next pointer. If this
             // fails it means someone else succeeded and we can just
             // return.
-            && seg.cas_shared(Some(data), next, Ordering::Release)
+            && seg.compare_and_set(data, next, Ordering::Release, g).is_ok()
             // finally, we increment the counter of times this value
             // has advanced. data.ctr is a sort of "inverse ref count";
             // it avoids a double-free with head_data and tail_data
             // advancing past the same segment. Whoever advances the
             // pointer last is obligated to reclaim the memory.
-            && data.ctr.fetch_add(1, Ordering::AcqRel) == 1
+            && unsafe { data.deref().ctr.fetch_add(1, Ordering::AcqRel) == 1 }
         {
             // we are the second pointer to advance past this segment,
             // so we reclaim the memory.
-            unsafe { g.unlinked(data) }
+            unsafe { g.defer(move || mem::drop(data)) }
         }
     }
 
@@ -283,16 +287,15 @@ impl<T: Node> YangCrummeyQueue<T> {
         seg: &Atomic<Segment<T>>,
         g: &'a Guard,
     ) -> (usize, &'a AtomicUsize) {
-        let data = seg.load(Ordering::Relaxed, g).expect(
-            "initial pointer should never be null",
-        );
-        let cur_id = data.id.load(Ordering::Relaxed);
+        let data = seg.load(Ordering::Relaxed, g);
+        assert!(!data.is_null());
+        let cur_id = unsafe { data.deref().id.load(Ordering::Relaxed) };
         // the load of data must happen before the fetch-add of ix,
         // otherwise we are in danger of the pointer being advanced
         // between ix being incremented data being loaded.
         fence(Ordering::Acquire);
         let ix = ind.fetch_add(1, Ordering::Relaxed);
-        let (node_ref, try_clean) = data.find_cell(ix, g);
+        let (node_ref, try_clean) = unsafe { data.deref().find_cell(ix, g) };
         let res = node_to_atomic_ref!(node_ref);
         // only try to clean up if ix corresponds to the first index
         // past cur_id.
@@ -314,12 +317,15 @@ impl<T: Node> YangCrummeyQueue<T> {
     }
 }
 
-
 impl<T: Node> SharedWeakBag for YangCrummeyQueue<T> {
     type Item = T;
 
     fn new() -> Self {
-        let guard = epoch::pin();
+        // Since we're only accessing data created in this function,
+        // and we haven't spawned any new threads, we don't actually
+        // need GC yet. Thus, just use a dummy guard.
+        let guard = unsafe { ::crossbeam_epoch::unprotected() };
+
         // Initialize head and tail pointers to point to the same location.
         let res = YangCrummeyQueue {
             head_index: CachePadded::new(AtomicUsize::new(0)),
@@ -327,31 +333,29 @@ impl<T: Node> SharedWeakBag for YangCrummeyQueue<T> {
             head_data: CachePadded::new(Atomic::new(Segment::new(0))),
             tail_data: CachePadded::new(Atomic::null()),
         };
-        res.tail_data.store_shared(
+        res.tail_data.store(
             res.head_data.load(Ordering::SeqCst, &guard),
             Ordering::Release,
         );
         res
     }
 
-    fn try_push(&self, t: T) -> Result<(), T> {
-        let guard = epoch::pin();
-        let (_, cell) = self.increment_and_get_usize(&self.tail_index, &self.tail_data, &guard);
+    fn try_push(&self, guard: &Guard, t: T) -> Result<(), T> {
+        let (_, cell) = self.increment_and_get_usize(&self.tail_index, &self.tail_data, guard);
         // XXX: can this be an exchange instead of a CAS?
         let res = cell.swap(t.as_usize(), Ordering::Relaxed);
         debug_assert!(res == 0 || res == SENTINEL);
         if res == 0 { Ok(()) } else { Err(t) }
     }
 
-    fn try_pop(&self) -> PopResult<T> {
+    fn try_pop(&self, guard: &Guard) -> PopResult<T> {
         #[cfg(feature = "check_empty_yq")]
         {
             if self.is_empty() {
                 return Err(PopStatus::Empty);
             }
         }
-        let guard = epoch::pin();
-        let (ix, cell) = self.increment_and_get_usize(&self.head_index, &self.head_data, &guard);
+        let (ix, cell) = self.increment_and_get_usize(&self.head_index, &self.head_data, guard);
         let res = cell.swap(SENTINEL, Ordering::Relaxed);
         debug_assert_ne!(res, SENTINEL);
         if res == 0 {
@@ -433,25 +437,24 @@ impl<T: Node> Segment<T> {
             }
             not_first = true;
             // our target segment is further in the list.
-            match cur_seg.next.load(Ordering::Relaxed, guard) {
-                // search in the next segment.
-                Some(shared) => cur_seg = *shared,
+            let next = cur_seg.next.load(Ordering::Relaxed, guard);
+            if next.is_null() {
                 // There is no next segment, attempt to create it. If
                 // this compare-and-swap fails it means that someone
                 // else suceeded, so we just retry.
-                None => {
-                    let new_seg = Owned::new(Segment::new(cur_id + 1));
-                    // TODO(ezr) don't waste the allocation?
-                    if let Ok(shared) = cur_seg.next.cas_and_ref(
-                        None,
-                        new_seg,
-                        Ordering::Relaxed,
-                        guard,
-                    )
-                    {
-                        cur_seg = *shared;
-                    }
+                let new_seg = Owned::new(Segment::new(cur_id + 1));
+                // TODO(ezr) don't waste the allocation?
+                if let Ok(shared) = cur_seg.next.compare_and_set(
+                    Shared::null(),
+                    new_seg,
+                    Ordering::Relaxed,
+                    guard,
+                )
+                {
+                    cur_seg = unsafe { shared.deref() };
                 }
+            } else {
+                cur_seg = unsafe { next.deref() };
             }
         }
         (unsafe { cur_seg.data.get_unchecked(seg_ix) }, not_first)
@@ -510,13 +513,16 @@ impl<T> RevokeFunc<T> for () {
 
 impl<T: Node, F: RevokeFunc<T> + 'static> Drop for FAAQueueLowLevel<T, F> {
     fn drop(&mut self) {
-        let guard = epoch::pin();
+        // TODO(joshlf): Can this just be a dummy guard?
+        let guard = ::crossbeam_epoch::pin();
         let mut cur_node = &self.head;
-        while let Some(n) = cur_node.load(Ordering::Relaxed, &guard) {
+        let mut n = cur_node.load(Ordering::Relaxed, &guard);
+        while !n.is_null() {
             unsafe {
-                guard.unlinked(n);
+                guard.defer(move || mem::drop(n));
             }
-            cur_node = &n.next;
+            cur_node = unsafe { &n.deref().next };
+            n = cur_node.load(Ordering::Relaxed, &guard);
         }
     }
 }
@@ -537,75 +543,76 @@ impl<T: Node + Revocable + 'static> RevocableWeakBag for FAAQueueLowLevel<T, Rev
 
 impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, F> {
     type Item = T;
+
     fn new() -> Self {
+        // Since we're only accessing data created in this function,
+        // and we haven't spawned any new threads, we don't actually
+        // need GC yet. Thus, just use a dummy guard.
+        let guard = unsafe { ::crossbeam_epoch::unprotected() };
+
         let res = FAAQueueLowLevel {
             head: CachePadded::new(Atomic::new(FAANode::new_empty())),
             tail: CachePadded::new(Atomic::null()),
             _marker: PhantomData,
         };
-        let guard = epoch::pin();
-        res.tail.store_shared(
+        res.tail.store(
             res.head.load(Ordering::Relaxed, &guard),
             Ordering::Relaxed,
         );
         res
     }
 
-    fn try_push(&self, item: T) -> Result<(), T> {
-        let guard = epoch::pin();
+    fn try_push(&self, guard: &Guard, item: T) -> Result<(), T> {
         let it = item.as_usize();
         loop {
-            let tail = self.tail.load(Ordering::Relaxed, &guard).expect(
-                "tail pointer should not be null",
-            );
-            let ix = tail.tail_index.fetch_add(1, Ordering::Relaxed);
+            let tail = self.tail.load(Ordering::Relaxed, guard);
+            assert!(!tail.is_null());
+            let ix = unsafe { tail.deref().tail_index.fetch_add(1, Ordering::Relaxed) };
             if ix >= SMALL_SEG_SIZE {
                 // We need to enqueue in a cell further in the linked list.
                 //
                 // First we check if the tail has changed; if it has we reload it.
-                if !self.is_tail(tail, &guard) {
+                if !self.is_tail(tail, guard) {
                     continue;
                 }
-                match tail.next.load(Ordering::Relaxed, &guard) {
-                    Some(next) => {
-                        // There is an item after the current tail, we try and assign it to the
-                        // value of the tail. Regardless of the success of the CAS, there will be
-                        // something new in the value of the tail, so we reload.
-                        self.tail.cas_shared(
-                            Some(tail),
-                            Some(next),
-                            Ordering::Relaxed,
-                        );
-                        continue;
-                    }
-
-                    None => {
-                        // There is nothing in the tail value, so we attempt to allocate a new node
-                        // beginning with our item.
-                        let new_node = Owned::new(FAANode::new(Node::from_usize(it)));
-                        if let Ok(shared) = tail.next.cas_and_ref(
-                            None,
+                let next = unsafe { tail.deref().next.load(Ordering::Relaxed, guard) };
+                if next.is_null() {
+                    // There is nothing in the tail value, so we attempt to allocate a new node
+                    // beginning with our item.
+                    let new_node = Owned::new(FAANode::new(Node::from_usize(it)));
+                    if let Ok(new_node) = unsafe { tail.deref().next.compare_and_set(
+                        Shared::null(),
+                        new_node,
+                        Ordering::Relaxed,
+                        guard,
+                    ) } {
+                        // We succeeded. We try to CAS tail to our new segment but either way
+                        // we can return success.
+                        let _ = self.tail.compare_and_set(
+                            tail,
                             new_node,
                             Ordering::Relaxed,
-                            &guard,
-                        )
-                        {
-                            // We succeeded. We try to CAS tail to our new segment but either way
-                            // we can return success.
-                            self.tail.cas_shared(
-                                Some(tail),
-                                Some(shared),
-                                Ordering::Relaxed,
-                            );
-                            return Ok(());
-                        }
-                        // We failed, but that means another node is there, so we retry.
+                            guard,
+                        );
+                        return Ok(());
                     }
+                    // We failed, but that means another node is there, so we retry.
+                } else {
+                    // There is an item after the current tail, we try and assign it to the
+                    // value of the tail. Regardless of the success of the CAS, there will be
+                    // something new in the value of the tail, so we reload.
+                    let _ = self.tail.compare_and_set(
+                        tail,
+                        next,
+                        Ordering::Relaxed,
+                        guard,
+                    );
+                    continue;
                 }
                 continue;
             }
             // ix is within range. We try and swap in our value.
-            let cell_ref = unsafe { tail.get(ix) };
+            let cell_ref = unsafe { tail.deref().get(ix) };
             // store revocation information if available.
             F::store(&item, cell_ref as *const _ as *mut T as usize);
             let res = cell_ref.compare_and_swap(0, it, Ordering::Relaxed);
@@ -622,53 +629,50 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
         }
     }
 
-    fn try_pop(&self) -> PopResult<T> {
-        let guard = epoch::pin();
+    fn try_pop(&self, guard: &Guard) -> PopResult<T> {
         loop {
-            let head = self.head.load(Ordering::Relaxed, &guard).expect(
-                "head pointer should not be null",
-            );
+            let head = self.head.load(Ordering::Relaxed, guard);
+            assert!(!head.is_null());
             // First we check if the queue is empty. To do this we load the head and then the tail.
             // This is because both values can only increase, but if tail_ix is less than what
             // head_ix was in the past, the queue is still empty regardless (because no concurrent
             // pop could increment head).
-            let head_ix = head.head_index.load(Ordering::Relaxed);
+            let head_ix = unsafe { head.deref().head_index.load(Ordering::Relaxed) };
             fence(Ordering::Acquire);
-            let tail_ix = head.tail_index.load(Ordering::Relaxed);
-            let tail_ptr = head.next.load(Ordering::Relaxed, &guard);
-            if head_ix >= tail_ix && tail_ptr.is_none() {
+            let tail_ix = unsafe { head.deref().tail_index.load(Ordering::Relaxed) };
+            let tail_ptr = unsafe { head.deref().next.load(Ordering::Relaxed, guard) };
+            if head_ix >= tail_ix && tail_ptr.is_null() {
                 return Err(PopStatus::Empty);
             }
             // Now we acquire a location in the cell.
-            let my_ix = head.head_index.fetch_add(1, Ordering::Relaxed);
+            let my_ix = unsafe { head.deref().head_index.fetch_add(1, Ordering::Relaxed) };
             if my_ix >= SMALL_SEG_SIZE {
                 // We are past the end, time to see if there is anything forward in the list.
-                match head.next.load(Ordering::Relaxed, &guard) {
-                    Some(shared) => {
-                        // There is something, we try and CAS the head to it and retry. Because
-                        // this segment is now exhausted, we mark it as unlinked. Why is this safe?
-                        // because we already confirmed that the queue is non-empty. This means
-                        // that either all active dequeue threads will either look to the next node
-                        // already, or have an active guard.
-                        //
-                        // TODO(ezrosent): confirm this reasoning.
-                        if self.head.cas_shared(
-                            Some(head),
-                            Some(shared),
-                            Ordering::Relaxed,
-                        )
-                        {
-                            unsafe { guard.unlinked(head) };
-                        }
-                        continue;
+                let next = unsafe { head.deref().next.load(Ordering::Relaxed, guard) };
+                if next.is_null() {
+                    return Err(PopStatus::Empty);
+                } else {
+                    // There is something, we try and CAS the head to it and retry. Because
+                    // this segment is now exhausted, we mark it as unlinked. Why is this safe?
+                    // because we already confirmed that the queue is non-empty. This means
+                    // that either all active dequeue threads will either look to the next node
+                    // already, or have an active guard.
+                    //
+                    // TODO(ezrosent): confirm this reasoning.
+                    if self.head.compare_and_set(
+                        head,
+                        next,
+                        Ordering::Relaxed,
+                        guard,
+                    ).is_ok()
+                    {
+                        unsafe { guard.defer(move || mem::drop(head)) };
                     }
-                    None => {
-                        return Err(PopStatus::Empty);
-                    }
-                };
+                    continue;
+                }
             }
             // Now we try and swap sentinel into our chosen location.
-            let res = unsafe { head.get(my_ix).swap(SENTINEL, Ordering::Relaxed) };
+            let res = unsafe { head.deref().get(my_ix).swap(SENTINEL, Ordering::Relaxed) };
             return if res == 0 || res == SENTINEL {
                 // revocations can put SENTINEL in any cell
                 Err(PopStatus::TransientFailure)
@@ -685,7 +689,7 @@ impl<T: Node, F: RevokeFunc<T> + 'static> SharedWeakBag for FAAQueueLowLevel<T, 
 
 impl<T: Node, F: RevokeFunc<T> + 'static> FAAQueueLowLevel<T, F> {
     fn is_tail<'a>(&self, ptr: Shared<'a, FAANode<T>>, guard: &'a Guard) -> bool {
-        let raw_ptr = self.tail.load(Ordering::Relaxed, guard).unwrap();
+        let raw_ptr = self.tail.load(Ordering::Relaxed, guard);
         ptr.as_raw() == raw_ptr.as_raw()
     }
 }
@@ -732,16 +736,16 @@ macro_rules! generalize {
                 $newty($curty::new())
             }
 
-            fn try_push(&self, t: T) -> Result<(), T> {
+            fn try_push(&self, guard: &Guard, t: T) -> Result<(), T> {
                 let raw_t: *mut T = Box::into_raw(Box::new(t));
-                match self.0.try_push(raw_t) {
+                match self.0.try_push(guard, raw_t) {
                     Ok(()) => Ok(()),
                     Err(it) => unsafe { Err(*Box::from_raw(it)) },
                 }
             }
 
-            fn try_pop(&self) -> PopResult<T> {
-                match self.0.try_pop() {
+            fn try_pop(&self, guard: &Guard) -> PopResult<T> {
+                match self.0.try_pop(guard) {
                     Ok(raw_ptr) => unsafe { Ok(*Box::from_raw(raw_ptr)) },
                     Err(status) => Err(status),
                 }
@@ -750,8 +754,12 @@ macro_rules! generalize {
 
         impl<T> Drop for $newty<T> {
             fn drop(&mut self) {
+                // Dummy handle. Since drop takes a mutable reference, we know that
+                // there are no concurrent accesses, so the GC is pointless here,
+                // so creating a dummy one is fine.
+                let guard = unsafe { ::crossbeam_epoch::unprotected() };
                 loop {
-                    match self.0.try_pop() {
+                    match self.0.try_pop(&guard) {
                         Err(PopStatus::TransientFailure) | Ok(_) => continue,
                         Err(PopStatus::Empty) => return,
                     };
@@ -773,14 +781,15 @@ mod tests {
     use std::thread;
     use std::sync::{Arc, Barrier};
     use std::sync::mpsc::channel;
+    use crossbeam_epoch::default_handle;
 
     fn single_threaded_enqueue_dequeue<W: SharedWeakBag<Item = usize>>(size: usize) {
         let yq = W::new();
         for i in 0..size {
-            assert!(yq.try_push(i).is_ok())
+            assert!(yq.try_push(&default_handle().pin(), i).is_ok())
         }
         for i in 0..size {
-            if let Ok(item) = yq.try_pop() {
+            if let Ok(item) = yq.try_pop(&default_handle().pin()) {
                 assert_eq!(item, i);
             } else {
                 panic!("failed to pop non-empty queue (try {})", i)
@@ -838,7 +847,7 @@ mod tests {
         let j1 = thread::spawn(move || {
             bar1.wait();
             for i in 0..size {
-                while yq1.try_push(i).is_err() {}
+                while yq1.try_push(&default_handle().pin(), i).is_err() {}
             }
         });
         let (yq2, bar2) = (yq.clone(), bar.clone());
@@ -846,7 +855,7 @@ mod tests {
             bar2.wait();
             for i in 0..size {
                 loop {
-                    if let Ok(item) = yq2.try_pop() {
+                    if let Ok(item) = yq2.try_pop(&default_handle().pin()) {
                         assert_eq!(item, i);
                         break;
                     }
@@ -911,7 +920,7 @@ mod tests {
             threads.push(thread::spawn(move || {
                 bart.wait();
                 for i in 0..size {
-                    while yqt.try_push(tnum * size + i).is_err() {}
+                    while yqt.try_push(&default_handle().pin(), tnum * size + i).is_err() {}
                 }
             }));
         }
@@ -924,7 +933,7 @@ mod tests {
                 // For debugging issues like the empty check being faulty.
                 bart.wait();
                 loop {
-                    match yqt.try_pop() {
+                    match yqt.try_pop(&default_handle().pin()) {
                         Err(PopStatus::Empty) => break,
                         Err(PopStatus::TransientFailure) => {}
                         Ok(item) => mychan.send(item).expect("channel send should succeed"),
@@ -939,7 +948,7 @@ mod tests {
 
         // clean up any stragglers
         loop {
-            match yq.try_pop() {
+            match yq.try_pop(&default_handle().pin()) {
                 Err(PopStatus::Empty) => break,
                 Err(PopStatus::TransientFailure) => {}
                 Ok(item) => sender.send(item).expect("channel send should succeed"),
