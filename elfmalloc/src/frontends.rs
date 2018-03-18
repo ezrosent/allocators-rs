@@ -12,18 +12,26 @@
 //! a particular object size. These object-specific allocators can be used as a specialized
 //! allocator, but their main use-case is as a building block for a general dynamic allocator. This
 //! latter task is implemented in the `general` module.
-use super::slag::*;
-use super::sources::MmapSource;
-use super::utils::{likely, OwnedArray, LazyInitializable, mmap};
-use super::alloc_type::AllocType;
+use std::cmp;
+use std::intrinsics::likely;
 use std::marker::PhantomData;
 use std::mem;
-use std::ptr;
-use std::cmp;
+use std::ptr::{self, NonNull};
 
-pub trait Frontend: LazyInitializable + Clone {
-    unsafe fn alloc(&mut self) -> *mut u8;
-    unsafe fn free(&mut self, item: *mut u8);
+use alloc::allocator::Layout;
+use backing::{new_marked_mmap_cache, MarkedAlloc, MarkedMmapCache, PageCache};
+use crossbeam_epoch::{Collector, Handle};
+use mmap_alloc::{MapAlloc, MapAllocBuilder};
+use object_alloc::UntypedObjectAlloc;
+
+use alloc_type::AllocType;
+use slag::*;
+use util::{as_mut, as_ref, mmap, AllocWith, TryCloneWith, OwnedArray, LazyInitializable};
+
+pub trait Frontend
+where Self: Sized + AllocWith + TryCloneWith
+{
+    fn new<P: UntypedObjectAlloc>(handle: &Handle, pages: &mut P, alloc: SlagAllocator) -> Option<Self>;
 }
 
 /// A `LocalCache` provides thread-local data on top of a `SlagAllocator`.
@@ -34,69 +42,88 @@ pub trait Frontend: LazyInitializable + Clone {
 /// producer-consumer workloads and worse at predominantly thread-local workloads than the
 /// `MagazineCache`. `LocalCache`s also have stronger guarantees when it comes to object locality:
 /// almost all adjacent allocations will come from the same region of memory.
-pub struct LocalCache<CA: CoarseAllocator> {
-    alloc: SlagAllocator<CA>,
+pub struct LocalCache {
+    alloc: SlagAllocator,
     vals: PtrStack,
     iter: AllocIter,
+    #[cfg(debug_assertions)]
+    dropped: bool,
 }
 
-impl<CA: CoarseAllocator> Drop for LocalCache<CA> {
+#[cfg(debug_assertions)]
+impl Drop for LocalCache {
     fn drop(&mut self) {
-        unsafe {
-            let meta = &*self.alloc.m;
-            let mask = self.iter.cur_word;
-            let word = self.iter.next_word.offset(-1);
-            let slag = self.alloc.slag;
-            self.alloc.bulk_free(mask, word, slag, meta);
-            for i in 0..self.vals.top {
-                let item = *self.vals.data.get(i);
-                self.alloc.free(item)
-            }
-        }
-    }
-}
-impl<CA: CoarseAllocator> Clone for LocalCache<CA> {
-    fn clone(&self) -> LocalCache<CA> {
-        LocalCache::new(self.alloc.clone())
+        alloc_debug_assert!(self.dropped);
     }
 }
 
-impl<CA: CoarseAllocator> LocalCache<CA> {
-    fn new(mut alloc: SlagAllocator<CA>) -> Self {
+impl TryCloneWith for LocalCache {
+    fn try_clone_with<P: UntypedObjectAlloc>(&self, handle: &Handle, pages: &mut P) -> Option<Self> {
+        LocalCache::new(handle, pages, self.alloc.clone())
+    }
+}
+
+impl Frontend for LocalCache {
+    fn new<P: UntypedObjectAlloc>(handle: &Handle, pages: &mut P, mut alloc: SlagAllocator) -> Option<Self> {
         unsafe {
-            let stack = PtrStack::new((*alloc.m).n_objects);
-            let iter = alloc.refresh();
-            LocalCache {
-                alloc: alloc,
+            let stack = PtrStack::new((*alloc.m.as_ptr()).n_objects);
+            let iter = alloc.refresh(handle, pages)?;
+            Some(LocalCache {
+                alloc,
                 vals: stack,
-                iter: iter,
-            }
+                iter,
+                #[cfg(debug_assertions)]
+                dropped: false,
+            })
         }
     }
 }
 
-impl<CA: CoarseAllocator> Frontend for LocalCache<CA> {
-    unsafe fn free(&mut self, it: *mut u8) {
-        if self.alloc.contains(it) {
-            self.vals.push(it);
-        } else {
-            self.alloc.free(it);
-        }
-    }
-
-    unsafe fn alloc(&mut self) -> *mut u8 {
+unsafe impl AllocWith for LocalCache {
+    unsafe fn alloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) -> Option<NonNull<u8>> {
         self.vals
             .pop()
             .or_else(|| self.iter.next())
-            .unwrap_or_else(|| {
-                let next_iter = self.alloc.refresh();
-                self.iter = next_iter;
-                self.iter.next().expect("New iterator should have values")
+            .or_else(|| {
+                self.iter = self.alloc.refresh(handle, pages)?;
+                Some(self.iter.next().expect("new iterator should have values"))
             })
     }
+
+    unsafe fn dealloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P, it: NonNull<u8>) {
+        if self.alloc.contains(it) {
+            self.vals.push(it);
+        } else {
+            self.alloc.dealloc(handle, pages, it);
+        }
+    }
+
+    /// Free all resources in preparation for dropping `self`.
+    /// 
+    /// Since freeing the resources in a `LocalCache` requires both a Crossbeam
+    /// epoch GC handle and a page allocator, neither of which are stored
+    /// internally, the freeing logic cannot go in `Drop::drop`, and thus the
+    /// owner of this `LocalCache` is responsible for calling `pre_drop` before
+    /// dropping it.
+    unsafe fn pre_drop<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) {
+        alloc_debug_assert!(!self.dropped);
+        #[cfg(debug_assertions)]
+        {
+            self.dropped = true;
+        }
+        unsafe {
+            let meta = as_ref(self.alloc.m);
+            let mask = self.iter.cur_word;
+            let word = NonNull::new_unchecked(self.iter.next_word.offset(-1));
+            let slag = self.alloc.slag;
+            self.alloc.bulk_dealloc(handle, pages, mask, word, slag, meta);
+            for i in 0..self.vals.top {
+                let item = *self.vals.data.get(i);
+                self.alloc.dealloc(handle, pages, item)
+            }
+        }
+    }
 }
-
-
 
 /// A different approach to caching to `LocalCache` inspired by Bonwick-style magazines.
 ///
@@ -105,109 +132,91 @@ impl<CA: CoarseAllocator> Frontend for LocalCache<CA> {
 /// structure also allows us to batch together remote frees (by simply composing bit-set masks
 /// ahead of a fetch-or), reducing the number of atomic instruction that must be issued for most
 /// remote frees.
-pub struct MagazineCache<CA: CoarseAllocator> {
+pub struct MagazineCache {
     stack_size: usize,
     s: PtrStack,
     iter: AllocIter,
-    alloc: SlagAllocator<CA>,
+    alloc: SlagAllocator,
     coalescer: Coalescer,
+    #[cfg(debug_assertions)]
+    dropped: bool,
 }
 
-impl<CA: CoarseAllocator> LazyInitializable for MagazineCache<CA> {
-    type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
-    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
-        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
-        Self::new(salloc)
+impl LazyInitializable for MagazineCache {
+    type Params = (NonNull<Metadata>, usize, RevocablePipe<Slag>);
+    fn init<P: UntypedObjectAlloc>(&(meta, decommit, ref avail): &Self::Params, handle: &Handle, pages: &mut P) -> Option<Self> {
+        let alloc = SlagAllocator::partial_new(pages, meta, decommit, avail.clone())?;
+        Some(Self::new(handle, pages, alloc)?)
     }
 }
 
-impl<CA: CoarseAllocator> LazyInitializable for LocalCache<CA> {
-    type Params = (*mut Metadata, usize, CA, RevocablePipe<Slag>);
-    fn init(&(meta, decommit, ref page_alloc, ref avail): &Self::Params) -> Self {
-        let salloc = SlagAllocator::partial_new(meta, decommit, page_alloc.clone(), avail.clone());
-        Self::new(salloc)
+impl LazyInitializable for LocalCache {
+    type Params = (NonNull<Metadata>, usize, RevocablePipe<Slag>);
+    fn init<P: UntypedObjectAlloc>(&(meta, decommit, ref avail): &Self::Params, handle: &Handle, pages: &mut P) -> Option<Self> {
+        let alloc = SlagAllocator::partial_new(pages, meta, decommit, avail.clone())?;
+        Some(Self::new(handle, pages, alloc)?)
     }
 }
 
-impl<CA: CoarseAllocator> Drop for MagazineCache<CA> {
+#[cfg(debug_assertions)]
+impl Drop for MagazineCache {
     fn drop(&mut self) {
-        unsafe {
-            let meta = &*self.alloc.m;
-            let mask = self.iter.cur_word;
-            let word = self.iter.next_word.offset(-1);
-            let slag = self.alloc.slag;
-            // bulk-free the current AllocIter word. Then free all elements in the magazine.
-            self.alloc.bulk_free(mask, word, slag, meta);
-            for i in 0..self.s.top {
-                let item = *self.s.data.get(i);
-                self.alloc.free(item)
-            }
-        }
+        alloc_debug_assert!(self.dropped)
     }
 }
 
-impl<CA: CoarseAllocator> Clone for MagazineCache<CA> {
-    fn clone(&self) -> Self {
-        MagazineCache::new_sized(self.alloc.clone(), self.stack_size)
+impl TryCloneWith for MagazineCache {
+    fn try_clone_with<P: UntypedObjectAlloc>(&self, handle: &Handle, pages: &mut P) -> Option<Self> {
+        MagazineCache::new_sized(handle, pages, self.alloc.clone(), self.stack_size)
     }
 }
 
-impl<CA: CoarseAllocator> MagazineCache<CA> {
-    pub fn new_sized(mut alloc: SlagAllocator<CA>, magazine_size: usize) -> Self {
+impl MagazineCache {
+    pub fn new_sized<P: UntypedObjectAlloc>(handle: &Handle, pages: &mut P, mut alloc: SlagAllocator, magazine_size: usize) -> Option<Self> {
         alloc_assert!(magazine_size > 0);
         let s = PtrStack::new(magazine_size);
-        let iter = unsafe { alloc.refresh() };
+        let iter = unsafe { alloc.refresh(handle, pages)? };
         let buckets = Coalescer::new(magazine_size * 2);
-        MagazineCache {
+        Some(MagazineCache {
             stack_size: magazine_size,
-            s: s,
-            iter: iter,
-            alloc: alloc,
+            s,
+            iter,
+            alloc,
             coalescer: buckets,
-        }
-    }
-
-    pub fn new(alloc: SlagAllocator<CA>) -> Self {
-        use std::cmp;
-        let object_size = unsafe { (*alloc.m).object_size };
-        const CUTOFF: usize = 32 << 10;
-        let magazine_size = match object_size {
-            0...512 => 1 << 16,
-            513...CUTOFF => 512 << 10 / object_size,
-            _ => 1 << 20 / object_size,
-        };
-        Self::new_sized(alloc, cmp::max(1, magazine_size))
+            #[cfg(debug_assertions)]
+            dropped: false,
+        })
     }
 
     /// Allocate memory from the current owned `Slag`.
     ///
     /// This amounts to getting memory from the current alloc iterator. If the iterator is
     /// exhausted, a new `Slag` is acquired.
-    unsafe fn slag_alloc(&mut self) -> *mut u8 {
+    unsafe fn slag_alloc<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) -> Option<NonNull<u8>> {
         for _ in 0..2 {
             match self.iter.next() {
-                Some(ptr) => return ptr,
-                None => self.iter = self.alloc.refresh(),
+                Some(ptr) => return Some(ptr),
+                None => self.iter = self.alloc.refresh(handle, pages)?,
             }
         }
         alloc_panic!(
             "New slag is empty {:?} {:?}",
             self.alloc.slag,
-            (*self.alloc.slag).rc.load()
+            self.alloc.slag.as_ref().rc.load()
         )
     }
 
     /// Perform the bulk-level frees for the `Coalescer`.
-    unsafe fn return_memory(&mut self) {
+    unsafe fn return_memory<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) {
         alloc_debug_assert_eq!(self.s.top as usize, self.stack_size);
         let new_top = self.stack_size / 2;
-        let meta = &*self.alloc.m;
+        let meta = as_ref(self.alloc.m);
         // iterate over the stack and attempt to add them to the coalescer.
         for i in new_top..self.stack_size {
             let item = *self.s.data.get(i);
             if !self.coalescer.insert(item, meta) {
                 // there was a "hash collision", so we simply free `item` directly
-                self.alloc.free(item)
+                self.alloc.dealloc(handle, pages, item)
             }
         }
         self.s.top = new_top;
@@ -216,38 +225,80 @@ impl<CA: CoarseAllocator> MagazineCache<CA> {
             // Slag::find will technically work if you hand it any pointer within the slag
             // itself, not just an object. As a result, we use the reference count to get at
             // the slag it belongs to.
-            let slag = Slag::find(cell.rc as *mut u8, meta.total_bytes);
-            self.alloc.bulk_free(cell.mask, cell.word, slag, meta);
+            let slag = Slag::find(NonNull::new_unchecked(cell.rc as *mut _), meta.total_bytes);
+            let word = NonNull::new_unchecked(cell.word);
+            self.alloc.bulk_dealloc(handle, pages, cell.mask, word, slag, meta);
             ptr::write(cell, RemoteFreeCell::default());
         }
         self.coalescer.1.top = 0;
     }
 }
 
-impl<CA: CoarseAllocator> Frontend for MagazineCache<CA> {
-    unsafe fn alloc(&mut self) -> *mut u8 {
+impl Frontend for MagazineCache {
+    fn new<P: UntypedObjectAlloc>(handle: &Handle, pages: &mut P, alloc: SlagAllocator) -> Option<Self> {
+        use std::cmp;
+        let object_size = unsafe { alloc.m.as_ref().object_size };
+        const CUTOFF: usize = 32 << 10;
+        let magazine_size = match object_size {
+            0...512 => 1 << 16,
+            513...CUTOFF => 512 << 10 / object_size,
+            _ => 1 << 20 / object_size,
+        };
+        Self::new_sized(handle, pages, alloc, cmp::max(1, magazine_size))
+    }
+}
+
+unsafe impl AllocWith for MagazineCache {
+    unsafe fn alloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) -> Option<NonNull<u8>> {
         if let Some(ptr) = self.s.pop() {
             trace_event!(cache_alloc);
-            ptr
+            Some(ptr)
         } else {
             trace_event!(slag_alloc);
-            self.slag_alloc()
+            self.slag_alloc(handle, pages)
         }
     }
 
-    unsafe fn free(&mut self, item: *mut u8) {
+    unsafe fn dealloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P, item: NonNull<u8>) {
         trace_event!(local_free);
         if likely(self.s.top < self.stack_size) {
             self.s.push(item);
             return;
         }
-        self.return_memory();
+        self.return_memory(handle, pages);
         self.s.push(item);
+    }
+
+    /// Free all resources in preparation for dropping `self`.
+    /// 
+    /// Since freeing the resources in a `MagazineCache` requires both a
+    /// Crossbeam epoch GC handle and a page allocator, neither of which are
+    /// stored internally, the freeing logic cannot go in `Drop::drop`, and
+    /// thus the owner of this `MagazineCache` is responsible for calling
+    /// `pre_drop` before dropping it.
+    unsafe fn pre_drop<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) {
+        alloc_debug_assert!(!self.dropped);
+        #[cfg(debug_assertions)]
+        {
+            self.dropped = true;
+        }
+        unsafe {
+            let meta = as_ref(self.alloc.m);
+            let mask = self.iter.cur_word;
+            let word = NonNull::new_unchecked(self.iter.next_word.offset(-1));
+            let slag = self.alloc.slag;
+            // bulk-free the current AllocIter word. Then free all elements in the magazine.
+            self.alloc.bulk_dealloc(handle, pages, mask, word, slag, meta);
+            for i in 0..self.s.top {
+                let item = *self.s.data.get(i);
+                self.alloc.dealloc(handle, pages, item)
+            }
+        }
     }
 }
 
 /// A set data-structure used to batch remote free operations.
-struct Coalescer(OwnedArray<RemoteFreeCell>, PtrStack);
+struct Coalescer(MmapVec<RemoteFreeCell>, PtrStack);
 
 /// The internal data for a `Coalescer`.
 ///
@@ -277,33 +328,33 @@ impl Default for RemoteFreeCell {
 impl Coalescer {
     fn new(size: usize) -> Self {
         Coalescer(
-            OwnedArray::new(size.next_power_of_two()),
+            MmapVec::new(size.next_power_of_two()),
             PtrStack::new(size),
         )
     }
 
     fn bucket_num(&self, word: usize) -> usize {
-        // we can do a "fast mod" operation because we know len() is a power of two (see `new`)
-        word & (self.0.len() - 1)
+        // we can do a "fast mod" operation because we know cap() is a power of two (see `new`)
+        word & (self.0.cap() - 1)
     }
 
     /// Try to insert `item`.
     ///
     /// The return value indicates if the value was successfully inserted.
-    unsafe fn insert(&mut self, item: *mut u8, meta: &Metadata) -> bool {
+    unsafe fn insert(&mut self, item: NonNull<u8>, meta: &Metadata) -> bool {
         fn hash_ptr(p: *mut Word) -> usize {
             let p_num = p as usize;
             let words = p_num >> 3;
             let pages = words >> 18;
             pages.wrapping_mul(words)
         }
-        let s = &*Slag::find(item, meta.total_bytes);
-        let rc_ptr = &s.rc as *const _ as *mut RefCount;
-        let (word, word_ix) = Slag::get_word(s.as_raw(), item, meta);
-        let word_ptr = ((s.as_raw() as *mut u8).offset(meta.bitset_offset) as *mut Word)
+        let s = Slag::find(item, meta.total_bytes);
+        let rc_ptr = &s.as_ref().rc as *const _ as *mut RefCount;
+        let (word, word_ix) = Slag::get_word(s, item, meta);
+        let word_ptr = ((s.as_ptr() as *mut u8).offset(meta.bitset_offset) as *mut Word)
             .offset(word);
         let bucket_ind = self.bucket_num(hash_ptr(word_ptr));
-        let bucket = &mut *self.0.get(bucket_ind);
+        let bucket = &mut *self.0.get_debug_checked(bucket_ind);
         // XXX: using the property of the creek implementation that it fills newly-dirtied pages
         // with zeros.
         if bucket.rc.is_null() {
@@ -313,7 +364,7 @@ impl Coalescer {
                 mask: 1 << word_ix,
             };
             // append this to a stack of buckets we know are non-null
-            self.1.push(bucket as *const _ as *mut u8);
+            self.1.push(NonNull::from(bucket).cast());
             return true;
         }
         if bucket.word == word_ptr {
@@ -340,24 +391,24 @@ impl Coalescer {
 ///   work. Fresh  will be uncommited: this means that potentially large allocations of memory for
 ///   stacks will only consume physical space when they are used.
 struct PtrStack {
-    data: OwnedArray<*mut u8>,
+    data: MmapVec<NonNull<u8>>,
     top: usize,
 }
 
 impl PtrStack {
     fn new(max_objects: usize) -> PtrStack {
         PtrStack {
-            data: OwnedArray::new(max_objects),
+            data: MmapVec::new(max_objects),
             top: 0,
         }
     }
 
-    unsafe fn push(&mut self, item: *mut u8) {
-        *self.data.get(self.top) = item;
+    unsafe fn push(&mut self, item: NonNull<u8>) {
+        *self.data.get_debug_checked(self.top) = item;
         self.top += 1;
     }
 
-    unsafe fn pop(&mut self) -> Option<*mut u8> {
+    unsafe fn pop(&mut self) -> Option<NonNull<u8>> {
         if self.empty() {
             None
         } else {
@@ -472,21 +523,20 @@ mod magazine {
             mmap::unmap(slf as *mut u8, (*slf).mapped)
         }
 
-        fn push(&mut self, item: *mut u8) -> bool {
-            alloc_debug_assert!(!item.is_null());
+        fn push(&mut self, item: NonNull<u8>) -> bool {
             if self.top == self.cap {
                 return false;
             }
             unsafe {
                 let addr = (self.base as *mut *mut u8).offset(self.top as isize);
                 alloc_debug_assert!((addr as isize - self.base as isize) < self.mapped as isize);
-                ptr::write(addr, item);
+                ptr::write(addr, item.as_ptr());
             }
             self.top += 1;
             true
         }
 
-        fn pop(&mut self) -> Option<*mut u8> {
+        fn pop(&mut self) -> Option<NonNull<u8>> {
             if self.top == 0 {
                 return None;
             }
@@ -494,7 +544,7 @@ mod magazine {
                 self.top -= 1;
                 let res = ptr::read((self.base as *mut *mut u8).offset(self.top as isize));
                 alloc_debug_assert!(!res.is_null());
-                Some(res)
+                Some(NonNull::new_unchecked(res))
             }
         }
     }
@@ -510,20 +560,6 @@ mod magazine {
     impl Default for Depot {
         fn default() -> Depot {
             Depot::new()
-        }
-    }
-
-    impl<FE: Frontend> Drop for DepotCache<FE> {
-        fn drop(&mut self) {
-            for m in &[self.m1, self.m2] {
-                let m_raw: *mut Magazine = *m;
-                unsafe {
-                    while let Some(p) = (*m_raw).pop() {
-                        self.backing.free(p);
-                    }
-                    self.depot.free_empty(m_raw);
-                }
-            }
         }
     }
 
@@ -618,45 +654,42 @@ mod magazine {
         }
     }
 
-    /// A magazine caching layer on top of a given `Frontend`.
+    /// A magazine caching layer on top of a given frontend.
     ///
     /// See module comments for more details on this algorithm.
     #[derive(Clone)]
-    pub struct DepotCache<FE: Frontend> {
-        backing: FE,
+    pub struct DepotCache<A: AllocWith> {
+        backing: A,
         depot: Depot,
         m1: *mut Magazine,
         m2: *mut Magazine,
+        #[cfg(debug_assertions)]
+        dropped: bool,
     }
 
-    impl<FE: Frontend> LazyInitializable for DepotCache<FE> {
-        type Params = (FE::Params, Depot);
-        fn init(&(ref backing, ref depot): &(FE::Params, Depot)) -> DepotCache<FE> {
-            Self::new(FE::init(backing.clone()), depot.clone())
+    impl<A: AllocWith + LazyInitializable> LazyInitializable for DepotCache<A> {
+        type Params = (A::Params, Depot);
+        fn init<P: UntypedObjectAlloc>(&(ref backing, ref depot): &Self::Params, handle: &Handle, pages: &mut P) -> Option<DepotCache<A>> {
+            Some(Self::new(A::init(backing.clone(), handle, pages)?, depot.clone()))
         }
     }
 
-    impl<FE: Frontend> DepotCache<FE> {
-        fn new(backing: FE, mut depot: Depot) -> DepotCache<FE> {
+    impl<A: AllocWith> DepotCache<A> {
+        fn new(backing: A, mut depot: Depot) -> DepotCache<A> {
             let m1 = depot.alloc_full().unwrap_or_else(|| depot.alloc_empty());
             let m2 = depot.alloc_empty();
-            DepotCache {
-                backing: backing,
-                depot: depot,
-                m1: m1,
-                m2: m2,
-            }
+            DepotCache { backing, depot, m1, m2, dropped: false }
         }
     }
 
-    impl<FE: Frontend> Frontend for DepotCache<FE> {
-        unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe impl<A: AllocWith> AllocWith for DepotCache<A> {
+        unsafe fn alloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) -> Option<NonNull<u8>> {
             if let Some(p) = (*self.m1).pop() {
-                return p;
+                return Some(p);
             }
             mem::swap(&mut self.m1, &mut self.m2);
             if let Some(p) = (*self.m1).pop() {
-                return p;
+                return Some(p);
             }
 
             if let Some(m) = self.depot.swap_empty(self.m1) {
@@ -664,14 +697,14 @@ mod magazine {
             } else {
                 let cap = (*self.m1).cap;
                 for _ in 0..cap {
-                    let _r = (*self.m1).push(self.backing.alloc());
+                    let _r = (*self.m1).push(self.backing.alloc_with(handle, pages)?);
                     alloc_debug_assert!(_r);
                 }
             }
-            (*self.m1).pop().expect("new full magazine is empty")
+            Some((*self.m1).pop().expect("new full magazine is empty"))
         }
 
-        unsafe fn free(&mut self, item: *mut u8) {
+        unsafe fn dealloc_with<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P, item: NonNull<u8>) {
             if (*self.m1).push(item) {
                 return;
             }
@@ -684,12 +717,36 @@ mod magazine {
                 Some(m) => self.m1 = m,
                 None => {
                     while let Some(x) = (*self.m1).pop() {
-                        self.backing.free(x)
+                        self.backing.dealloc(handle, pages, x)
                     }
                 },
             };
             let _r = (*self.m1).push(item);
             alloc_debug_assert!(_r);
+        }
+
+        unsafe fn pre_drop<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) {
+            alloc_debug_assert!(self.dropped);
+            #[cfg(debug_assertions)]
+            {
+                self.dropped = true;
+            }
+            for m in &[self.m1, self.m2] {
+                let m_raw: *mut Magazine = *m;
+                unsafe {
+                    while let Some(p) = (*m_raw).pop() {
+                        self.backing.dealloc(handle, pages, p);
+                    }
+                    self.depot.free_empty(m_raw);
+                }
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    impl<A: AllocWith> Drop for DepotCache<A> {
+        fn drop(&mut self) {
+            alloc_debug_assert!(self.dropped);
         }
     }
 
@@ -770,7 +827,7 @@ impl<T> AllocBuilder<T> {
     }
 
     /// Build a `LocalAllocator<T>` from the current configuration.
-    pub fn build_local(&self) -> LocalAllocator<T> {
+    pub fn build_local(&self) -> Option<LocalAllocator<T>> {
         LocalAllocator::new_standalone(
             self.cutoff_factor,
             self.page_size,
@@ -781,7 +838,7 @@ impl<T> AllocBuilder<T> {
     }
 
     /// Build a `MagazineAllocator<T>` from the current configuration.
-    pub fn build_magazine(&self) -> MagazineAllocator<T> {
+    pub fn build_magazine(&self) -> Option<MagazineAllocator<T>> {
         MagazineAllocator::new_standalone(
             self.cutoff_factor,
             self.page_size,
@@ -794,11 +851,11 @@ impl<T> AllocBuilder<T> {
 
 macro_rules! typed_wrapper {
     ($name:ident, $wrapped:tt) => {
-        pub struct $name<T>($wrapped<PageAlloc<MmapSource>>, PhantomData<T>);
-        impl<T> Clone for $name<T> {
-            fn clone(&self) -> Self {
-                $name(self.0.clone(), PhantomData)
-            }
+        pub struct $name<T>{
+            cache: $wrapped,
+            handle: Handle,
+            pages: PageCache<MapAlloc>,
+            _marker: PhantomData<T>,
         }
 
         impl<T> $name<T> {
@@ -807,21 +864,41 @@ macro_rules! typed_wrapper {
                                   target_overhead: usize,
                                   eager_decommit: usize,
                                   max_objects: usize)
-                -> Self {
-                    let pa = PageAlloc::new(page_size, target_overhead, 8, AllocType::SmallSlag);
-                    let slag = SlagAllocator::new(max_objects, mem::size_of::<T>(), 0,
-                                                  cutoff_factor, eager_decommit, pa);
-                    $name($wrapped::new(slag), PhantomData)
+                -> Option<Self> {
+
+                    let layout = Layout::from_size_align(page_size, page_size).unwrap();
+                    let pages = MapAllocBuilder::default()
+                                    .obj_size(page_size)
+                                    .obj_align(page_size)
+                                    .build();
+                    let handle = Collector::new().handle();
+                    let mut pages = PageCache::new(pages, 8);                    
+                    // let pa = PageCache::new(page_size, target_overhead, 8, AllocType::SmallSlag);
+                    let slag = SlagAllocator::new(
+                                    &mut pages,
+                                    max_objects,
+                                    mem::size_of::<T>(),
+                                    0,
+                                    cutoff_factor,
+                                    eager_decommit
+                                )?;
+                    Some($name {
+                        cache: $wrapped::new(&handle, &mut pages, slag)?,
+                        handle,
+                        pages,
+                        _marker: PhantomData,
+                    })
                 }
 
-            pub unsafe fn alloc(&mut self) -> *mut T {
-                self.0.alloc() as *mut T
+            pub unsafe fn alloc(&mut self) -> Option<NonNull<T>> {
+                self.cache.alloc(&self.handle, &mut self.pages).map(NonNull::cast)
             }
 
-            pub unsafe fn free(&mut self, item: *mut T) {
-                self.0.free(item as *mut u8)
+            pub unsafe fn dealloc(&mut self, item: NonNull<T>) {
+                self.cache.dealloc(&self.handle, &mut self.pages, item.cast())
             }
         }
+
         unsafe impl<T> Send for $name<T> {}
     };
 }

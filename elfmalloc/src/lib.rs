@@ -15,10 +15,13 @@
 #![feature(cfg_target_thread_local)]
 #![feature(core_intrinsics)]
 #![feature(const_ptr_null_mut)]
+#![feature(nonnull_cast)]
 extern crate alloc;
 extern crate bagpipe;
+extern crate crossbeam_epoch;
 extern crate mmap_alloc;
 extern crate num_cpus;
+extern crate object_alloc;
 extern crate sysconf;
 
 #[macro_use]
@@ -30,15 +33,17 @@ extern crate log;
 #[macro_use]
 extern crate alloc_tls;
 
-mod sources;
-mod alloc_type;
-mod utils;
 #[macro_use]
 mod stats;
-mod slag;
+pub mod alloc_impl;
+mod alloc_map;
+mod alloc_type;
+mod backing;
 pub mod frontends;
 pub mod general;
-
-pub mod alloc_impl;
-pub mod rust_alloc;
-pub mod vec_alloc;
+mod object;
+// pub mod rust_alloc;
+mod slag;
+// mod sources;
+mod util;
+// pub mod vec_alloc;

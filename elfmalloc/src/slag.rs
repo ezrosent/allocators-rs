@@ -59,17 +59,21 @@
 //! See the `frontends` module for how the slag subsystem is used to construct allocators.
 //!
 //! [1]: https://arxiv.org/abs/1503.09006
-use std::mem;
-use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
-use super::bagpipe::bag::{Revocable, WeakBag};
-use super::bagpipe::{BagPipe, BagCleanup};
-use super::bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
-use super::utils::{mmap, LazyInitializable, unlikely};
-use super::alloc_type::AllocType;
-use super::sources::MemorySource;
-use std::marker::PhantomData;
-use std::ptr;
 use std::cmp;
+use std::intrinsics::unlikely;
+use std::marker::PhantomData;
+use std::mem;
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering};
+
+use bagpipe::bag::{Revocable, WeakBag};
+use bagpipe::{BagPipe, BagCleanup};
+use bagpipe::queue::{FAAQueueLowLevel, RevocableFAAQueue};
+use crossbeam_epoch::Handle;
+use object_alloc::UntypedObjectAlloc;
+
+use alloc_type::AllocType;
+use util::{as_mut, as_ref, mmap, AllocWith, LazyInitializable};
 
 pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>, PageCleanup<T>>;
 pub type RevocablePipe<T> = BagPipe<RevocableFAAQueue<*mut T>, PageCleanup<T>>;
@@ -93,33 +97,33 @@ impl<T> BagCleanup for PageCleanup<T> {
 }
 
 
-/// An allocator that allocates objects at the granularity of the page size of the underlying
-/// `MemorySource`.
-pub trait CoarseAllocator
-where
-    Self: Clone,
-{
-    /// The concrete type representing backing memory for the allocator.
-    type Block: MemorySource;
+// /// An allocator that allocates objects at the granularity of the page size of the underlying
+// /// `MemorySource`.
+// pub trait CoarseAllocator
+// where
+//     Self: Clone,
+// {
+//     /// The concrete type representing backing memory for the allocator.
+//     type Block: MemorySource;
 
-    /// The start of a new block of memory of size `backing_memory().page_size()`.
-    ///
-    /// Furthermore, all memory returned by `alloc` must satisfy
-    /// `c.backing_memory().contains(c.alloc())`*.
-    ///
-    /// *That is, if that code actually compiled and didn't have a lifetime issue.
-    unsafe fn alloc(&mut self) -> *mut u8;
+//     /// The start of a new block of memory of size `backing_memory().page_size()`.
+//     ///
+//     /// Furthermore, all memory returned by `alloc` must satisfy
+//     /// `c.backing_memory().contains(c.alloc())`*.
+//     ///
+//     /// *That is, if that code actually compiled and didn't have a lifetime issue.
+//     unsafe fn alloc(&mut self) -> *mut u8;
 
-    /// Free a page of memory back to the allocator.
-    ///
-    /// If `item` is not contained in `self.backing_memory()`, the behavior of `free` is undefined.
-    /// The `uncommit` flag is a hint to the allocator to uncommit the memory. It need not be
-    /// observed.
-    unsafe fn free(&mut self, item: *mut u8, uncommit: bool);
+//     /// Free a page of memory back to the allocator.
+//     ///
+//     /// If `item` is not contained in `self.backing_memory()`, the behavior of `free` is undefined.
+//     /// The `uncommit` flag is a hint to the allocator to uncommit the memory. It need not be
+//     /// observed.
+//     unsafe fn free(&mut self, item: *mut u8, uncommit: bool);
 
-    /// Get access to the backing memory for the allocator.
-    fn backing_memory(&self) -> &Self::Block;
-}
+//     /// Get access to the backing memory for the allocator.
+//     fn backing_memory(&self) -> &Self::Block;
+// }
 
 
 pub use self::metadata::{Metadata, compute_metadata};
@@ -643,9 +647,9 @@ impl AllocIter {
 }
 
 impl Iterator for AllocIter {
-    type Item = *mut u8;
+    type Item = NonNull<u8>;
 
-    fn next(&mut self) -> Option<*mut u8> {
+    fn next(&mut self) -> Option<NonNull<u8>> {
         let word_size = Word::bits();
         loop {
             let next_bit = self.cur_word.trailing_zeros() as usize;
@@ -664,7 +668,7 @@ impl Iterator for AllocIter {
                     (self.object_size * (self.cur_word_index * word_size + next_bit)) as
                         isize,
                 );
-                return Some(object);
+                return Some(NonNull::new_unchecked(object));
             }
         }
     }
@@ -680,7 +684,7 @@ macro_rules! or_slag_word {
     ($slag:expr, $bitset_offset:expr, $word:expr, $mask:expr) => {
         {
             let word = $word;
-            (($slag as *mut u8).offset($bitset_offset) as *mut Word)
+            (($slag.as_ptr() as *mut u8).offset($bitset_offset) as *mut Word)
                 // go to the bitset we want
                 .offset(word as isize)
                 .as_ref()
@@ -713,8 +717,8 @@ impl Slag {
     /// already initialized has been `claim`ed. As such, this simply amounts to initializing all of
     /// the `Slag` data-structures. In order to work in complete generality, the bit-set
     /// initialization is a bit subtle.
-    pub unsafe fn init(slag: *mut Self, meta: &Metadata) {
-        let slf = slag.as_mut().expect("null slag");
+    pub unsafe fn init(slag: NonNull<Self>, meta: &Metadata) {
+        let slf = as_mut(slag);
         slf.set_metadata(meta as *const _ as *mut Metadata);
         ptr::write(&mut slf.ty, meta.ty);
         slf.rc.init(meta.n_objects);
@@ -789,16 +793,16 @@ impl Slag {
 
     /// Given a pointer to an object within a `Slag` with matching `Metadata` find a pointer to the
     /// `Slag`.
-    pub fn find(item: *mut u8, alignment: usize) -> *mut Self {
+    pub fn find(item: NonNull<u8>, alignment: usize) -> NonNull<Self> {
         alloc_debug_assert!(alignment.is_power_of_two());
         alloc_debug_assert!(alignment > 0);
-        ((item as usize) & !(alignment - 1)) as *mut Self
+        unsafe { NonNull::new_unchecked(((item.as_ptr() as usize) & !(alignment - 1)) as *mut _) }
     }
 
     #[inline]
-    pub fn get_word(raw_self: *mut Slag, item: *mut u8, m: &Metadata) -> (isize, usize) {
-        let it_num = item as usize;
-        let self_num = raw_self as usize;
+    pub fn get_word(raw_self: NonNull<Slag>, item: NonNull<u8>, m: &Metadata) -> (isize, usize) {
+        let it_num = item.as_ptr() as usize;
+        let self_num = raw_self.as_ptr() as usize;
         // `Slag` bitsets operate by "pretending" objects are not of the actual object size, but are
         // instead objects of some smaller power-of-2 size. The `bit_rep_shift` value is the base-2
         // log of this "fake size". In order to mark the object as present, we divide by this fake
@@ -815,11 +819,11 @@ impl Slag {
     ///
     /// This method assumes `item` is a member of `self` (enforced in debug builds). It also
     /// computes whether or not this `free` operation triggered a state transition.
-    pub fn free(&self, item: *mut u8) -> Transition {
+    pub fn dealloc(&self, item: NonNull<u8>) -> Transition {
         let m = self.get_metadata();
         // must be in-bounds
-        alloc_debug_assert!((item as usize) < (self.as_raw() as usize + m.total_bytes));
-        let (word, word_ix) = Self::get_word(self.as_raw(), item, m);
+        alloc_debug_assert!((item.as_ptr() as usize) < (self.as_raw() as usize + m.total_bytes));
+        let (word, word_ix) = Self::get_word(NonNull::from(self), item, m);
         // first we increment the reference count and then we mark the bitset. Why? During a refill
         // of local state, the bitset _must_ be read first because it informs how much the
         // reference count is incremented. If relaxed ordering were used everywhere, then reference
@@ -895,233 +899,219 @@ impl DirtyFn for () {
 /// as a second `Creek` will be initialized in order to service higher-alignment page allocations.
 /// TODO(ezrosent): The above issue is a wart that could be mitigated by simply allowing a
 /// CoarseAllocator to report its own page size.
-#[derive(Clone)]
-pub struct PageAlloc<C: MemorySource, D = ()>
-where
-    D: DirtyFn,
-{
-    target_overhead: usize,
-    creek: C,
-    // bagpipes of byte slices of size creek.page_size
-    clean: SlagPipe<u8>,
-    dirty: SlagPipe<u8>,
-    aligned_source: C,
-    pages_per: usize,
-    ty: AllocType,
-    _marker: PhantomData<D>,
-}
+// #[derive(Clone)]
+// pub struct PageAlloc<C: MemorySource, D = ()>
+// where
+//     D: DirtyFn,
+// {
+//     target_overhead: usize,
+//     creek: C,
+//     // bagpipes of byte slices of size creek.page_size
+//     clean: SlagPipe<u8>,
+//     dirty: SlagPipe<u8>,
+//     aligned_source: C,
+//     pages_per: usize,
+//     ty: AllocType,
+//     _marker: PhantomData<D>,
+// }
 
-impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
-    type Params = (usize, usize, usize, usize, AllocType);
-    fn init(&(page_size, target_overhead, pipe_size, aligned_source, ty): &Self::Params) -> Self {
-        Self::new_aligned(page_size, target_overhead, pipe_size, aligned_source, ty)
-    }
-}
+// impl<C: MemorySource, D: DirtyFn> LazyInitializable for PageAlloc<C, D> {
+//     type Params = (usize, usize, usize, usize, AllocType);
+//     fn init(&(page_size, target_overhead, pipe_size, aligned_source, ty): &Self::Params) -> Self {
+//         Self::new_aligned(page_size, target_overhead, pipe_size, aligned_source, ty)
+//     }
+// }
 
-impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
-    /// Create a new `PageAlloc`.
-    pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize, ty: AllocType) -> Self {
-        Self::new_aligned(page_size, target_overhead, pipe_size, page_size, ty)
-    }
+// impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
+//     /// Create a new `PageAlloc`.
+//     pub fn new(page_size: usize, target_overhead: usize, pipe_size: usize, ty: AllocType) -> Self {
+//         Self::new_aligned(page_size, target_overhead, pipe_size, page_size, ty)
+//     }
 
-    pub fn new_aligned(
-        page_size: usize,
-        target_overhead: usize,
-        pipe_size: usize,
-        align: usize,
-        ty: AllocType,
-    ) -> Self {
-        alloc_debug_assert!(align >= page_size);
-        alloc_debug_assert!(page_size.is_power_of_two());
-        alloc_debug_assert!(align.is_power_of_two());
-        let pages_per = align / page_size;
-        let clean = PageCleanup::new(page_size);
-        let creek = C::new(page_size);
-        let creek_2 = if pages_per > 1 {
-            C::new(align)
-        } else {
-            creek.clone()
-        };
-        PageAlloc {
-            target_overhead: target_overhead,
-            creek: creek,
-            pages_per: pages_per,
-            aligned_source: creek_2,
-            clean: SlagPipe::new_size_cleanup(2, clean),
-            dirty: SlagPipe::new_size_cleanup(pipe_size, clean),
-            ty: ty,
-            _marker: PhantomData,
-        }
-    }
+//     pub fn new_aligned(
+//         page_size: usize,
+//         target_overhead: usize,
+//         pipe_size: usize,
+//         align: usize,
+//         ty: AllocType,
+//     ) -> Self {
+//         alloc_debug_assert!(align >= page_size);
+//         alloc_debug_assert!(page_size.is_power_of_two());
+//         alloc_debug_assert!(align.is_power_of_two());
+//         let pages_per = align / page_size;
+//         let clean = PageCleanup::new(page_size);
+//         let creek = C::new(page_size);
+//         let creek_2 = if pages_per > 1 {
+//             C::new(align)
+//         } else {
+//             creek.clone()
+//         };
+//         PageAlloc {
+//             target_overhead: target_overhead,
+//             creek: creek,
+//             pages_per: pages_per,
+//             aligned_source: creek_2,
+//             clean: SlagPipe::new_size_cleanup(2, clean),
+//             dirty: SlagPipe::new_size_cleanup(pipe_size, clean),
+//             ty: ty,
+//             _marker: PhantomData,
+//         }
+//     }
 
-    /// Get more clean pages from the backing memory.
-    ///
-    /// One of these pages is returned to the caller for allocation. The rest are added to the
-    /// clean `BagPipe`.
-    fn refresh_pages(&mut self) -> *mut u8 {
-        // If we are using a higher alignment, just allocate a single higher-aligned page. If not,
-        // allocate two pages.
-        let npages = cmp::max(self.pages_per, 2);
-        let creek = &self.aligned_source;
-        let pages = creek
-            .carve(if self.pages_per == 1 { 2 } else { 1 })
-            .expect("out of memory!");
-        let page_size = self.creek.page_size();
-        // Write the required AllocType to the aligned boundary. In some settings this is
-        // unnecessary, but refresh_pages is not called in the hot path and the cost of writing
-        // additional values is trivial compared with synchronization from the BagPipe. As such, it
-        // makes sense to perform this write unconditionally.
-        unsafe { ptr::write(pages as *mut AllocType, self.ty) };
-        let iter = (1..npages).map(|i| unsafe {
-            pages.offset(page_size as isize * (i as isize))
-        });
-        self.clean.bulk_add(iter);
-        pages
-    }
-}
+//     /// Get more clean pages from the backing memory.
+//     ///
+//     /// One of these pages is returned to the caller for allocation. The rest are added to the
+//     /// clean `BagPipe`.
+//     fn refresh_pages(&mut self) -> *mut u8 {
+//         // If we are using a higher alignment, just allocate a single higher-aligned page. If not,
+//         // allocate two pages.
+//         let npages = cmp::max(self.pages_per, 2);
+//         let creek = &self.aligned_source;
+//         let pages = creek
+//             .carve(if self.pages_per == 1 { 2 } else { 1 })
+//             .expect("out of memory!");
+//         let page_size = self.creek.page_size();
+//         // Write the required AllocType to the aligned boundary. In some settings this is
+//         // unnecessary, but refresh_pages is not called in the hot path and the cost of writing
+//         // additional values is trivial compared with synchronization from the BagPipe. As such, it
+//         // makes sense to perform this write unconditionally.
+//         unsafe { ptr::write(pages as *mut AllocType, self.ty) };
+//         let iter = (1..npages).map(|i| unsafe {
+//             pages.offset(page_size as isize * (i as isize))
+//         });
+//         self.clean.bulk_add(iter);
+//         pages
+//     }
+// }
 
-impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
-    type Block = C;
+// impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
+//     type Block = C;
 
-    fn backing_memory(&self) -> &C {
-        &self.creek
-    }
+//     fn backing_memory(&self) -> &C {
+//         &self.creek
+//     }
 
-    unsafe fn alloc(&mut self) -> *mut u8 {
-        if let Ok(ptr) = self.dirty.try_pop_mut() {
-            trace_event!(grabbed_dirty);
-            return ptr;
-        }
-        if let Ok(ptr) = self.clean.try_pop_mut() {
-            trace_event!(grabbed_clean);
-            D::dirty(ptr);
-            return ptr;
-        }
-        self.refresh_pages()
-    }
+//     unsafe fn alloc(&mut self) -> *mut u8 {
+//         if let Ok(ptr) = self.dirty.try_pop_mut() {
+//             trace_event!(grabbed_dirty);
+//             return ptr;
+//         }
+//         if let Ok(ptr) = self.clean.try_pop_mut() {
+//             trace_event!(grabbed_clean);
+//             D::dirty(ptr);
+//             return ptr;
+//         }
+//         self.refresh_pages()
+//     }
 
-    unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
-        use self::mmap::uncommit;
-        use std::cmp;
-        let minor_page_size = mmap::page_size() as isize;
-        if self.dirty.size_guess() >= self.target_overhead as isize {
-            uncommit(ptr, self.backing_memory().page_size());
-            self.clean.push_mut(ptr);
-            return;
-        }
-        if decommit {
-            let uncommit_len = cmp::max(
-                0,
-                self.backing_memory().page_size() as isize - minor_page_size,
-            ) as usize;
-            if uncommit_len == 0 {
-                self.dirty.push_mut(ptr);
-            } else {
-                uncommit(ptr.offset(minor_page_size), uncommit_len);
-                self.dirty.push_mut(ptr);
-            }
-        } else {
-            self.dirty.push_mut(ptr);
-        }
-    }
-}
+//     unsafe fn free(&mut self, ptr: *mut u8, decommit: bool) {
+//         use self::mmap::uncommit;
+//         use std::cmp;
+//         let minor_page_size = mmap::page_size() as isize;
+//         if self.dirty.size_guess() >= self.target_overhead as isize {
+//             uncommit(ptr, self.backing_memory().page_size());
+//             self.clean.push_mut(ptr);
+//             return;
+//         }
+//         if decommit {
+//             let uncommit_len = cmp::max(
+//                 0,
+//                 self.backing_memory().page_size() as isize - minor_page_size,
+//             ) as usize;
+//             if uncommit_len == 0 {
+//                 self.dirty.push_mut(ptr);
+//             } else {
+//                 uncommit(ptr.offset(minor_page_size), uncommit_len);
+//                 self.dirty.push_mut(ptr);
+//             }
+//         } else {
+//             self.dirty.push_mut(ptr);
+//         }
+//     }
+// }
 
 /// Allocator state wrapping a `Slag`.
 ///
 /// This struct forms the "backend" for a particular thread-local cache. It handles the state
 /// transitions of different `Slag`s and also acquires new `Slag`s for iteration over the bitset.
-pub struct SlagAllocator<CA: CoarseAllocator> {
-    pub m: *mut Metadata,
+pub struct SlagAllocator {
+    pub m: NonNull<Metadata>,
     /// The current (local) `Slag`.
-    pub slag: *mut Slag,
-    /// Global pages, potentially not initialized to match `m`
-    pages: CA,
+    pub slag: NonNull<Slag>,
     /// Available `Slag`s with metadata matching `m`.
     available: RevocablePipe<Slag>,
     /// Uncommit memory for full `Slag`s whose real memory footprint exceeds this threshold.
     eager_decommit_threshold: usize,
+    #[cfg(debug_assertions)]
+    dropped: bool,
 }
 
-impl<CA: CoarseAllocator> Drop for SlagAllocator<CA> {
+#[cfg(debug_assertions)]
+impl Drop for SlagAllocator {
     fn drop(&mut self) {
-        unsafe {
-            let slag = self.slag;
-            let meta = &*self.m;
-            let (claimed, was) = (*slag).rc.unclaim();
-            if claimed {
-                // we used this slag at some point
-                if was == meta.n_objects {
-                    self.pages.free(slag as *mut u8, false);
-                    trace_event!(transition_full);
-                // self.transition_full(slag, meta)
-                } else if was >= meta.cutoff_objects {
-                    self.transition_available(slag)
-                }
-            } else {
-                // we never allocated from this slag, so just free it back to the page allocator
-                self.pages.free(slag as *mut u8, false);
-            }
-        }
+        alloc_debug_assert!(self.dropped);
     }
 }
 
-unsafe impl<C: CoarseAllocator + Send> Send for SlagAllocator<C> {}
+unsafe impl Send for SlagAllocator {}
 
-impl<CA: CoarseAllocator> SlagAllocator<CA> {
-    pub fn partial_new(
-        meta: *mut Metadata,
+impl SlagAllocator {
+    pub fn partial_new<P: UntypedObjectAlloc>(
+        pages: &mut P,
+        meta: NonNull<Metadata>,
         decommit: usize,
-        mut pa: CA,
         avail: RevocablePipe<Slag>,
-    ) -> Self {
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+    ) -> Option<Self> {
+        let first_slag = unsafe { pages.alloc()?.cast() };
         unsafe {
-            Slag::init(first_slag, meta.as_ref().expect("metadata null"));
+            Slag::init(first_slag, meta.as_ref());
         };
-        SlagAllocator {
+        Some(SlagAllocator {
             m: meta,
             slag: first_slag,
-            pages: pa,
             available: avail,
             eager_decommit_threshold: decommit,
-        }
+            dropped: false,
+        })
     }
-    pub fn new(
+
+    pub fn new<P: UntypedObjectAlloc>(
+        pages: &mut P,
         max_objects: usize,
         object_size: usize,
         index: usize,
         cutoff_factor: f64,
         eager_decommit: usize,
-        mut pa: CA,
-    ) -> Self {
+    ) -> Option<Self> {
         // This is a bit wasteful as one metadata object consumes will wind up consuming a page. In
         // the dynamic allocator these are packed more tightly.
+        let page_size = pages.layout().size();
         let meta = Box::into_raw(Box::new(compute_metadata(
             object_size,
-            pa.backing_memory().page_size(),
+            page_size,
             index,
             cutoff_factor,
             max_objects,
             AllocType::SmallSlag,
         )));
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pages.alloc()?.cast() };
         unsafe {
             Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
-        let cleanup = PageCleanup::new(pa.backing_memory().page_size());
-        SlagAllocator {
-            m: meta,
+        let cleanup = PageCleanup::new(page_size);
+        Some(SlagAllocator {
+            m: unsafe { NonNull::new_unchecked(meta) },
             slag: first_slag,
-            pages: pa,
             available: RevocablePipe::new_size_cleanup(8, cleanup),
             eager_decommit_threshold: eager_decommit,
-        }
+            dropped: false,
+        })
     }
 
     /// Re-initialize a non-empty `AllocIter`; potentially getting a new `Slag` to do so.
-    pub unsafe fn refresh(&mut self) -> AllocIter {
-        let s_ref = &*self.slag;
-        let meta = &*self.m;
+    pub unsafe fn refresh<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) -> Option<AllocIter> {
+        let s_ref = as_ref(self.slag);
+        let meta = as_ref(self.m);
         let (_claimed, was) = s_ref.rc.unclaim();
         // We used to have this debug_assert
         //
@@ -1156,7 +1146,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
                 _claimed,
                 "claiming slag either during initialization or due to being over cutoff"
             );
-            s_ref.refresh(meta)
+            Some(s_ref.refresh(meta))
         } else {
             // we need a new slag!
             // first we try and get a slag from the available slagpipe. If it is empty, then we get
@@ -1165,50 +1155,51 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             let next_slab = match self.available.try_pop_mut() {
                 Ok(slab) => {
                     trace_event!(grabbed_available);
-                    slab
+                    NonNull::new_unchecked(slab)
                 }
                 Err(_) => {
-                    let new_raw = self.pages.alloc() as *mut Slag;
-                    if (*new_raw).meta.load(Ordering::Relaxed) != self.m {
+                    // If we can't allocate backing memory for a new slag, then
+                    // we're OOM.
+                    let new_raw: NonNull<Slag> = pages.alloc()?.cast();
+                    if new_raw.as_ref().meta.load(Ordering::Relaxed) != self.m.as_ptr() {
                         Slag::init(new_raw, meta);
                     }
                     new_raw
                 }
             };
             self.slag = next_slab;
-            let s_ref = self.slag.as_mut().expect("s_ref_2"); // let s_ref = &*self.slag;
+            let s_ref = self.slag.as_mut();
             let claimed = s_ref.rc.claim();
             alloc_debug_assert!(claimed, "claiming new slag after refresh");
-            s_ref.refresh(meta)
+            Some(s_ref.refresh(meta))
         }
     }
 
-    fn transition_available(&mut self, slag: *mut Slag) {
+    fn transition_available(&mut self, slag: NonNull<Slag>) {
         trace_event!(transition_available);
-        self.available.push_mut(slag)
+        self.available.push_mut(slag.as_ptr())
     }
 
     #[cfg_attr(feature = "cargo-clippy", allow(inline_always))]
     #[inline(always)]
-    unsafe fn transition_full(&mut self, slag: *mut Slag, meta: &Metadata) {
+    unsafe fn transition_full<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P, slag: NonNull<Slag>, meta: &Metadata) {
         let real_size = meta.usable_size;
-        if RevocablePipe::revoke(&slag) {
-            (*slag).handle.store(0, Ordering::Release);
+        if RevocablePipe::revoke(&slag.as_ptr()) {
+            slag.as_ref().handle.store(0, Ordering::Release);
             trace_event!(transition_full);
-            self.pages.free(
-                slag as *mut u8,
-                real_size >= self.eager_decommit_threshold,
-            )
+            pages.dealloc(slag.cast())
         }
         // Otherwise caught in a strange race condition (see comments in alloc). We can
         // safely return without further work.
     }
 
-    pub unsafe fn bulk_free(
+    pub unsafe fn bulk_dealloc<P: UntypedObjectAlloc>(
         &mut self,
+        handle: &Handle,
+        pages: &mut P,
         mask: usize,
-        word: *mut Word,
-        slag: *mut Slag,
+        word: NonNull<Word>,
+        slag: NonNull<Slag>,
         meta: &Metadata,
     ) {
         let n_ones = mask.count_ones() as usize;
@@ -1216,9 +1207,9 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             return;
         }
         trace_event!(bulk_remote_free);
-        let s_ref = &*slag;
+        let s_ref = slag.as_ref();
         let (claimed, was) = s_ref.rc.inc_n(n_ones);
-        let before = (*word).fetch_or(mask, Ordering::Release);
+        let before = word.as_ref().fetch_or(mask, Ordering::Release);
         alloc_debug_assert_eq!(
             before & mask,
             0,
@@ -1230,7 +1221,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         let now = was + n_ones;
         if !claimed {
             if now == meta.n_objects {
-                self.transition_full(slag, meta);
+                self.transition_full(handle, pages, slag, meta);
             } else if was < meta.cutoff_objects && now >= meta.cutoff_objects {
                 self.transition_available(slag);
             }
@@ -1238,45 +1229,65 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
     }
 
     /// Perform a "remote" free to the `Slag` containing `item`.
-    pub unsafe fn free(&mut self, item: *mut u8) {
+    pub unsafe fn dealloc<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P, item: NonNull<u8>) {
         trace_event!(remote_free);
-        let meta = &*self.m;
+        let meta = as_ref(self.m);
         let it_slag = Slag::find(item, meta.total_bytes);
-        match it_slag.as_ref().expect("found invalid slag").free(item) {
+        match it_slag.as_ref().dealloc(item) {
             Transition::Null => return,
             Transition::Available => self.transition_available(it_slag),
-            Transition::Full => self.transition_full(it_slag, meta),
+            Transition::Full => self.transition_full(handle, pages, it_slag, meta),
         }
     }
 
     /// Test if `it` is an element of the current `Slag`.
-    pub fn contains(&self, it: *mut u8) -> bool {
+    pub fn contains(&self, it: NonNull<u8>) -> bool {
         unsafe {
-            let meta = self.m.as_ref().expect("[contains] null metadata");
+            let meta = as_ref(self.m);
             let it_slag = Slag::find(it, meta.total_bytes);
             it_slag == self.slag
         }
     }
+
+    pub unsafe fn pre_drop<P: UntypedObjectAlloc>(&mut self, handle: &Handle, pages: &mut P) {
+        unsafe {
+            let slag = self.slag;
+            let meta = as_ref(self.m);
+            let (claimed, was) = slag.as_ref().rc.unclaim();
+            if claimed {
+                // we used this slag at some point
+                if was == meta.n_objects {
+                    pages.dealloc(slag.cast());
+                    trace_event!(transition_full);
+                // self.transition_full(slag, meta)
+                } else if was >= meta.cutoff_objects {
+                    self.transition_available(slag)
+                }
+            } else {
+                // we never allocated from this slag, so just free it back to the page allocator
+                pages.dealloc(slag.cast());
+            }
+        }
+    }
 }
 
-impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
+impl Clone for SlagAllocator {
     fn clone(&self) -> Self {
-        let mut new_page_handle = self.pages.clone();
-        let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
+        // let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
+        let first_slag: NonNull<Slag> = unimplemented!();
         unsafe {
             Slag::init(
                 first_slag,
-                self.m.as_ref().expect(
-                    "[SlagAllocator::clone] null metadata",
-                ),
+                as_ref(self.m),
             );
         };
         SlagAllocator {
             m: self.m,
             slag: first_slag,
-            pages: new_page_handle,
             available: self.available.clone(),
             eager_decommit_threshold: self.eager_decommit_threshold,
+            #[cfg(debug_assertions)]
+            dropped: false,
         }
     }
 }

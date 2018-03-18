@@ -75,13 +75,13 @@ extern crate num_cpus;
 
 use super::alloc::allocator::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
-use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe, PageCleanup};
+use super::slag::{Metadata, RevocablePipe, compute_metadata, SlagPipe, PageCleanup};
 #[allow(unused_imports)]
 use super::frontends::{Depot, Frontend};
 use super::utils::{mmap, Lazy, LazyInitializable};
-use super::sources::MemorySource;
+// use super::sources::MemorySource;
 use super::bagpipe::bag::WeakBag;
-use super::sources::MmapSource;
+// use super::sources::MmapSource;
 use super::alloc_type::AllocType;
 
 use std::cmp;
