@@ -12,17 +12,16 @@
 //! for more robust `Alloc`-parametric collections.
 
 extern crate smallvec;
-use self::smallvec::VecLike;
-use super::alloc::allocator::Alloc;
-use super::alloc::heap::Heap;
-use super::alloc::raw_vec::RawVec;
-use super::rust_alloc;
-use super::rust_alloc::{DynamicAlloc, SharedAlloc};
 
-use std::cmp;
+use std::{cmp, ops, ptr};
 use std::iter::{IntoIterator, Extend};
-use std::ops;
-use std::ptr;
+
+use alloc::allocator::Alloc;
+use alloc::heap::Heap;
+use alloc::raw_vec::RawVec;
+use self::smallvec::VecLike;
+
+use super::rust_alloc::{ElfMalloc, GlobalAlloc};
 
 /// A `Vec`-like structure parametric on an `Alloc`. The overall structure here borrows heavily
 /// from the smallvec crate, though our goals here are of course different. One could easily fork
@@ -90,19 +89,19 @@ impl<T: Ord, A: Alloc> Ord for AVec<T, A> {
     }
 }
 
-impl<T> Default for AVec<T, DynamicAlloc> {
-    fn default() -> AVec<T, DynamicAlloc> {
+impl<T> Default for AVec<T, ElfMalloc> {
+    fn default() -> AVec<T, ElfMalloc> {
         AVec {
-            buf: RawVec::new_in(rust_alloc::new_owned_handle()),
+            buf: RawVec::new_in(ElfMalloc::default()),
             len: 0,
         }
     }
 }
 
-impl<T> Default for AVec<T, SharedAlloc> {
-    fn default() -> AVec<T, SharedAlloc> {
+impl<T> Default for AVec<T, GlobalAlloc> {
+    fn default() -> AVec<T, GlobalAlloc> {
         AVec {
-            buf: RawVec::new_in(SharedAlloc),
+            buf: RawVec::new_in(GlobalAlloc),
             len: 0,
         }
     }
@@ -241,10 +240,11 @@ impl<T, A: Alloc> ops::DerefMut for AVec<T, A> {
 mod tests {
     extern crate env_logger;
     extern crate test;
+
     use self::test::Bencher;
 
     use super::*;
-    type RVec<T> = AVec<T, SharedAlloc>;
+    type RVec<T> = AVec<T, GlobalAlloc>;
 
     #[test]
     fn test_many_pushes() {
@@ -287,12 +287,12 @@ mod tests {
 
     #[bench]
     fn bench_push_avec_elf(b: &mut Bencher) {
-        bench_push::<AVec<usize, DynamicAlloc>>(b);
+        bench_push::<AVec<usize, ElfMalloc>>(b);
     }
 
     #[bench]
     fn bench_push_avec_shared_elf(b: &mut Bencher) {
-        bench_push::<AVec<usize, SharedAlloc>>(b);
+        bench_push::<AVec<usize, GlobalAlloc>>(b);
     }
 
     #[bench]
@@ -322,15 +322,15 @@ mod tests {
     #[bench]
     fn bench_push_nested_avec_elf(b: &mut Bencher) {
         bench_push_nested::<
-            AVec<usize, DynamicAlloc>,
-            AVec<AVec<usize, DynamicAlloc>, DynamicAlloc>,
+            AVec<usize, ElfMalloc>,
+            AVec<AVec<usize, ElfMalloc>, ElfMalloc>,
         >(b);
     }
 
     #[bench]
     fn bench_push_nested_avec_shared_elf(b: &mut Bencher) {
-        bench_push_nested::<AVec<usize, SharedAlloc>,
-                            AVec<AVec<usize, SharedAlloc>, SharedAlloc>>(b);
+        bench_push_nested::<AVec<usize, GlobalAlloc>,
+                            AVec<AVec<usize, GlobalAlloc>, GlobalAlloc>>(b);
     }
 
     #[bench]
@@ -368,12 +368,12 @@ mod tests {
 
     #[bench]
     fn bench_extend_avec_elf(b: &mut Bencher) {
-        bench_extend::<AVec<usize, DynamicAlloc>>(b);
+        bench_extend::<AVec<usize, ElfMalloc>>(b);
     }
 
     #[bench]
     fn bench_extend_avec_shared_elf(b: &mut Bencher) {
-        bench_extend::<AVec<usize, SharedAlloc>>(b);
+        bench_extend::<AVec<usize, GlobalAlloc>>(b);
     }
 
     #[bench]

@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -15,8 +15,7 @@ extern crate num_cpus;
 extern crate smallvec;
 extern crate test;
 use test::stats::Stats;
-use elfmalloc::rust_alloc::SharedAlloc;
-use elfmalloc::vec_alloc::AVec;
+use elfmalloc::{AVec, GlobalAlloc};
 use alloc::heap::Heap;
 use smallvec::VecLike;
 
@@ -177,14 +176,14 @@ macro_rules! bench_group {
                           _t,
                           1,
                           $iters,
-                          $fn::<AVec<_, SharedAlloc>>($param, _t));
+                          $fn::<AVec<_, GlobalAlloc>>($param, _t));
             create_bench!(v3n,
                           format!("{}_avec_elf", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           num_cpus::get(),
                           $iters,
-                          $fn::<AVec<_, SharedAlloc>>($param, _t));
+                          $fn::<AVec<_, GlobalAlloc>>($param, _t));
 
             v3();
             v3n();

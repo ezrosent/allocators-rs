@@ -16,7 +16,7 @@ set -e
 
 travis-cargo --only nightly build
 RUST_TEST_THREADS=1 RUST_BACKTRACE=1 travis-cargo --only nightly test \
-  -- --features low-memory-tests
+  --release -- --features low-memory-tests
 for feature in    \
   prime_schedules \
   huge_segments   \
@@ -25,5 +25,5 @@ for feature in    \
   magazine_layer  \
   c-api; do
   RUST_TEST_THREADS=1 RUST_BACKTRACE=1 travis-cargo --only nightly test \
-    -- --features "$feature low-memory-tests"
+    --release -- --features "$feature low-memory-tests"
 done

@@ -84,8 +84,17 @@ pub trait WeakBag: Clone {
     // TODO(ezrosent): should we keep Clone here?
     type Item;
 
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn try_push_mut(&mut self, Self::Item) -> Result<(), Self::Item>;
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_push_mut(&mut self, guard: &Guard, Self::Item) -> Result<(), Self::Item>;
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn try_pop_mut(&mut self) -> PopResult<Self::Item>;
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_pop_mut(&mut self, guard: &Guard) -> PopResult<Self::Item>;
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn push_mut(&mut self, it: Self::Item) {
         // TODO(joshlf): Pin the WeakBag's GC for performance
         let mut cur_item = it;
@@ -93,6 +102,17 @@ pub trait WeakBag: Clone {
             cur_item = old_item
         }
     }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn push_mut(&mut self, guard: &Guard, it: Self::Item) {
+        // TODO(joshlf): Pin the WeakBag's GC for performance
+        let mut cur_item = it;
+        while let Err(old_item) = self.try_push_mut(guard, cur_item) {
+            cur_item = old_item
+        }
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn pop_mut(&mut self) -> Option<Self::Item> {
         // TODO(joshlf): Pin the WeakBag's GC for performance
         loop {
@@ -104,19 +124,40 @@ pub trait WeakBag: Clone {
         }
     }
 
+    #[cfg(feature = "external-epoch-gc")]
+    fn pop_mut(&mut self, guard: &Guard) -> Option<Self::Item> {
+        // TODO(joshlf): Pin the WeakBag's GC for performance
+        loop {
+            match self.try_pop_mut(guard) {
+                Ok(it) => break Some(it),
+                Err(PopStatus::Empty) => break None,
+                Err(PopStatus::TransientFailure) => {}
+            }
+        }
+    }
+
     /// Add all items in `I` to the `WeakBag`.
     ///
     /// This allows data-structures to optimize bulk-add operations if
     /// possible.
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, i: I) {
         for it in i {
             self.push_mut(it)
+        }
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, guard: &Guard, i: I) {
+        for it in i {
+            self.push_mut(guard, it)
         }
     }
 }
 
 pub struct ArcLike<B>{
     arc: Arc<B>,
+    #[cfg(not(feature = "external-epoch-gc"))]
     gc: Handle,
 }
 
@@ -124,6 +165,7 @@ impl<B> Clone for ArcLike<B> {
     fn clone(&self) -> Self {
         ArcLike {
             arc: self.arc.clone(),
+            #[cfg(not(feature = "external-epoch-gc"))]
             gc: self.gc.clone(),
         }
     }
@@ -133,6 +175,7 @@ impl<B: SharedWeakBag> Default for ArcLike<B> {
     fn default() -> Self {
         ArcLike {
             arc: Arc::new(B::new()),
+            #[cfg(not(feature = "external-epoch-gc"))]
             gc: Collector::new().handle(),
         }
     }
@@ -141,20 +184,44 @@ impl<B: SharedWeakBag> Default for ArcLike<B> {
 impl<B: SharedWeakBag> WeakBag for ArcLike<B> {
     type Item = B::Item;
 
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
         self.arc.try_push(&self.gc.pin(), it)
     }
 
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_push_mut(&mut self, guard: &Guard, it: Self::Item) -> Result<(), Self::Item> {
+        self.arc.try_push(guard, it)
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
         self.arc.try_pop(&self.gc.pin())
     }
 
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_pop_mut(&mut self, guard: &Guard) -> PopResult<Self::Item> {
+        self.arc.try_pop(guard)
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn push_mut(&mut self, it: Self::Item) {
         self.arc.push(&self.gc.pin(), it)
     }
 
+    #[cfg(feature = "external-epoch-gc")]
+    fn push_mut(&mut self, guard: &Guard, it: Self::Item) {
+        self.arc.push(guard, it)
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
     fn pop_mut(&mut self) -> Option<Self::Item> {
         self.arc.pop(&self.gc.pin())
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn pop_mut(&mut self, guard: &Guard) -> Option<Self::Item> {
+        self.arc.pop(guard)
     }
 }
 

@@ -133,6 +133,7 @@ where
     Clean: BagCleanup<Item = B::Item>,
 {
     pipes: Arc<BagPipeState<B, Clean>>,
+    #[cfg(not(feature = "external-epoch-gc"))]
     gc_handle: Handle,
     offset: usize,
     stride: usize,
@@ -160,8 +161,11 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Clone for BagPipe<B, C
             let seed = self.pipes.all_refs.fetch_add(1, Ordering::Relaxed) + 1;
             seed * 2 + 1
         };
+        // NOTE: Since BagPipe is Sync, but crossbeam_epoch::Handle is not, it's
+        // important that we not access self.handle.
         BagPipe {
             pipes: self.pipes.clone(),
+            #[cfg(not(feature = "external-epoch-gc"))]
             gc_handle: self.pipes.gc.handle(),
             offset: offset & (self.pipes.pipes.len() - 1),
             stride: offset,
@@ -181,10 +185,12 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipe<B, Clean> {
         debug_assert!(size > 0);
 
         let pipes = Arc::new(BagPipeState::new_size(size, clean));
+        #[cfg(not(feature = "external-epoch-gc"))]
         let gc_handle = pipes.gc.handle();
 
         BagPipe {
             pipes,
+            #[cfg(not(feature = "external-epoch-gc"))]
             gc_handle,
             offset,
             stride: offset,
@@ -236,48 +242,10 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipe<B, Clean> {
         }
         cmp::max(0, total)
     }
-}
 
-impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> Default for BagPipe<B, Clean> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> BagPipe<B, Clean> {
-    /// Create a new `BagPipe` with `size` pipes.
-    pub fn new_size(size: usize) -> Self {
-        Self::new_size_cleanup(size, Clean::default())
-    }
-
-    pub fn new() -> Self {
-        #[cfg(feature="prime_schedules")]
-        let offset = primes::get(1);
-        #[cfg(not(feature="prime_schedules"))]
-        let offset = 1;
-
-        let pipes = Arc::new(BagPipeState::new(Clean::default()));
-        let gc_handle = pipes.gc.handle();
-
-        BagPipe {
-            pipes,
-            gc_handle,
-            offset,
-            stride: offset,
-            push_failures: 0,
-            pop_failures: 0,
-            cur_diff: 0,
-        }
-    }
-}
-
-impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B, Clean> {
-    type Item = B::Item;
-
-    fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
-        let guard = self.gc_handle.pin();
+    fn try_push_mut_guard(&mut self, guard: &Guard, it: B::Item) -> Result<(), B::Item> {
         match self.pipes.try_push_internal(
-            &guard,
+            guard,
             it,
             self.offset,
             self.stride,
@@ -297,10 +265,9 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
         }
     }
 
-    fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
-        let guard = self.gc_handle.pin();
+    fn try_pop_mut_guard(&mut self, guard: &Guard) -> PopResult<B::Item> {
         let res = self.pipes.try_pop_internal(
-            &guard,
+            guard,
             self.offset,
             self.stride,
             (self.pop_failures * 2) + 1,
@@ -323,11 +290,10 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
         }
     }
 
-    fn push_mut(&mut self, it: Self::Item) {
-        let guard = self.gc_handle.pin();
-        if let Err(it) = self.try_push_mut(it) {
+    fn push_mut_guard(&mut self, guard: &Guard, it: B::Item) {
+        if let Err(it) = self.try_push_mut_guard(guard, it) {
             match self.pipes.try_push_internal(
-                &guard,
+                guard,
                 it,
                 self.offset,
                 self.stride,
@@ -347,9 +313,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
         }
     }
 
-    fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, iter: I) {
-        let guard = self.gc_handle.pin();
-
+    fn bulk_add_guard<I: Iterator<Item = B::Item>>(&mut self, guard: &Guard, iter: I) {
         let mut cur_index = self.offset;
         let p_len = self.pipes.pipes.len();
         let mut n_iters = 0;
@@ -357,7 +321,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
             let mut it = item;
             loop {
                 cur_index &= p_len - 1;
-                let res = unsafe { self.pipes.pipes.get_unchecked(cur_index).try_push(&guard, it) };
+                let res = unsafe { self.pipes.pipes.get_unchecked(cur_index).try_push(guard, it) };
                 cur_index += self.stride;
                 match res {
                     Ok(_) => {
@@ -371,6 +335,89 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B,
             }
         }
         self.propagate_diff(n_iters)
+    }
+}
+
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> Default for BagPipe<B, Clean> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item> + Default> BagPipe<B, Clean> {
+    /// Create a new `BagPipe` with `size` pipes.
+    pub fn new_size(size: usize) -> Self {
+        Self::new_size_cleanup(size, Clean::default())
+    }
+
+    pub fn new() -> Self {
+        #[cfg(feature="prime_schedules")]
+        let offset = primes::get(1);
+        #[cfg(not(feature="prime_schedules"))]
+        let offset = 1;
+
+        let pipes = Arc::new(BagPipeState::new(Clean::default()));
+        #[cfg(not(feature = "external-epoch-gc"))]
+        let gc_handle = pipes.gc.handle();
+
+        BagPipe {
+            pipes,
+            #[cfg(not(feature = "external-epoch-gc"))]
+            gc_handle,
+            offset,
+            stride: offset,
+            push_failures: 0,
+            pop_failures: 0,
+            cur_diff: 0,
+        }
+    }
+}
+
+impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> WeakBag for BagPipe<B, Clean> {
+    type Item = B::Item;
+
+    #[cfg(not(feature = "external-epoch-gc"))]
+    fn try_push_mut(&mut self, it: Self::Item) -> Result<(), Self::Item> {
+        let guard = self.gc_handle.pin();
+        self.try_push_mut_guard(&guard, it)
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_push_mut(&mut self, guard: &Guard, it: Self::Item) -> Result<(), Self::Item> {
+        self.try_push_mut_guard(&guard, it)
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
+    fn try_pop_mut(&mut self) -> PopResult<Self::Item> {
+        let guard = self.gc_handle.pin();
+        self.try_pop_mut_guard(&guard)
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn try_pop_mut(&mut self, guard: &Guard) -> PopResult<Self::Item> {
+        self.try_pop_mut_guard(guard)
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
+    fn push_mut(&mut self, it: Self::Item) {
+        let guard = self.gc_handle.pin();
+        self.push_mut_guard(&guard, it);
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn push_mut(&mut self, guard: &Guard, it: Self::Item) {
+        self.push_mut_guard(guard, it);
+    }
+
+    #[cfg(not(feature = "external-epoch-gc"))]
+    fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, iter: I) {
+        let guard = self.gc_handle.pin();
+        self.bulk_add_guard(&guard, iter);
+    }
+
+    #[cfg(feature = "external-epoch-gc")]
+    fn bulk_add<I: Iterator<Item = Self::Item>>(&mut self, guard: &Guard, iter: I) {
+        self.bulk_add_guard(guard, iter);
     }
 }
 
@@ -391,11 +438,17 @@ where
     }
 }
 
+unsafe impl<B: SharedWeakBag, Clean> Sync for BagPipe<B, Clean>
+where
+    Clean: BagCleanup<Item = B::Item>
+{}
+
 struct BagPipeState<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> {
     all_refs: AtomicUsize,
     counters: [CachePadded<AtomicIsize>; N_COUNTERS],
     pipes: Vec<B>,
     clean: Clean,
+    #[cfg(not(feature = "external-epoch-gc"))]
     gc: Collector,
 }
 
@@ -419,6 +472,7 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
             counters: unsafe { mem::transmute([[0 as usize; 32]; N_COUNTERS]) },
             pipes: Vec::with_capacity(len),
             clean: clean,
+            #[cfg(not(feature = "external-epoch-gc"))]
             gc: Collector::new(),
         };
         for _ in 0..len {
@@ -524,3 +578,6 @@ impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> BagPipeState<B, Clean>
         }
     }
 }
+
+unsafe impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Send for BagPipeState<B, Clean> {}
+unsafe impl<B: SharedWeakBag, Clean: BagCleanup<Item = B::Item>> Sync for BagPipeState<B, Clean> {}

@@ -28,6 +28,11 @@ check_empty_yq = []
 prime_schedules = []
 staggered_indexes = []
 huge_segments = []
+# Allow the user to keep their own epoch GC instance, and pass a
+# reference to it to bagpipe methods rather than having the bagpipe
+# store its own GC internally. This can be useful to improve performance
+# if many bagpipes (or other concurrent data structures) are in use.
+external-epoch-gc = []
 
 [dependencies]
 crossbeam = "0.2"

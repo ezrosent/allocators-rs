@@ -1,4 +1,4 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of the
 // README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
@@ -7,22 +7,22 @@
 
 #![feature(alloc)]
 #![feature(allocator_api)]
+#![feature(nonnull_cast)]
 extern crate alloc;
 extern crate elfmalloc;
 extern crate num_cpus;
-use std::marker;
+
+use std::{marker, mem, thread, time};
+use std::ptr::{write_volatile, NonNull};
+use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicPtr, Ordering};
+
 use alloc::heap;
-use std::mem;
-use std::thread;
-use std::time;
-use std::ptr::write_volatile;
 
 // use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
 // use elfmalloc::general::global;
 use elfmalloc::alloc_impl::ElfMallocGlobal;
 use elfmalloc::general::DynamicAllocator;
-use std::sync::{Arc, Barrier};
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 type BenchItem = [usize; 2];
 
@@ -101,15 +101,15 @@ unsafe impl<T> Send for ElfClone<T> {}
 impl<T: 'static> AllocLike for ElfClone<T> {
     type Item = T;
     fn create() -> Self {
-        ElfClone(DynamicAllocator::new(), marker::PhantomData)
+        ElfClone(DynamicAllocator::new().unwrap(), marker::PhantomData)
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        self.0.alloc(mem::size_of::<T>()) as *mut T
+        self.0.alloc(mem::size_of::<T>()).unwrap().cast().as_ptr()
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        self.0.free(item as *mut u8)
+        self.0.dealloc(NonNull::new_unchecked(item).cast())
     }
 
     fn kill(&mut self) {}
