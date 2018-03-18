@@ -52,7 +52,7 @@ mod tests {
     extern crate object_alloc;
 
     use self::alloc::heap::{Alloc, AllocErr, Layout};
-    use self::object_alloc::{Exhausted, ObjectAlloc};
+    use self::object_alloc::ObjectAlloc;
     use std::marker::PhantomData;
     use std::ptr::NonNull;
 
@@ -63,17 +63,17 @@ mod tests {
     }
 
     unsafe impl<T: Default> ObjectAlloc<T> for LeakyObjectAlloc<T> {
-        unsafe fn alloc(&mut self) -> Result<NonNull<T>, Exhausted> {
+        unsafe fn alloc(&mut self) -> Option<NonNull<T>> {
             let ptr = match Alloc::alloc(&mut self.alloc, Layout::new::<T>()) {
                 Ok(ptr) => NonNull::new(ptr).unwrap().cast(),
-                Err(AllocErr::Exhausted { .. }) => return Err(Exhausted),
+                Err(AllocErr::Exhausted { .. }) => return None,
                 Err(AllocErr::Unsupported { details }) => {
                     unreachable!("unexpected unsupported alloc: {}", details)
                 }
             };
 
             ::std::ptr::write(ptr.as_ptr(), T::default());
-            Ok(ptr)
+            Some(ptr)
         }
 
         unsafe fn dealloc(&mut self, ptr: NonNull<T>) {

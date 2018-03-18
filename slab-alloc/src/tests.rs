@@ -14,7 +14,7 @@ extern crate test;
 
 use SlabAllocBuilder;
 use self::alloc::heap::{Alloc, Heap, Layout};
-use self::object_alloc::{Exhausted, ObjectAlloc};
+use self::object_alloc::ObjectAlloc;
 use self::test::{black_box, Bencher};
 use self::object_alloc_test::leaky_alloc::LeakyAlloc;
 use backing::alloc::AllocObjectAlloc;
@@ -25,7 +25,7 @@ use core::ptr::NonNull;
 
 fn infer_allocator_type<T>(alloc: &mut ObjectAlloc<T>) {
     if false {
-        let _: Result<NonNull<T>, Exhausted> = unsafe { alloc.alloc() };
+        let _: Option<NonNull<T>> = unsafe { alloc.alloc() };
     }
 }
 

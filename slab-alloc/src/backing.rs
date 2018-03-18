@@ -40,7 +40,7 @@ pub mod alloc {
     extern crate alloc;
     extern crate object_alloc;
     use self::alloc::allocator::{Alloc, AllocErr, Layout};
-    use self::object_alloc::{Exhausted, UntypedObjectAlloc};
+    use self::object_alloc::{UntypedObjectAlloc};
     use core::ptr::NonNull;
 
     /// An `UntypedObjectAlloc` that uses an arbitrary allocator.
@@ -61,10 +61,10 @@ pub mod alloc {
             self.layout.clone()
         }
 
-        unsafe fn alloc(&mut self) -> Result<NonNull<u8>, Exhausted> {
+        unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
             match self.alloc.alloc(self.layout.clone()) {
-                Ok(ptr) => Ok(NonNull::new_unchecked(ptr)),
-                Err(AllocErr::Exhausted { .. }) => Err(Exhausted),
+                Ok(ptr) => Some(NonNull::new_unchecked(ptr)),
+                Err(AllocErr::Exhausted { .. }) => None,
                 Err(AllocErr::Unsupported { details }) => {
                     unreachable!("unexpected unsupported alloc: {}", details)
                 }
