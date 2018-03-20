@@ -162,7 +162,7 @@ pub fn panic(fmt_file_line_col: &(Arguments, &'static str, u32, u32)) -> ! {
     let (fmt, file, line, col) = *fmt_file_line_col;
     alloc_eprint!("thread panicked at '");
     print_internal!(STDERR, STDERR_MTX, fmt);
-    alloc_eprint!("', {}:{}:{}", file, line, col);
+    alloc_eprintln!("', {}:{}:{}", file, line, col);
     unsafe {
         if IS_PANICKING.compare_and_swap(false, true, SeqCst) {
             // compare_and_swap returns the old value; true means somebody's already panicking.
