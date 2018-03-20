@@ -131,6 +131,7 @@ use errno::errno;
 /// as the object to be reallocated (it may have a smaller alignment after being reallocated).
 ///
 /// [virtual memory]: https://en.wikipedia.org/wiki/Virtual_memory
+#[derive(Clone)]
 pub struct MapAllocBuilder {
     read: bool,
     write: bool,
@@ -278,6 +279,7 @@ impl Default for MapAllocBuilder {
     }
 }
 
+#[derive(Clone)]
 pub struct MapAlloc {
     // sysconf::page::pagesize might be inefficient, so store a copy of the pagesize to ensure that
     // loading it is efficient
