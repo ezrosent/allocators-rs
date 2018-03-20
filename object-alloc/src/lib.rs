@@ -118,7 +118,7 @@ pub unsafe trait UntypedObjectAlloc {
     /// `Layout`.
     fn layout(&self) -> Layout;
 
-    /// Allocates an object of type `T`.
+    /// Allocates a new object.
     ///
     /// The memory returned by `alloc` is guaranteed to abide by the `Layout` returned from
     /// `layout`.
