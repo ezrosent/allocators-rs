@@ -48,6 +48,7 @@ use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
+use alloc::allocator::Layout;
 use alloc_fmt::AllocUnwrap;
 use mmap_alloc::{MapAlloc, MapAllocBuilder};
 
@@ -58,6 +59,7 @@ use alloc_map::TieredSizeClasses;
 use alloc_type::AllocType;
 use backing::{GCAlloc, MarkedAlloc, PageCache};
 use frontends::MagazineCache;
+use object::{ElfBuilder, ElfUntypedObjectAllocInner};
 use slag::{compute_metadata, DirtyFn, Metadata, Slag, SlagConfig};
 #[allow(unused_imports)]
 use util::{mmap, AllocWith, Const, Lazy, MmapVec, TryClone};
@@ -108,7 +110,7 @@ pub(crate) mod global {
     /// The reason we have a wrapper is for this module's custom `Drop` implementation, mentioned
     /// in the module documentation.
     struct GlobalAllocator {
-        alloc: ElfMalloc<PageCache<MapAlloc>>,
+        alloc: ElfMalloc,
         // In some rare cases, we've observed that a thread-local GlobalAllocator is spuriously
         // dropped twice. Until we figure out why and fix it, we just detect when it's happening
         // and make the second drop call a no-op.
@@ -129,17 +131,12 @@ pub(crate) mod global {
     ///
     /// This is used to create handles for TLS-stored `GlobalAllocator`s.
     struct GlobalAllocProvider {
-        inner: Option<ElfMalloc<PageCache<MapAlloc>>>,
+        inner: Option<ElfMalloc>,
     }
 
     impl GlobalAllocProvider {
         fn new() -> Option<GlobalAllocProvider> {
-            let alloc = MapAllocBuilder::default()
-                            .obj_size(super::ELFMALLOC_PAGE_SIZE)
-                            .obj_align(super::ELFMALLOC_PAGE_SIZE)
-                            .build();
-            let alloc = PageCache::new(alloc, 8);
-            Some(GlobalAllocProvider { inner: Some(ElfMalloc::new(alloc.try_clone()?, alloc)?) })
+            Some(GlobalAllocProvider { inner: Some(ElfMalloc::new()?) })
         }
     }
 
@@ -232,16 +229,11 @@ pub(crate) mod global {
 
 /// A Dynamic memory allocator, instantiated with sane defaults for various `ElfMalloc` type
 /// parameters.
-pub struct DynamicAllocator(ElfMalloc<PageCache<MapAlloc>>);
+pub struct DynamicAllocator(ElfMalloc);
 
 impl DynamicAllocator {
     pub fn new() -> Option<Self> {
-        let alloc = MapAllocBuilder::default()
-                            .obj_size(ELFMALLOC_PAGE_SIZE)
-                            .obj_align(ELFMALLOC_PAGE_SIZE)
-                            .build();
-        let alloc = PageCache::new(alloc, 8);
-        Some(DynamicAllocator(ElfMalloc::new(alloc.try_clone()?, alloc)?))
+        Some(DynamicAllocator(ElfMalloc::new()?))
     }
     
     pub unsafe fn alloc(&mut self, size: usize) -> Option<NonNull<u8>> {
@@ -285,16 +277,27 @@ pub(crate) type ObjectAlloc<B> = Lazy<Inner, B>;
 #[cfg(feature = "magazine_layer")]
 pub(crate) type ObjectAlloc<B> = Lazy<DepotCache<Inner>, B>;
 
+// TODO: Use a simpler scheme rather than a MagazineCache. In fact, it'd be best
+// if there were a way to make it so that each allocation popped a slag off of
+// the bagpipe, allocated from it, and then pushed it back (unless it was full,
+// in which case just let it float). That would avoid wasting memory by keeping
+// a full medium-sized slag in each ElfMalloc handle.
+//
+// TODO: This probably doesn't need to be Lazy. It's just Lazy so that I don't
+// have to deal with ensuring that MagazineCache can safely implement Sync.
+type SmallBacking = ElfUntypedObjectAllocInner<Lazy<MagazineCache, MarkedAlloc<PageCache<MapAlloc>>>, MarkedAlloc<PageCache<MapAlloc>>>;
+type MediumBacking = MarkedAlloc<PageCache<MapAlloc>>;
+
 /// A Dynamic memory allocator, parmetrized on a particular `ObjectAlloc`, `CourseAllocator` and
 /// `AllocMap`.
 ///
 /// `ElfMalloc` encapsulates the logic of constructing and selecting object classes, as well as
 /// delgating to the `large_alloc` module for large allocations. Most of the logic occurs in its
 /// type parameters.
-struct ElfMalloc<P: GCAlloc> {
+struct ElfMalloc {
     /// A map of size classes. Each size class corresponds to a single object
     /// size and contains a single ObjectAlloc instance.
-    allocs: TieredSizeClasses<ObjectAlloc<MarkedAlloc<P>>, ObjectAlloc<MarkedAlloc<P>>, MarkedAlloc<P>, MarkedAlloc<P>, Sixteen>,
+    allocs: TieredSizeClasses<ObjectAlloc<SmallBacking>, ObjectAlloc<MediumBacking>, SmallBacking, MediumBacking, Sixteen>,
     start_from: usize,
     n_classes: usize,
     metadata: Arc<MmapVec<Metadata>>,
@@ -308,19 +311,42 @@ impl Default for DynamicAllocator {
 
 // TODO(ezrosent): move this to a type parameter when const generics are in.
 pub(crate) const ELFMALLOC_PAGE_SIZE: usize = 2 << 20;
-// pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = 256 << 10;
-pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = ELFMALLOC_PAGE_SIZE;
+pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = 256 << 10;
+// pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = ELFMALLOC_PAGE_SIZE;
 pub(crate) const ELFMALLOC_SMALL_CUTOFF: usize = ELFMALLOC_SMALL_PAGE_SIZE / 4;
 
-impl<P: GCAlloc> ElfMalloc<P> {
-    fn new(small_pages: P, medium_pages: P) -> Option<Self> {
-        Self::new_inner(0.6, small_pages, medium_pages, 8, 25)
+impl ElfMalloc {
+    fn new() -> Option<Self> {
+        // Build the PageCache of pages that backs both the medium slags and the
+        // ElfUntypedObjectAllocInner that is used to back small slags.
+        let alloc = MapAllocBuilder::default()
+                .obj_size(ELFMALLOC_PAGE_SIZE)
+                .obj_align(ELFMALLOC_PAGE_SIZE)
+                .build();
+        let medium_backing = PageCache::new(alloc, 8);
+        let small_backing_layout = Layout::from_size_align(
+                                        ELFMALLOC_SMALL_PAGE_SIZE,
+                                        ELFMALLOC_SMALL_PAGE_SIZE,
+                                    ).alloc_unwrap();
+        // Build the elfmalloc instance that will back small slags. We clone
+        // medium_backing here so that the pages used to back the medium slags
+        // and those used to back the elfmalloc instance that back small slags
+        // are not only the same allocator, but the same instance of that
+        // allocator so they can share memory. Because TieredSizeClasses isn't
+        // aware of this scheme, there's no good (and safe) way to avoid cloning
+        // the handle, but it's essentially just an extra one or two bagpipe
+        // handles per ElfMalloc object, which isn't a big deal.
+        let small_backing = ElfBuilder::default().build_untyped_inner(
+                                MarkedAlloc::new(medium_backing.try_clone()?, AllocType::SmallSlag),
+                                small_backing_layout,
+                            )?;
+        Self::new_inner(0.6, small_backing, MarkedAlloc::new(medium_backing, AllocType::BigSlag), 8, 25)
     }
 
     fn new_inner(
         cutoff_factor: f64,
-        small_pages: P,
-        medium_pages: P,
+        small_backing: SmallBacking,
+        medium_backing: MediumBacking,
         start_from: usize,
         n_classes: usize,
     ) -> Option<Self> {
@@ -328,24 +354,23 @@ impl<P: GCAlloc> ElfMalloc<P> {
         // counted towards the n_classes argument to TieredSizeClasses::new
         let metadata = RefCell::new(MmapVec::new(n_classes + 1)?);
         let allocs = {
-            let init = |obj_size, page_size, alloc_ty| {
+            let get_config = |obj_size, page_size, alloc_ty| {
                 let mut metadata = metadata.try_borrow_mut().alloc_unwrap();
                 let meta = compute_metadata(obj_size, page_size, 0, cutoff_factor, page_size, alloc_ty);
-                unsafe {
-                    metadata.push_debug_checked(meta);
+                let meta_ptr = unsafe {
+                    metadata.push(meta);
                     let idx = metadata.len() - 1;
-                    let meta_ptr = metadata.get_mut_debug_checked(idx);
-                    let slag_config = SlagConfig::new(NonNull::new_unchecked(meta_ptr), 1 << 20);
-                    ObjectAlloc::new(slag_config)
-                }
+                    metadata.get_mut(idx)
+                };
+                SlagConfig::new(NonNull::new(meta_ptr).alloc_unwrap(), 1 << 20)
             };
             TieredSizeClasses::new(
                 start_from,
-                MarkedAlloc::new(small_pages, AllocType::SmallSlag),
-                MarkedAlloc::new(medium_pages, AllocType::BigSlag),
+                small_backing,
+                medium_backing,
                 n_classes,
-                |obj_size, page_size| init(obj_size, page_size, AllocType::SmallSlag),
-                |obj_size, page_size| init(obj_size, page_size, AllocType::BigSlag),
+                |obj_size, page_size| ObjectAlloc::new(get_config(obj_size, page_size, AllocType::SmallSlag)),
+                |obj_size, page_size| ObjectAlloc::new(get_config(obj_size, page_size, AllocType::BigSlag)),
             )?
         };
         
@@ -434,23 +459,13 @@ impl<P: GCAlloc> ElfMalloc<P> {
                     |frontend, handle, pages| frontend.dealloc_with(handle, pages, item),
                     |frontend, handle, pages| frontend.dealloc_with(handle, pages, item),
                 )
-                // let pages = if likely(object_size <= self.max_small) {
-                //     &mut self.small_pages
-                // } else {
-                //     &mut self.medium_pages
-                // };
-                // self.allocs.get_mut(object_size).dealloc(
-                //     &self.handle,
-                //     pages,
-                //     item,
-                // )
             }
             None => large_alloc::dealloc(item),
         };
     }
 }
 
-impl<P: GCAlloc + TryClone> TryClone for ElfMalloc<P> {
+impl TryClone for ElfMalloc {
     fn try_clone(&self) -> Option<Self> {
         // TODO: Avoid leaking resources on failure (see issue #179)
         Some(ElfMalloc {

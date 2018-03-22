@@ -68,7 +68,7 @@ where
 }
 
 impl<T: Clone> TryClone for T {
-    fn try_clone(&self) -> Option<Self> {
+    default fn try_clone(&self) -> Option<Self> {
         Some(self.clone())
     }
 }
@@ -87,10 +87,23 @@ pub unsafe trait PreDrop<B> {
     unsafe fn pre_drop(&mut self, guard: &LazyGuard, backing: &mut B);
 }
 
+unsafe impl<T, B> PreDrop<B> for T {
+    default unsafe fn pre_drop(&mut self, _guard: &LazyGuard, _backing: &mut B) {}
+}
+
 pub trait TryCloneWith<B>
 where Self: Sized
 {
     fn try_clone_with(&self, guard: &LazyGuard, backing: &mut B) -> Option<Self>;
+}
+
+impl<T, B> TryCloneWith<B> for T
+where
+    T: TryClone
+{
+    default fn try_clone_with(&self, _guard: &LazyGuard, _backing: &mut B) -> Option<Self> {
+        self.try_clone()
+    }
 }
 
 pub trait Const<T> {
@@ -194,6 +207,17 @@ where
     }
 }
 
+impl<T, B> ConfigBuild<B> for Lazy<T, B>
+where
+    T: ConfigBuild<B>,
+    T::Config: TryClone,
+{
+    type Config = T::Config;
+    fn build(config: &T::Config, _guard: &LazyGuard, _backing: &mut B) -> Option<Self> {
+        Some(Self::new(config.try_clone()?))
+    }
+}
+
 unsafe impl<T, B> Sync for Lazy<T, B>
 where
     T: ConfigBuild<B>,
@@ -262,12 +286,21 @@ impl<T> MmapVec<T> {
         self.len += 1;
     }
 
-    /// Get a mutable reference to the index `idx`.
+    /// Get a mutable raw pointer to the index `idx`.
     /// 
-    /// `get_debug_checked` gets a reference to the `idx`th element. `idx` must
-    /// be within the capacity configured when this `MmapVec` was constructed,
-    /// but `idx` is *not* required to be less than the current length of the
-    /// vector.
+    /// `get_mut` is like `get_mut_debug_checked`, but the length is checked
+    /// in release mode as well as debug mode.
+    pub unsafe fn get_mut(&mut self, idx: usize) -> *mut T {
+        alloc_assert!(idx < self.raw.cap());
+        self.raw.ptr().offset(idx as isize)
+    }
+
+    /// Get a mutable raw pointer to the index `idx`.
+    /// 
+    /// `get_mut_debug_checked` gets a reference to the `idx`th element. `idx`
+    /// must be within the capacity configured when this `MmapVec` was
+    /// constructed, but `idx` is *not* required to be less than the current
+    /// length of the vector.
     /// 
     /// # Safety
     /// 

@@ -47,17 +47,17 @@ where
 {
     #[inline]
     fn layout(&self) -> Layout {
-        self.inner.layout()
+        UntypedObjectAlloc::layout(&self.inner)
     }
 
     #[inline]
     unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
-        self.inner.alloc()
+        UntypedObjectAlloc::alloc(&mut self.inner)
     }
 
     #[inline]
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
-        self.inner.dealloc(ptr);
+        UntypedObjectAlloc::dealloc(&mut self.inner, ptr);
     }
 }
 
@@ -71,7 +71,7 @@ where
     }
 }
 
-struct ElfUntypedObjectAllocInner<F, B>
+pub struct ElfUntypedObjectAllocInner<F, B>
 where
     F: PreDrop<B>,
 {
@@ -95,6 +95,24 @@ where
 
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
         self.frontend.dealloc_with(&LazyGuard::new(), &mut self.backing, ptr);
+    }
+}
+
+// used in general::ElfMalloc
+unsafe impl<F, B> GCAlloc for ElfUntypedObjectAllocInner<F, B>
+where
+    F: AllocWith<B> + PreDrop<B>,
+{
+    fn layout(&self) -> Layout {
+        self.layout.clone()
+    }
+
+    unsafe fn alloc(&mut self, guard: &LazyGuard) -> Option<NonNull<u8>> {
+        self.frontend.alloc_with(guard, &mut self.backing)
+    }
+
+    unsafe fn dealloc(&mut self, guard: &LazyGuard, ptr: NonNull<u8>) {
+        self.frontend.dealloc_with(guard, &mut self.backing, ptr);
     }
 }
 
@@ -168,6 +186,7 @@ impl ElfBuilder {
     }
 
     pub fn max_objects(mut self, max_objects: usize) -> ElfBuilder {
+        assert!(max_objects > 0);
         self.max_objects = max_objects;
         self
     }
@@ -185,10 +204,12 @@ impl ElfBuilder {
         self
     }
     pub fn small_pipe_size(mut self, small_pipe_size: usize) -> ElfBuilder {
+        assert!(small_pipe_size > 0);
         self.elfmalloc_builder.small_pipe_size = small_pipe_size;
         self
     }
     pub fn large_pipe_size(mut self, large_pipe_size: usize) -> ElfBuilder {
+        assert!(large_pipe_size > 0);
         self.elfmalloc_builder.large_pipe_size = large_pipe_size;
         self
     }
@@ -207,12 +228,12 @@ impl ElfBuilder {
         }
     }
 
-    fn build_untyped_inner<F, B>(&self, mut backing: B, layout: Layout) -> Option<ElfUntypedObjectAllocInner<F, B>>
+    pub(crate) fn build_untyped_inner<F, B>(&self, mut backing: B, layout: Layout) -> Option<ElfUntypedObjectAllocInner<F, B>>
     where
         F: Frontend<B>,
         B: GCAlloc,
     {
-        assert!(layout.size() > 0);
+        self.validate(&backing, &layout);
 
         let metadata = Arc::new(compute_metadata(
                         layout.size(),
@@ -223,11 +244,7 @@ impl ElfBuilder {
                         AllocType::SmallSlag, // not used; dummy value
                     ));
         let cfg = SlagConfig::new(NonNull::from(metadata.as_ref()), self.eager_decommit_threshold);
-        let frontend = {
-            let guard = LazyGuard::new();
-            let slag = SlagAllocator::build(&cfg, &guard, &mut backing)?;
-            F::new(&guard, &mut backing, slag)?
-        };
+        let frontend = F::build(&cfg, &LazyGuard::new(), &mut backing)?;
         Some(ElfUntypedObjectAllocInner { backing, frontend, layout, metadata })
     }
 
@@ -238,7 +255,7 @@ impl ElfBuilder {
     /// Construct a `PageCache<MapAlloc>` from the present configuration and
     /// the given `Layout`.
     fn mmap_page_cache(&self, layout: &Layout) -> PageCache<MapAlloc> {
-        let page_size = self.untyped_page_size(&layout);
+        let page_size = self.object_page_size(&layout);
         let alloc = MapAllocBuilder::default()
             .obj_size(page_size)
             .obj_align(page_size)
@@ -247,13 +264,26 @@ impl ElfBuilder {
         PageCache::new(alloc, page_size)
     }
 
-    /// Calculate the page size used for an `ElfUntypedObjectAlloc`.
-    fn untyped_page_size(&self, layout: &Layout) -> usize {
+    /// Calculate the page size used for an object allocator.
+    fn object_page_size(&self, layout: &Layout) -> usize {
         if let Some(page_size) = self.page_size {
             page_size
         } else {
             cmp::max(32 << 10, layout.size() * 4)
         }
+    }
+
+    fn validate<B: GCAlloc>(&self, backing: &B, layout: &Layout) {
+        assert!(layout.size() > 0);
+        // TODO: Assert that we can fit at least one object in a slag of the
+        // configured size. This check is insufficient because there's slag
+        // header overhead.
+        assert!(
+            backing.layout().size() > layout.size(),
+            "backing pages not larger than objects: {} <= {}",
+            backing.layout().size(),
+            layout.size(),
+        );
     }
 }
 

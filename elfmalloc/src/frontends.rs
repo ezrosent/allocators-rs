@@ -22,9 +22,38 @@ use backing::GCAlloc;
 use slag::*;
 use util::{as_ref, mmap, AllocWith, ConfigBuild, LazyGuard, MmapVec, PreDrop, TryCloneWith};
 
-pub trait Frontend<B>: AllocWith<B> + TryCloneWith<B> + PreDrop<B> + Sized + Send {
-    fn new(guard: &LazyGuard, backing: &mut B, alloc: SlagAllocator) -> Option<Self>;
-}
+/// A type which can be used as an allocator frontend.
+/// 
+/// A `Frontend` must implement the following traits:
+/// 
+/// - `AllocWith` so that it can be allocated from
+/// - `TryCloneWith` so that the top-level allocator handles can be `Clone`
+///   or `TryClone`
+/// - `PreDrop` because they do not store their own backing allocators, and
+///   thus must have them provided by the caller in order to be able to free
+///   any internally-cached resources
+/// - `Send` so that the top-level allocator handles can be `Send`. Note that
+///   they do *not* need to be `Sync` because, in general-purpose allocators,
+///   they are wrapped in `Lazy`s which only require the configuration type
+///   (`ConfigBuild::Config`) to be `Sync` in order for the `Lazy` to be `Sync`.
+/// - `ConfigBuild` where the `Config` type is `SlagAllocator`'s `Config` type
+///   as frontends wrap `SlagAllocator`s. Doing it this way (rather than
+///   requiring a `new` method with a `SlagAllocator` parameter) covers both
+///   the case of constructing a new `Frontend` immediately and also of creating
+///   a `Lazy`.
+pub trait Frontend<B>
+where
+    Self: AllocWith<B> + TryCloneWith<B> + PreDrop<B> + Sized + Send,
+    Self: ConfigBuild<B, Config = <SlagAllocator as ConfigBuild<B>>::Config>,
+    B: GCAlloc, // Required by the ConfigBuild impl for SlagAllocator
+{}
+
+impl<T, B> Frontend<B> for T
+where
+    Self: AllocWith<B> + TryCloneWith<B> + PreDrop<B> + Sized + Send,
+    Self: ConfigBuild<B, Config = <SlagAllocator as ConfigBuild<B>>::Config>,
+    B: GCAlloc,
+{}
 
 /// A `LocalCache` provides thread-local data on top of a `SlagAllocator`.
 ///
@@ -42,16 +71,8 @@ pub struct LocalCache {
     dropped: bool,
 }
 
-impl<B: GCAlloc> ConfigBuild<B> for LocalCache {
-    type Config = <SlagAllocator as ConfigBuild<B>>::Config;
-    fn build(cfg: &Self::Config, guard: &LazyGuard, backing: &mut B) -> Option<Self> {
-        let alloc = SlagAllocator::build(cfg, guard, backing)?;
-        Some(Self::new(guard, backing, alloc)?)
-    }
-}
-
-impl<B: GCAlloc> Frontend<B> for LocalCache {
-    fn new(guard: &LazyGuard, backing: &mut B, mut alloc: SlagAllocator) -> Option<Self> {
+impl LocalCache {
+    fn new<B: GCAlloc>(guard: &LazyGuard, backing: &mut B, mut alloc: SlagAllocator) -> Option<Self> {
         unsafe {
             let stack = PtrStack::new((*alloc.m.as_ptr()).n_objects)?;
             let iter = alloc.refresh(guard, backing)?;
@@ -63,6 +84,14 @@ impl<B: GCAlloc> Frontend<B> for LocalCache {
                 dropped: false,
             })
         }
+    }
+}
+
+impl<B: GCAlloc> ConfigBuild<B> for LocalCache {
+    type Config = <SlagAllocator as ConfigBuild<B>>::Config;
+    fn build(cfg: &Self::Config, guard: &LazyGuard, backing: &mut B) -> Option<Self> {
+        let alloc = SlagAllocator::build(cfg, guard, backing)?;
+        Some(Self::new(guard, backing, alloc)?)
     }
 }
 
@@ -172,6 +201,18 @@ impl MagazineCache {
         })
     }
 
+    fn new<B: GCAlloc>(guard: &LazyGuard, backing: &mut B, alloc: SlagAllocator) -> Option<Self> {
+        use std::cmp;
+        let object_size = unsafe { alloc.m.as_ref().object_size };
+        const CUTOFF: usize = 32 << 10;
+        let magazine_size = match object_size {
+            0...512 => 1 << 16,
+            513...CUTOFF => 512 << 10 / object_size,
+            _ => 1 << 20 / object_size,
+        };
+        Self::new_sized(guard, backing, alloc, cmp::max(1, magazine_size))
+    }
+
     /// Allocate memory from the current owned `Slag`.
     ///
     /// This amounts to getting memory from the current alloc iterator. If the iterator is
@@ -215,20 +256,6 @@ impl MagazineCache {
             ptr::write(cell, RemoteFreeCell::default());
         }
         self.coalescer.1.top = 0;
-    }
-}
-
-impl<B: GCAlloc> Frontend<B> for MagazineCache {
-    fn new(guard: &LazyGuard, backing: &mut B, alloc: SlagAllocator) -> Option<Self> {
-        use std::cmp;
-        let object_size = unsafe { alloc.m.as_ref().object_size };
-        const CUTOFF: usize = 32 << 10;
-        let magazine_size = match object_size {
-            0...512 => 1 << 16,
-            513...CUTOFF => 512 << 10 / object_size,
-            _ => 1 << 20 / object_size,
-        };
-        Self::new_sized(guard, backing, alloc, cmp::max(1, magazine_size))
     }
 }
 
