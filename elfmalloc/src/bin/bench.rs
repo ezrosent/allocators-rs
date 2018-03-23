@@ -12,17 +12,18 @@ extern crate alloc;
 extern crate elfmalloc;
 extern crate num_cpus;
 
-use std::{marker, mem, thread, time};
+use std::marker::PhantomData;
+use std::{mem, thread, time};
 use std::ptr::{write_volatile, NonNull};
 use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use alloc::heap;
+use alloc::heap::{Alloc, Heap, Layout};
 
 // use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
 // use elfmalloc::general::global;
-use elfmalloc::alloc_impl::ElfMallocGlobal;
-use elfmalloc::general::DynamicAllocator;
+use elfmalloc::{ElfMalloc, GlobalAlloc};//alloc_impl::ElfMallocGlobal;
+// use elfmalloc::general::DynamicAllocator;
 
 type BenchItem = [usize; 2];
 
@@ -61,58 +62,53 @@ where
 //     fn kill(&mut self) {}
 // }
 
-struct ElfGlobal<T>(marker::PhantomData<T>);
-impl<T> Clone for ElfGlobal<T> {
+struct RustGlobal<T: Send>(PhantomData<T>);
+
+impl<T: Send> Clone for RustGlobal<T> {
     fn clone(&self) -> Self {
-        ElfGlobal(marker::PhantomData)
+        RustGlobal(PhantomData)
     }
 }
-unsafe impl<T> Send for ElfGlobal<T> {}
 
-use alloc::allocator::{Alloc, Layout};
-
-impl<T: 'static> AllocLike for ElfGlobal<T> {
+impl<T: Send> AllocLike for RustGlobal<T> {
     type Item = T;
+
     fn create() -> Self {
-        ElfGlobal(marker::PhantomData)
+        RustGlobal(PhantomData)
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        (&ElfMallocGlobal{}).alloc(Layout::new::<T>()).unwrap() as *mut T
+        (&GlobalAlloc{}).alloc(Layout::new::<T>()).unwrap() as *mut T
         // global::alloc(mem::size_of::<T>()) as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        (&ElfMallocGlobal{}).dealloc(item as *mut u8, Layout::new::<T>())
+        (&GlobalAlloc{}).dealloc(item as *mut u8, Layout::new::<T>())
         // global::free(item as *mut u8)
     }
-
-    fn kill(&mut self) {}
 }
 
-struct ElfClone<T>(DynamicAllocator, marker::PhantomData<T>);
-impl<T> Clone for ElfClone<T> {
+struct Rust<T: Send>(ElfMalloc, PhantomData<T>);
+
+impl<T: Send> Clone for Rust<T> {
     fn clone(&self) -> Self {
-        ElfClone(self.0.clone(), marker::PhantomData)
+        Rust(self.0.clone(), PhantomData)
     }
 }
-unsafe impl<T> Send for ElfClone<T> {}
 
-impl<T: 'static> AllocLike for ElfClone<T> {
+impl<T: Send> AllocLike for Rust<T> {
     type Item = T;
     fn create() -> Self {
-        ElfClone(DynamicAllocator::new().unwrap(), marker::PhantomData)
+        Rust(ElfMalloc::default(), PhantomData)
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        self.0.alloc(mem::size_of::<T>()).unwrap().cast().as_ptr()
+        self.0.alloc(Layout::new::<T>()).unwrap() as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        self.0.dealloc(NonNull::new_unchecked(item).cast())
+        self.0.dealloc(item as *mut u8, Layout::new::<T>())
     }
-
-    fn kill(&mut self) {}
 }
 
 // impl<T: 'static> AllocLike for LocalAllocator<T> {
@@ -135,36 +131,36 @@ impl<T: 'static> AllocLike for ElfClone<T> {
 //     fn kill(&mut self) {}
 // }
 
-struct DefaultMalloc<T>(marker::PhantomData<T>);
+// struct DefaultMalloc<T>(marker::PhantomData<T>);
 
-unsafe impl<T> Send for DefaultMalloc<T> {}
+// unsafe impl<T> Send for DefaultMalloc<T> {}
 
-impl<T> Clone for DefaultMalloc<T> {
-    fn clone(&self) -> Self {
-        DefaultMalloc(marker::PhantomData)
-    }
-}
+// impl<T> Clone for DefaultMalloc<T> {
+//     fn clone(&self) -> Self {
+//         DefaultMalloc(marker::PhantomData)
+//     }
+// }
 
-impl<T> AllocLike for DefaultMalloc<T> {
-    type Item = T;
-    fn create() -> Self {
-        DefaultMalloc(marker::PhantomData)
-    }
-    unsafe fn allocate(&mut self) -> *mut T {
-        use heap::{Alloc, Layout};
-        heap::Heap
-            .alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
-            .unwrap() as *mut T
-    }
+// impl<T> AllocLike for DefaultMalloc<T> {
+//     type Item = T;
+//     fn create() -> Self {
+//         DefaultMalloc(marker::PhantomData)
+//     }
+//     unsafe fn allocate(&mut self) -> *mut T {
+//         use heap::{Alloc, Layout};
+//         heap::Heap
+//             .alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
+//             .unwrap() as *mut T
+//     }
 
-    unsafe fn deallocate(&mut self, item: *mut T) {
-        use heap::{Alloc, Layout};
-        heap::Heap.dealloc(
-            item as *mut u8,
-            Layout::from_size_align(mem::size_of::<T>(), 8).unwrap(),
-        );
-    }
-}
+//     unsafe fn deallocate(&mut self, item: *mut T) {
+//         use heap::{Alloc, Layout};
+//         heap::Heap.dealloc(
+//             item as *mut u8,
+//             Layout::from_size_align(mem::size_of::<T>(), 8).unwrap(),
+//         );
+//     }
+// }
 
 
 macro_rules! time_block {
@@ -435,7 +431,7 @@ macro_rules! run_bench_inner {
         // println!("global malloc");
         // $bench::<DefaultMalloc<BenchItem>>(nthreads, iters);
         println!("global slag allocator");
-        $bench::<ElfGlobal<BenchItem>>(nthreads, iters);
+        $bench::<RustGlobal<BenchItem>>(nthreads, iters);
         // println!("clone-based slag allocator");
         // $bench::<ElfClone<BenchItem>>(nthreads, iters);
         // println!("slag allocator");
@@ -446,29 +442,30 @@ macro_rules! run_bench_inner {
 }
 
 macro_rules! run_bench {
-    (both $desc:expr, $bench:tt, $nthreads:expr, $iters:expr) => {
+    (single $desc:expr, $bench:tt, $nthreads:expr, $iters:expr) => {
         println!("\n{} - {}", $desc, "single-threaded");
         run_bench_inner!($bench, 1, $iters);
+    };
+    (multi $desc:expr, $bench:tt, $nthreads:expr, $iters:expr) => {
         println!("\n{} - {} threads", $desc, $nthreads);
         run_bench_inner!($bench, $nthreads, $iters);
     };
-
-    (threads $desc:expr, $bench:tt, $nthreads:expr, $iters:expr) => {
-        println!("\n{} - {} threads", $desc, $nthreads);
-        run_bench_inner!($bench, $nthreads, $iters);
+    (both $desc:expr, $bench:tt, $nthreads:expr, $iters:expr) => {
+        run_bench!(single $desc, $bench, $nthreads, $iters);
+        run_bench!(multi $desc, $bench, $nthreads, $iters);
     };
 }
 
 fn main() {
-    const ITERS: usize = 1_000_000;
+    const ITERS: usize = 10_000_000;
     let nthreads = num_cpus::get();
     println!(
         "allocating {} bytes per thread",
         ITERS * mem::size_of::<BenchItem>()
     );
 
-    run_bench!(both "alloc/free pairs", bench_alloc_free_pairs, nthreads, ITERS);
-    run_bench!(both "buffered alloc/free pairs", bench_alloc_free_pairs_buffered, nthreads, ITERS);
+    // run_bench!(single "alloc/free pairs", bench_alloc_free_pairs, nthreads, ITERS);
+    run_bench!(single "buffered alloc/free pairs", bench_alloc_free_pairs_buffered, nthreads, ITERS);
     // run_bench!(both "alloc (thread-local)", bench_alloc, nthreads, ITERS);
     // run_bench!(both "free (thread-local)", bench_free, nthreads, ITERS);
     // run_bench!(both "alloc & free (thread-local)", bench_alloc_free, nthreads, ITERS);

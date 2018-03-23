@@ -336,9 +336,12 @@ impl Clone for ElfMalloc {
     }
 }
 
+lazy_static!{ static ref DEFAULT_INSTANCE: ElfMalloc = ElfMallocBuilder::default().build(); }
+
 impl Default for ElfMalloc {
     fn default() -> ElfMalloc {
-        ElfMallocBuilder::default().build()
+        DEFAULT_INSTANCE.clone()
+        // ElfMallocBuilder::default().build()
     }
 }
 
@@ -477,6 +480,20 @@ mod global {
     /// A ZST for routing allocations through a global singleton.
     #[derive(Clone)]
     pub struct GlobalAlloc;
+
+    unsafe impl<'a> Alloc for &'a GlobalAlloc {
+        unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+            with_local_or_clone(|alloc| (*alloc.get()).alloc((&l).clone()))
+        }
+
+        unsafe fn dealloc(&mut self, p: *mut u8, l: Layout) {
+            with_local_or_clone(|alloc| (*alloc.get()).dealloc(p, (&l).clone()))
+        }
+
+        fn usable_size(&self, l: &Layout) -> (usize, usize) {
+            unsafe { with_local_or_clone(|alloc| (*alloc.get()).usable_size((&l).clone())) }
+        }
+    }
 
     unsafe impl Alloc for GlobalAlloc {
         unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {

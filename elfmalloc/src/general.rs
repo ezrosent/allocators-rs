@@ -312,7 +312,6 @@ impl Default for DynamicAllocator {
 // TODO(ezrosent): move this to a type parameter when const generics are in.
 pub(crate) const ELFMALLOC_PAGE_SIZE: usize = 2 << 20;
 pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = 256 << 10;
-// pub(crate) const ELFMALLOC_SMALL_PAGE_SIZE: usize = ELFMALLOC_PAGE_SIZE;
 pub(crate) const ELFMALLOC_SMALL_CUTOFF: usize = ELFMALLOC_SMALL_PAGE_SIZE / 4;
 
 impl ElfMalloc {

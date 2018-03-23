@@ -21,7 +21,7 @@ use alloc::heap::Heap;
 use alloc::raw_vec::RawVec;
 use self::smallvec::VecLike;
 
-use super::rust_alloc::{ElfMalloc, GlobalAlloc};
+use rust_alloc::{ElfMalloc, GlobalAlloc};
 
 /// A `Vec`-like structure parametric on an `Alloc`. The overall structure here borrows heavily
 /// from the smallvec crate, though our goals here are of course different. One could easily fork

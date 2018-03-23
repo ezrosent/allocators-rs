@@ -13,7 +13,6 @@
 //!
 //! This module also implements additional traits from the `malloc-bind` crate.
 
-
 #[cfg(feature = "c-api")]
 extern crate malloc_bind;
 #[cfg(feature = "c-api")]
