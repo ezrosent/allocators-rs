@@ -39,7 +39,6 @@ extern crate winapi;
 
 use self::alloc::allocator::{Alloc, AllocErr, CannotReallocInPlace, Excess, Layout};
 use self::object_alloc::UntypedObjectAlloc;
-use core::alloc::Opaque;
 use core::ptr::{self, NonNull};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -312,18 +311,18 @@ impl MapAlloc {
     /// See the "Committed and Uncommitted Memory" section of the `MapAllocBuilder` documentation
     /// for more details.
     #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
-    pub unsafe fn commit(&self, ptr: *mut u8, layout: Layout) {
+    pub unsafe fn commit(&self, ptr: NonNull<u8>, layout: Layout) {
         debug_assert!(layout.size() > 0, "commit: size of layout must be non-zero");
 
         // TODO: What to do about sizes that are not multiples of the page size? These are legal
         // allocations, and so they are legal to pass to uncommit, but will madvise/VirtualFree
         // handle them properly?
         #[cfg(debug_assertions)]
-        self.debug_verify_ptr(ptr, &layout);
+        self.debug_verify_ptr(ptr.as_ptr(), &layout);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        commit(ptr, layout.size());
+        commit(ptr.as_ptr(), layout.size());
         #[cfg(windows)]
-        commit(ptr, layout.size(), self.perms);
+        commit(ptr.as_ptr(), layout.size(), self.perms);
     }
 
     /// Uncommits an existing allocated object.
@@ -334,7 +333,7 @@ impl MapAlloc {
     /// See the "Committed and Uncommitted Memory" section of the `MapAllocBuilder` documentation
     /// for more details.
     #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
-    pub unsafe fn uncommit(&self, ptr: *mut u8, layout: Layout) {
+    pub unsafe fn uncommit(&self, ptr: NonNull<u8>, layout: Layout) {
         debug_assert!(
             layout.size() > 0,
             "uncommit: size of layout must be non-zero"
@@ -344,14 +343,14 @@ impl MapAlloc {
         // allocations, and so they are legal to pass to uncommit, but will madvise handle them
         // properly?
         #[cfg(debug_assertions)]
-        self.debug_verify_ptr(ptr, &layout);
-        uncommit(ptr, layout.size());
+        self.debug_verify_ptr(ptr.as_ptr(), &layout);
+        uncommit(ptr.as_ptr(), layout.size());
     }
 
     #[cfg(target_os = "linux")]
     unsafe fn resize_in_place(
         &self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: &Layout,
         new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
@@ -383,7 +382,7 @@ impl MapAlloc {
 }
 
 unsafe impl<'a> Alloc for &'a MapAlloc {
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         debug_assert!(layout.size() > 0, "alloc: size of layout must be non-zero");
 
         let size = next_multiple(layout.size(), self.pagesize);
@@ -396,7 +395,9 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             let extra = layout.align() - self.pagesize;
             // Since we're allocating extra space, we don't commit this memory.
             // We only commit the portion we're actually returning below.
-            let addr = map(size + extra, self.perms, false).ok_or(AllocErr)?.as_ptr() as usize;
+            let addr = map(size + extra, self.perms, false)
+                .ok_or(AllocErr)?
+                .as_ptr() as usize;
             let aligned_addr = next_multiple(addr, layout.align());
             let aligned_ptr = aligned_addr as *mut u8;
             if !cfg!(windows) {
@@ -421,13 +422,13 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
                 #[cfg(windows)]
                 commit(aligned_ptr, layout.size(), self.perms);
             }
-            Ok(NonNull::new_unchecked(aligned_ptr as *mut Opaque))
+            Ok(NonNull::new_unchecked(aligned_ptr))
         } else {
             Err(AllocErr)
         }
     }
 
-    unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, layout: Layout) {
+    unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
         debug_assert!(
             layout.size() > 0,
             "dealloc: size of layout must be non-zero"
@@ -469,7 +470,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
         (max_size - self.pagesize + 1, max_size)
     }
 
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         debug_assert!(
             layout.size() > 0,
             "alloc_zeroed: size of layout must be non-zero"
@@ -480,18 +481,15 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     #[cfg(target_os = "linux")]
     unsafe fn realloc(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<NonNull<Opaque>, AllocErr> {
+    ) -> Result<NonNull<u8>, AllocErr> {
         debug_assert!(
             layout.size() > 0,
             "realloc: size of layout must be non-zero"
         );
-        debug_assert!(
-            new_size > 0,
-            "realloc: size of new_layout must be non-zero"
-        );
+        debug_assert!(new_size > 0, "realloc: size of new_layout must be non-zero");
 
         // TODO: Handle large-align feature
 
@@ -506,40 +504,36 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     #[cfg(any(target_os = "macos", windows))]
     unsafe fn realloc(
         &mut self,
-        ptr: *mut u8,
+        ptr: NonNull<u8>,
         layout: Layout,
-        new_layout: Layout,
-    ) -> Result<*mut u8, AllocErr> {
+        new_size: usize,
+    ) -> Result<NonNull<u8>, AllocErr> {
         // Adapted from the Rust standard library.
 
         debug_assert!(
             layout.size() > 0,
             "realloc: size of layout must be non-zero"
         );
-        debug_assert!(
-            new_layout.size() > 0,
-            "realloc: size of new_layout must be non-zero"
-        );
+        debug_assert!(new_size > 0, "realloc: new_size must be non-zero");
 
         // TODO: Handle large-align feature
 
-        // alignment less than a page is fine because page-aligned objects are also aligned to
-        // any alignment less than a page
-        if new_layout.align() > self.pagesize {
-            return Err(AllocErr);
-        }
-
         let old_size = next_multiple(layout.size(), self.pagesize);
-        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        let new_size = next_multiple(new_size, self.pagesize);
 
         if old_size == new_size {
             return Ok(ptr);
         } else if !cfg!(windows) && new_size < old_size {
             // Windows cannot shrink existing mappings.
-            if let Ok(()) = self.shrink_in_place(ptr, layout.clone(), new_layout.clone()) {
+            if let Ok(()) = self.shrink_in_place(ptr, layout.clone(), new_size) {
                 return Ok(ptr);
             }
         }
+
+        // We need to preserve the old alignment, so we have to round up
+        // new_size to ensure that it is a multiple of that alignment.
+        let new_size = next_multiple(new_size, layout.align());
+        let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
 
         // otherwise, fall back on alloc + copy + dealloc.
         let result = Alloc::alloc(self, new_layout);
@@ -552,19 +546,27 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
             let fix_old_perms = !self.read;
             let fix_new_perms = !self.write;
             if fix_old_perms {
-                protect(ptr, old_size, perms::get_perm(true, self.write, self.exec));
+                protect(
+                    ptr.as_ptr(),
+                    old_size,
+                    perms::get_perm(true, self.write, self.exec),
+                );
             }
             if fix_new_perms {
                 protect(
-                    new_ptr,
+                    new_ptr.as_ptr(),
                     new_size,
                     perms::get_perm(self.read, true, self.exec),
                 );
             }
-            ptr::copy_nonoverlapping(ptr as *const u8, new_ptr, cmp::min(old_size, new_size));
+            ptr::copy_nonoverlapping(
+                ptr.as_ptr() as *const u8,
+                new_ptr.as_ptr() as *mut u8,
+                cmp::min(old_size, new_size),
+            );
             Alloc::dealloc(self, ptr, layout);
             if fix_new_perms {
-                protect(new_ptr, new_size, self.perms);
+                protect(new_ptr.as_ptr(), new_size, self.perms);
             }
         }
         result
@@ -573,7 +575,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     #[cfg(target_os = "linux")]
     unsafe fn grow_in_place(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
@@ -593,7 +595,7 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     #[cfg(target_os = "linux")]
     unsafe fn shrink_in_place(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
@@ -613,26 +615,22 @@ unsafe impl<'a> Alloc for &'a MapAlloc {
     #[cfg(target_os = "macos")]
     unsafe fn shrink_in_place(
         &mut self,
-        ptr: *mut u8,
+        ptr: NonNull<u8>,
         layout: Layout,
-        new_layout: Layout,
+        new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
         debug_assert!(
             layout.size() > 0,
             "shrink_in_place: size of layout must be non-zero"
         );
-        debug_assert!(
-            new_layout.size() > 0,
-            "shrink_in_place: size of new_layout must be non-zero"
-        );
-        debug_assert!(new_layout.size() <= layout.size());
-        debug_assert_eq!(new_layout.align(), layout.align());
+        debug_assert!(new_size > 0, "shrink_in_place: new_size must be non-zero");
+        debug_assert!(new_size <= layout.size());
 
         let old_size = next_multiple(layout.size(), self.pagesize);
-        let new_size = next_multiple(new_layout.size(), self.pagesize);
+        let new_size = next_multiple(new_size, self.pagesize);
         if new_size < old_size {
             let diff = old_size - new_size;
-            let ptr = (ptr as usize + new_size) as *mut u8;
+            let ptr = (ptr.as_ptr() as usize + new_size) as *mut u8;
             unmap(ptr, diff);
         }
         Ok(())
@@ -655,14 +653,14 @@ unsafe impl<'a> UntypedObjectAlloc for &'a MapAlloc {
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
         <&MapAlloc as Alloc>::dealloc(
             self,
-            NonNull::new_unchecked(ptr.as_ptr() as *mut Opaque),
+            NonNull::new_unchecked(ptr.as_ptr() as *mut u8),
             self.obj_layout.clone(),
         );
     }
 }
 
 unsafe impl Alloc for MapAlloc {
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         <&MapAlloc as Alloc>::alloc(&mut (&*self), layout)
     }
 
@@ -670,11 +668,11 @@ unsafe impl Alloc for MapAlloc {
         <&MapAlloc as Alloc>::usable_size(&(&*self), layout)
     }
 
-    unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, layout: Layout) {
+    unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
         <&MapAlloc as Alloc>::dealloc(&mut (&*self), ptr, layout)
     }
 
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         <&MapAlloc as Alloc>::alloc_zeroed(&mut (&*self), layout)
     }
 
@@ -684,16 +682,16 @@ unsafe impl Alloc for MapAlloc {
 
     unsafe fn realloc(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<NonNull<Opaque>, AllocErr> {
+    ) -> Result<NonNull<u8>, AllocErr> {
         <&MapAlloc as Alloc>::realloc(&mut (&*self), ptr, layout, new_size)
     }
 
     unsafe fn grow_in_place(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
@@ -702,7 +700,7 @@ unsafe impl Alloc for MapAlloc {
 
     unsafe fn shrink_in_place(
         &mut self,
-        ptr: NonNull<Opaque>,
+        ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
     ) -> Result<(), CannotReallocInPlace> {
@@ -743,7 +741,7 @@ fn next_multiple(size: usize, unit: usize) -> usize {
 // method.
 
 #[cfg(target_os = "linux")]
-unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<NonNull<Opaque>> {
+unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<NonNull<u8>> {
     use libc::{ENOMEM, MAP_ANONYMOUS, MAP_FAILED, MAP_POPULATE, MAP_PRIVATE};
 
     // TODO: Figure out when it's safe to pass MAP_UNINITIALIZED (it's not defined in all
@@ -773,12 +771,12 @@ unsafe fn map(size: usize, perms: i32, commit: bool) -> Option<NonNull<Opaque>> 
         // the address is chosen so as not to conflict with any existing mapping, and will not be
         // 0."
         assert_ne!(ptr, ptr::null_mut(), "mmap returned NULL");
-        Some(NonNull::new_unchecked(ptr as *mut Opaque))
+        Some(NonNull::new_unchecked(ptr as *mut u8))
     }
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn map(size: usize, perms: i32, do_commit: bool) -> Option<NonNull<Opaque>> {
+unsafe fn map(size: usize, perms: i32, do_commit: bool) -> Option<NonNull<u8>> {
     use libc::{ENOMEM, MAP_ANON, MAP_FAILED, MAP_PRIVATE};
 
     let ptr = libc::mmap(ptr::null_mut(), size, perms, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -801,7 +799,7 @@ unsafe fn map(size: usize, perms: i32, do_commit: bool) -> Option<NonNull<Opaque
             // so we commit memory in a separate step.
             commit(ptr as *mut u8, size);
         }
-        Some(NonNull::new(ptr as *mut Opaque))
+        Some(NonNull::new_unchecked(ptr as *mut u8))
     }
 }
 
@@ -839,7 +837,12 @@ unsafe fn map(size: usize, perms: u32, commit: bool) -> Option<*mut u8> {
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn remap(ptr: *mut u8, old_size: usize, new_size: usize, in_place: bool) -> Option<NonNull<Opaque>> {
+unsafe fn remap(
+    ptr: *mut u8,
+    old_size: usize,
+    new_size: usize,
+    in_place: bool,
+) -> Option<NonNull<u8>> {
     let flags = if !in_place { libc::MREMAP_MAYMOVE } else { 0 };
     let result = libc::mremap(ptr as *mut _, old_size, new_size, flags);
     if result == libc::MAP_FAILED {
@@ -856,7 +859,7 @@ unsafe fn remap(ptr: *mut u8, old_size: usize, new_size: usize, in_place: bool) 
         // we interpret this line from the mremap manpage to imply that a similar requirement holds
         // for mremap. In any case, this assertion will catch us if it turns out we're wrong.
         assert_ne!(ptr, ptr::null_mut(), "mremap returned NULL");
-        Some(NonNull::new_unchecked(result as *mut Opaque))
+        Some(NonNull::new_unchecked(result as *mut u8))
     }
 }
 
