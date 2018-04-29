@@ -5,25 +5,25 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use sysconf::page::pagesize;
-use super::*;
 use super::perms::*;
+use super::*;
+use sysconf::page::pagesize;
 
 extern crate test;
 
 #[cfg_attr(windows, allow(unused))]
-use std::time::{Duration, Instant};
-#[cfg_attr(windows, allow(unused))]
 use self::test::Bencher;
+#[cfg_attr(windows, allow(unused))]
+use std::time::{Duration, Instant};
 
-fn test_valid_map_address(ptr: NonNull<Opaque>) {
+fn test_valid_map_address(ptr: NonNull<u8>) {
     let ptr = ptr.as_ptr();
     assert!(ptr as usize > 0, "ptr: {:?}", ptr);
     assert!(ptr as usize % pagesize() == 0, "ptr: {:?}", ptr);
 }
 
-// To make testing easier with APIs that deal with both `NonNull<Opaque>` and
-// `*mut u8`.
+// To make testing easier with APIs that deal with both `NonNull<u8>` and `*mut
+// u8`.
 trait IntoPtrU8 {
     fn into_ptr_u8(self) -> *mut u8;
 }
@@ -123,10 +123,22 @@ fn test_map_non_windows() {
         test_valid_map_address(ptr);
         test_zero_filled(ptr, 5 * pagesize());
         unmap(ptr.as_ptr() as *mut u8, pagesize());
-        unmap((ptr.as_ptr() as *mut u8).offset(2 * pagesize() as isize), pagesize());
-        unmap((ptr.as_ptr() as *mut u8).offset(4 * pagesize() as isize), pagesize());
-        test_zero_filled((ptr.as_ptr() as *mut u8).offset(1 * pagesize() as isize), pagesize());
-        test_zero_filled((ptr.as_ptr() as *mut u8).offset(3 * pagesize() as isize), pagesize());
+        unmap(
+            (ptr.as_ptr() as *mut u8).offset(2 * pagesize() as isize),
+            pagesize(),
+        );
+        unmap(
+            (ptr.as_ptr() as *mut u8).offset(4 * pagesize() as isize),
+            pagesize(),
+        );
+        test_zero_filled(
+            (ptr.as_ptr() as *mut u8).offset(1 * pagesize() as isize),
+            pagesize(),
+        );
+        test_zero_filled(
+            (ptr.as_ptr() as *mut u8).offset(3 * pagesize() as isize),
+            pagesize(),
+        );
 
         // Check that:
         // - Mapping a vast region of memory works and is fast
@@ -146,7 +158,10 @@ fn test_map_non_windows() {
         let target = Duration::from_millis(1);
         assert!(diff < target, "duration: {:?}", diff);
         test_valid_map_address(ptr);
-        test_zero_filled((ptr.as_ptr() as *mut u8).offset((size / 2) as isize), pagesize());
+        test_zero_filled(
+            (ptr.as_ptr() as *mut u8).offset((size / 2) as isize),
+            pagesize(),
+        );
         unmap(ptr.as_ptr() as *mut u8, size);
     }
 }
@@ -368,7 +383,11 @@ fn test_realloc_large() {
             #[cfg(any(target_os = "linux", windows))]
             assert_block_perm(new, medium.size(), perm);
             <MapAlloc as Alloc>::dealloc(&mut alloc, new, medium.clone());
-            <MapAlloc as Alloc>::dealloc(&mut alloc, NonNull::new(remaining as *mut Opaque).unwrap(), remaining_layout.clone());
+            <MapAlloc as Alloc>::dealloc(
+                &mut alloc,
+                NonNull::new(remaining).unwrap(),
+                remaining_layout.clone(),
+            );
         }
     }
 

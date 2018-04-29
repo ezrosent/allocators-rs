@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   feature)
 
 ### Changed
+- Upgraded to new `Alloc` trait that uses `Result<NonNull<u8>, AllocErr>`
+  instead of `Result<*mut u8, AllocErr>`
 - Upgraded to new `UntypedObjectAlloc` trait that uses `Option<NonNull<u8>>`
   instead of `Result<*mut u8, Exhausted>`
 - Improved documentation on committed vs. uncommitted memory
