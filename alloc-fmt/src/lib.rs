@@ -7,16 +7,23 @@
 
 //! Allocator-safe formatting and assertion macros.
 //!
-//! `alloc-fmt` provides formatting and assertion macros similar to the standard library's
-//! `println`, `eprintln`, `panic`, `assert`, `debug_assert`, etc which are safe for use in a
+//! [`alloc-fmt`] provides formatting and assertion macros similar to the standard library's
+//! [`println`], [`eprintln`], [`panic`], [`assert`], [`debug_assert`], etc which are safe for use in a
 //! global allocator. The standard library's formatting and assertion macros can allocate, meaning
 //! that if they are used in the implementation of a global allocator, it can cause infinite
 //! recursion. The macros in this crate avoid this problem by either not allocating (in the case of
 //! formatting macros) or detecting recursion (in the case of panic and assertion macros).
 //!
+//! [`alloc-fmt`]: index.html
+//! [`println`]: https://doc.rust-lang.org/std/macro.println.html
+//! [`eprintln`]: https://doc.rust-lang.org/std/macro.eprint.html
+//! [`panic`]: https://doc.rust-lang.org/std/macro.panic.html 
+//! [`assert`]: https://doc.rust-lang.org/std/macro.assert.html
+//! [`debug_assert`]: https://doc.rust-lang.org/std/macro.debug_assert.html
+//!
 //! # Usage and Behavior
 //! The macros in this crate are named `alloc_xxx`, where `xxx` is the name of the equivalent
-//! standard library macro (e.g., `alloc_println`, `alloc_debug_assert`, etc).
+//! standard library macro (e.g., [`alloc_println`], [`alloc_debug_assert`], etc).
 //!
 //! The behavior of the formatting macros is identical to the behavior of their standard library
 //! counterparts. The behavior of the panic and assertion macros is somewhat different. When an
@@ -29,6 +36,9 @@
 //!
 //! Unlike the standard library assertion and panic macros, the stack is not unwound, and once an
 //! assertion failure or panic triggers, it cannot be caught or aborted.
+//!
+//! [`alloc_println`]: macro.alloc_println.html
+//! [`alloc_debug_assert`]: macro.alloc_debug_assert.html
 
 #![no_std]
 #![feature(core_intrinsics)]
@@ -277,9 +287,13 @@ macro_rules! alloc_debug_assert_ne {
 
 /// Types that can be unwrapped in an allocation-safe manner.
 ///
-/// `AllocUnwrap` provides the `alloc_unwrap` and `alloc_expect` methods, which are allocation-safe
-/// equivalents of the `unwrap` and `expect` methods on `Option` and `Result`. `AllocUnwrap` is
-/// implemented for `Option` and `Result`.
+/// [`AllocUnwrap`] provides the [`alloc_unwrap`] and [`alloc_expect`] methods, which are allocation-safe
+/// equivalents of the [`unwrap`][Option::unwrap] and [`expect`][Option::expect] methods on [`Option`] and [`Result`]. [`AllocUnwrap`] is
+/// implemented for [`Option`] and [`Result`].
+///
+/// [`AllocUnwrap`]: trait.AllocUnwrap.html
+/// [`alloc_unwrap`]: trait.AllocUnwrap.html#tymethod.alloc_unwrap
+/// [`alloc_expect`]: trait.AllocUnwrap.html#tymethod.alloc_expect
 ///
 /// # Examples
 ///
