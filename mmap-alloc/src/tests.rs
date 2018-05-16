@@ -16,27 +16,49 @@ use std::time::{Duration, Instant};
 #[cfg_attr(windows, allow(unused))]
 use self::test::Bencher;
 
-fn test_valid_map_address(ptr: *mut u8) {
+fn test_valid_map_address(ptr: NonNull<Opaque>) {
+    let ptr = ptr.as_ptr();
     assert!(ptr as usize > 0, "ptr: {:?}", ptr);
     assert!(ptr as usize % pagesize() == 0, "ptr: {:?}", ptr);
 }
 
+// To make testing easier with APIs that deal with both `NonNull<Opaque>` and
+// `*mut u8`.
+trait IntoPtrU8 {
+    fn into_ptr_u8(self) -> *mut u8;
+}
+
+impl<T: ?Sized> IntoPtrU8 for NonNull<T> {
+    fn into_ptr_u8(self) -> *mut u8 {
+        self.as_ptr() as *mut u8
+    }
+}
+
+impl<T> IntoPtrU8 for *mut T {
+    fn into_ptr_u8(self) -> *mut u8 {
+        self as *mut u8
+    }
+}
+
 // Test that the given range is readable and initialized to zero.
-unsafe fn test_zero_filled(ptr: *mut u8, size: usize) {
+unsafe fn test_zero_filled<P: IntoPtrU8>(ptr: P, size: usize) {
+    let ptr = ptr.into_ptr_u8();
     for i in 0..size {
         assert_eq!(*ptr.offset(i as isize), 0);
     }
 }
 
 // Test that the given range is writable.
-unsafe fn test_write(ptr: *mut u8, size: usize) {
+unsafe fn test_write<P: IntoPtrU8>(ptr: P, size: usize) {
+    let ptr = ptr.into_ptr_u8();
     for i in 0..size {
         *ptr.offset(i as isize) = (i & 0xff) as u8;
     }
 }
 
 // Test that the given range is readable, and matches data written by test_write/test_write_read
-unsafe fn test_read(ptr: *mut u8, size: usize) {
+unsafe fn test_read<P: IntoPtrU8>(ptr: P, size: usize) {
+    let ptr = ptr.into_ptr_u8();
     for i in 0..size {
         let got = *ptr.offset(i as isize);
         let want = (i & 0xff) as u8;
@@ -49,7 +71,8 @@ unsafe fn test_read(ptr: *mut u8, size: usize) {
 }
 
 // Test that the given range is readable and writable, and that writes can be read back.
-unsafe fn test_write_read(ptr: *mut u8, size: usize) {
+unsafe fn test_write_read<P: IntoPtrU8>(ptr: P, size: usize) {
+    let ptr = ptr.into_ptr_u8();
     test_write(ptr, size);
     test_read(ptr, size);
 }
@@ -68,9 +91,9 @@ fn test_map() {
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ_WRITE);
         test_zero_filled(ptr, pagesize());
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
         #[cfg(not(windows))]
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
 
         // Check that:
         // - Mapping multiple pages work
@@ -83,9 +106,9 @@ fn test_map() {
         #[cfg(windows)]
         commit(ptr, 16 * pagesize(), PROT_READ_WRITE);
         test_zero_filled(ptr, 16 * pagesize());
-        unmap(ptr, 16 * pagesize());
+        unmap(ptr.as_ptr() as *mut u8, 16 * pagesize());
         #[cfg(not(windows))]
-        unmap(ptr, 16 * pagesize());
+        unmap(ptr.as_ptr() as *mut u8, 16 * pagesize());
     }
 }
 
@@ -99,11 +122,11 @@ fn test_map_non_windows() {
         let mut ptr = map(5 * pagesize(), PROT_READ_WRITE, false).unwrap();
         test_valid_map_address(ptr);
         test_zero_filled(ptr, 5 * pagesize());
-        unmap(ptr, pagesize());
-        unmap(ptr.offset(2 * pagesize() as isize), pagesize());
-        unmap(ptr.offset(4 * pagesize() as isize), pagesize());
-        test_zero_filled(ptr.offset(1 * pagesize() as isize), pagesize());
-        test_zero_filled(ptr.offset(3 * pagesize() as isize), pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
+        unmap((ptr.as_ptr() as *mut u8).offset(2 * pagesize() as isize), pagesize());
+        unmap((ptr.as_ptr() as *mut u8).offset(4 * pagesize() as isize), pagesize());
+        test_zero_filled((ptr.as_ptr() as *mut u8).offset(1 * pagesize() as isize), pagesize());
+        test_zero_filled((ptr.as_ptr() as *mut u8).offset(3 * pagesize() as isize), pagesize());
 
         // Check that:
         // - Mapping a vast region of memory works and is fast
@@ -123,8 +146,8 @@ fn test_map_non_windows() {
         let target = Duration::from_millis(1);
         assert!(diff < target, "duration: {:?}", diff);
         test_valid_map_address(ptr);
-        test_zero_filled(ptr.offset((size / 2) as isize), pagesize());
-        unmap(ptr, size);
+        test_zero_filled((ptr.as_ptr() as *mut u8).offset((size / 2) as isize), pagesize());
+        unmap(ptr.as_ptr() as *mut u8, size);
     }
 }
 
@@ -159,11 +182,11 @@ fn test_realloc_small() {
         if read {
             test_zero_filled(ptr, medium.size());
         }
-        test_contents(ptr, medium.size());
+        test_contents(ptr.into_ptr_u8(), medium.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, medium.size(), perm);
         alloc
-            .shrink_in_place(ptr, medium.clone(), small.clone())
+            .shrink_in_place(ptr, medium.clone(), small.size())
             .unwrap();
         if read && write {
             // First check to make sure the old contents are still there. This requires both
@@ -171,11 +194,11 @@ fn test_realloc_small() {
             // the special pattern).
             test_read(ptr, small.size());
         }
-        test_contents(ptr, small.size());
+        test_contents(ptr.into_ptr_u8(), small.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, small.size(), perm);
         alloc
-            .grow_in_place(ptr, small.clone(), large.clone())
+            .grow_in_place(ptr, small.clone(), large.size())
             .unwrap();
         if read && write {
             // First check to make sure the old contents are still there. This requires both
@@ -184,11 +207,11 @@ fn test_realloc_small() {
             // beyond that may have been altered.
             test_read(ptr, small.size());
         }
-        test_contents(ptr, large.size());
+        test_contents(ptr.into_ptr_u8(), large.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, large.size(), perm);
         let old_ptr = ptr;
-        let ptr = alloc.realloc(ptr, large.clone(), small.clone()).unwrap();
+        let ptr = alloc.realloc(ptr, large.clone(), small.size()).unwrap();
         if cfg!(target_os = "linux") {
             assert_eq!(old_ptr, ptr);
         }
@@ -198,7 +221,7 @@ fn test_realloc_small() {
             // the special pattern).
             test_read(ptr, small.size());
         }
-        test_contents(ptr, small.size());
+        test_contents(ptr.into_ptr_u8(), small.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, small.size(), perm);
         <MapAlloc as Alloc>::dealloc(&mut alloc, ptr, small.clone());
@@ -251,25 +274,25 @@ fn test_realloc_large() {
         if read {
             test_zero_filled(ptr, large.size());
         }
-        test_contents(ptr, large.size());
+        test_contents(ptr.into_ptr_u8(), large.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, large.size(), perm);
         if cfg!(target_os = "linux") {
             alloc
-                .shrink_in_place(ptr, large.clone(), small.clone())
+                .shrink_in_place(ptr, large.clone(), small.size())
                 .unwrap();
-            ptr = alloc.realloc(ptr, large.clone(), small.clone()).unwrap();
+            ptr = alloc.realloc(ptr, large.clone(), small.size()).unwrap();
             if read && write {
                 // First check to make sure the old contents are still there. This requires both
                 // read (in order to read the contents) and write (or else we wouldn't have written
                 // the special pattern).
                 test_read(ptr, small.size());
             }
-            test_contents(ptr, small.size());
+            test_contents(ptr.into_ptr_u8(), small.size());
             #[cfg(any(target_os = "linux", windows))]
             assert_block_perm(ptr, small.size(), perm);
             alloc
-                .grow_in_place(ptr, small.clone(), medium.clone())
+                .grow_in_place(ptr, small.clone(), medium.size())
                 .unwrap();
             if read && write {
                 // First check to make sure the old contents are still there. This requires both
@@ -278,11 +301,11 @@ fn test_realloc_large() {
                 // beyond that may have been altered.
                 test_read(ptr, small.size());
             }
-            test_contents(ptr, medium.size());
+            test_contents(ptr.into_ptr_u8(), medium.size());
             #[cfg(any(target_os = "linux", windows))]
             assert_block_perm(ptr, medium.size(), perm);
         } else {
-            ptr = alloc.realloc(ptr, large.clone(), medium.clone()).unwrap();
+            ptr = alloc.realloc(ptr, large.clone(), medium.size()).unwrap();
             test_valid_map_address(ptr);
             if read && write {
                 // First check to make sure the old contents are still there. This requires both
@@ -293,7 +316,7 @@ fn test_realloc_large() {
             }
         }
         let old_ptr = ptr;
-        let ptr = alloc.realloc(ptr, medium.clone(), small.clone()).unwrap();
+        let ptr = alloc.realloc(ptr, medium.clone(), small.size()).unwrap();
         if cfg!(target_os = "linux") {
             assert_eq!(old_ptr, ptr);
         }
@@ -303,10 +326,10 @@ fn test_realloc_large() {
             // special pattern).
             test_read(ptr, small.size());
         }
-        test_contents(ptr, small.size());
+        test_contents(ptr.into_ptr_u8(), small.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, small.size(), perm);
-        let ptr = alloc.realloc(ptr, small.clone(), large.clone()).unwrap();
+        let ptr = alloc.realloc(ptr, small.clone(), large.size()).unwrap();
         if cfg!(target_os = "linux") {
             assert_eq!(old_ptr, ptr);
         }
@@ -317,7 +340,7 @@ fn test_realloc_large() {
             // may have been altered.
             test_read(ptr, small.size());
         }
-        test_contents(ptr, large.size());
+        test_contents(ptr.into_ptr_u8(), large.size());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, large.size(), perm);
 
@@ -331,9 +354,9 @@ fn test_realloc_large() {
             // pages. Since we know there's a second mapped page right after it, remap will be
             // unable to simply grow the mapping in place, and will be forced to move it. This way,
             // we can test that when a mapping is moved, its contents are not modified.
-            let remaining = ptr.offset(alloc.pagesize as isize);
+            let remaining = (ptr.as_ptr() as *mut u8).offset(alloc.pagesize as isize);
             let remaining_layout = Layout::array::<u8>(large.size() - alloc.pagesize).unwrap();
-            let new = alloc.realloc(ptr, small.clone(), medium.clone()).unwrap();
+            let new = alloc.realloc(ptr, small.clone(), medium.size()).unwrap();
             if read && write {
                 // First check to make sure the old contents are still there. This requires both
                 // read (in order to read the contents) and write (or else we wouldn't have written
@@ -345,7 +368,7 @@ fn test_realloc_large() {
             #[cfg(any(target_os = "linux", windows))]
             assert_block_perm(new, medium.size(), perm);
             <MapAlloc as Alloc>::dealloc(&mut alloc, new, medium.clone());
-            <MapAlloc as Alloc>::dealloc(&mut alloc, remaining, remaining_layout.clone());
+            <MapAlloc as Alloc>::dealloc(&mut alloc, NonNull::new(remaining as *mut Opaque).unwrap(), remaining_layout.clone());
         }
     }
 
@@ -390,7 +413,7 @@ fn test_commit() {
         let mut ptr = map(pagesize(), PROT_READ_WRITE, true).unwrap();
         test_valid_map_address(ptr);
         test_zero_filled(ptr, pagesize());
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
 
         // Check that:
         // - Mapping a single page works
@@ -407,9 +430,9 @@ fn test_commit() {
         test_zero_filled(ptr, pagesize());
         #[cfg(windows)]
         commit(ptr, pagesize(), PROT_READ_WRITE);
-        uncommit(ptr, pagesize());
-        uncommit(ptr, pagesize());
-        unmap(ptr, pagesize());
+        uncommit(ptr.into_ptr_u8(), pagesize());
+        uncommit(ptr.into_ptr_u8(), pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
     }
 }
 
@@ -429,7 +452,7 @@ fn test_perms() {
         test_zero_filled(ptr, pagesize());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, pagesize(), PROT_READ);
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
 
         // Check that:
         // - Mapping a single write-only page works
@@ -444,7 +467,7 @@ fn test_perms() {
         test_write(ptr, pagesize());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, pagesize(), PROT_WRITE);
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
 
         // Check that:
         // - Mapping a single read-write page works
@@ -461,7 +484,7 @@ fn test_perms() {
         test_write_read(ptr, pagesize());
         #[cfg(any(target_os = "linux", windows))]
         assert_block_perm(ptr, pagesize(), PROT_READ_WRITE);
-        unmap(ptr, pagesize());
+        unmap(ptr.as_ptr() as *mut u8, pagesize());
 
         #[cfg(target_os = "linux")]
         {
@@ -471,7 +494,7 @@ fn test_perms() {
                     let ptr = map(pagesize(), perm, false).unwrap();
                     test_valid_map_address(ptr);
                     assert_block_perm(ptr, pagesize(), perm);
-                    unmap(ptr, pagesize());
+                    unmap(ptr.as_ptr() as *mut u8, pagesize());
                 }
             }
 
@@ -519,7 +542,7 @@ fn test_unmap_panic_zero() {
 
         // NOTE: This test leaks memory, but it's only a page, so it doesn't really matter.
         let ptr = map(pagesize(), PROT_READ_WRITE, false).unwrap();
-        unmap(ptr, 0);
+        unmap(ptr.as_ptr() as *mut u8, 0);
     }
 }
 
@@ -540,15 +563,15 @@ fn bench_large_map(b: &mut Bencher) {
     // in test_map_non_windows.
     b.iter(|| unsafe {
         let ptr = map(1 << 29, PROT_READ_WRITE, false).unwrap();
-        unmap(ptr, 1 << 29);
+        unmap(ptr.as_ptr() as *mut u8, 1 << 29);
     })
 }
 
 // assert_block_perm asserts that every page in the block starting at ptr with the given size has
 // the given set of permissions.
 #[cfg(target_os = "linux")]
-fn assert_block_perm(ptr: *mut u8, size: usize, perm: Perm) {
-    let ptr = ptr as usize;
+fn assert_block_perm<P: IntoPtrU8>(ptr: P, size: usize, perm: Perm) {
+    let ptr = ptr.into_ptr_u8() as usize;
     for block in perms() {
         // If this Block overlaps with the block being queried, then since a Block can only have
         // a single set of permissions, then their permissions must match.
@@ -560,7 +583,8 @@ fn assert_block_perm(ptr: *mut u8, size: usize, perm: Perm) {
 }
 
 #[cfg(windows)]
-fn assert_block_perm(ptr: *mut u8, size: usize, perm: Perm) {
+fn assert_block_perm<P: IntoPtrU8>(ptr: P, size: usize, perm: Perm) {
+    let ptr = ptr.into_ptr_u8();
     unsafe {
         use std::mem;
         let mut meminfo: winapi::winnt::MEMORY_BASIC_INFORMATION = mem::uninitialized();
