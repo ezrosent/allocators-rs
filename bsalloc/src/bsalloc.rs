@@ -1,18 +1,19 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
-// README.md file at the top-level directory of this repository.
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of
+// the README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use super::core::sync::atomic::{AtomicPtr, Ordering};
-use super::core::mem;
-use super::core::ptr;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicPtr, Ordering};
+use core::{mem, ptr};
 
-use super::mmap_alloc::MapAlloc;
+use mmap_alloc::MapAlloc;
 #[cfg(windows)]
-use super::mmap_alloc::MapAllocBuilder;
-use super::{Alloc, Layout, AllocErr};
+use mmap_alloc::MapAllocBuilder;
+
+use {Alloc, Layout};
 
 #[derive(Copy, Clone)]
 pub struct BsAlloc;
@@ -32,8 +33,8 @@ impl GlobalAllocator {
         GlobalAllocator {
             small_objs: large::Cache::new(1 << 10),
             large_objs: small::Cache::new(18 << 10),
-            // On Windows, memory must be explicitly committed - it will not simply be committed on
-            // first use like on Linux and Mac.
+            // On Windows, memory must be explicitly committed - it will not
+            // simply be committed on first use like on Linux and Mac.
             #[cfg(windows)]
             ma: MapAllocBuilder::default().commit(true).build(),
             #[cfg(not(windows))]
@@ -41,7 +42,7 @@ impl GlobalAllocator {
         }
     }
 
-    pub unsafe fn alloc(&self, size: usize) -> Result<*mut u8, AllocErr> {
+    pub unsafe fn alloc(&self, size: usize) -> *mut u8 {
         let mut ma = &self.ma;
         if size < self.small_objs.object_size {
             self.small_objs.alloc(ma)
@@ -49,6 +50,8 @@ impl GlobalAllocator {
             self.large_objs.alloc(ma)
         } else {
             ma.alloc(Layout::from_size_align(size, 1).unwrap())
+                .map(|ptr| ptr.as_ptr())
+                .unwrap_or(ptr::null_mut())
         }
     }
 
@@ -62,10 +65,12 @@ impl GlobalAllocator {
             self.large_objs.free(item, ma);
             return;
         }
-        ma.dealloc(item, Layout::from_size_align(size, 1).unwrap())
+        ma.dealloc(
+            NonNull::new_unchecked(item),
+            Layout::from_size_align(size, 1).unwrap(),
+        )
     }
 }
-
 
 fn rng() -> usize {
     const RAND_A: usize = 16_807;
@@ -74,13 +79,12 @@ fn rng() -> usize {
     seed * RAND_A
 }
 
-
 macro_rules! sized_cache {
     ($name:ident, $cache_size:expr) => {
         mod $name {
             use super::*;
             const CACHE_SIZE: usize = $cache_size;
-            const PATIENCE: usize = CACHE_SIZE>>2;
+            const PATIENCE: usize = CACHE_SIZE >> 2;
             pub struct Cache {
                 pub object_size: usize,
                 layout: Layout,
@@ -93,26 +97,33 @@ macro_rules! sized_cache {
                         object_size: obj_size,
                         layout: Layout::from_size_align(obj_size, 1).unwrap(),
                         cache: unsafe {
-                            mem::transmute::<[usize; CACHE_SIZE], [AtomicPtr<u8>; CACHE_SIZE]>([0; CACHE_SIZE])
+                            mem::transmute::<[usize; CACHE_SIZE], [AtomicPtr<u8>; CACHE_SIZE]>(
+                                [0; CACHE_SIZE],
+                            )
                         },
                     };
                     res
                 }
 
-                pub unsafe fn alloc(&self, mut ma: &MapAlloc) -> Result<*mut u8, AllocErr> {
+                pub unsafe fn alloc(&self, mut ma: &MapAlloc) -> *mut u8 {
                     let start = rng();
                     let mut cur_slot = start % CACHE_SIZE;
                     let stride = cur_slot * 2 + 1;
                     for _ in 0..PATIENCE {
-                        let p = self.cache.get_unchecked(cur_slot).swap(ptr::null_mut(), Ordering::Relaxed);
+                        let p = self
+                            .cache
+                            .get_unchecked(cur_slot)
+                            .swap(ptr::null_mut(), Ordering::Relaxed);
                         if p.is_null() {
                             cur_slot += stride;
                             cur_slot %= CACHE_SIZE;
                             continue;
                         }
-                        return Ok(p);
+                        return p;
                     }
                     ma.alloc(self.layout.clone())
+                        .map(|ptr| ptr.as_ptr())
+                        .unwrap_or(ptr::null_mut())
                 }
 
                 pub unsafe fn free(&self, item: *mut u8, mut ma: &MapAlloc) {
@@ -121,14 +132,17 @@ macro_rules! sized_cache {
                     let mut cur_slot = start % CACHE_SIZE;
                     let stride = cur_slot * 2 + 1;
                     for _ in 0..PATIENCE {
-                        cur_ptr = self.cache.get_unchecked(cur_slot).swap(cur_ptr, Ordering::Relaxed);
+                        cur_ptr = self
+                            .cache
+                            .get_unchecked(cur_slot)
+                            .swap(cur_ptr, Ordering::Relaxed);
                         if cur_ptr.is_null() {
                             return;
                         }
                         cur_slot += stride;
                         cur_slot %= CACHE_SIZE;
                     }
-                    ma.dealloc(cur_ptr, self.layout.clone());
+                    ma.dealloc(NonNull::new_unchecked(cur_ptr), self.layout.clone());
                 }
             }
 
@@ -140,14 +154,18 @@ sized_cache!(small, 4);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::ptr::write_volatile;
+
+    use alloc::alloc::GlobalAlloc;
+
+    use super::*;
+
     #[test]
     fn test_alloc_basic() {
         for size in 1..((1 << 18) + 1) {
             let layout = Layout::from_size_align(size * 8, 8).unwrap();
             unsafe {
-                let item = (&BsAlloc).alloc(layout.clone()).unwrap();
+                let item = (&BsAlloc).alloc(layout.clone());
                 write_volatile(item, 10);
                 (&BsAlloc).dealloc(item, layout);
             }

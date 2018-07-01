@@ -1,5 +1,5 @@
-// Copyright 2017 the authors. See the 'Copyright and license' section of the
-// README.md file at the top-level directory of this repository.
+// Copyright 2017-2018 the authors. See the 'Copyright and license' section of
+// the README.md file at the top-level directory of this repository.
 //
 // Licensed under the Apache License, Version 2.0 (the LICENSE-APACHE file) or
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
@@ -8,18 +8,20 @@
 #![no_std]
 #![feature(allocator_api)]
 #![feature(alloc)]
-#![feature(global_allocator)]
+
 extern crate alloc;
 #[macro_use]
 extern crate alloc_fmt;
 #[macro_use]
 extern crate lazy_static;
 extern crate mmap_alloc;
+
 mod bsalloc;
+
+use alloc::alloc::{Alloc, GlobalAlloc, Layout};
+use core::{cmp, ptr};
+
 use bsalloc::{BsAlloc, ALLOC};
-use self::alloc::allocator::{Alloc, AllocErr, Layout};
-use core::cmp;
-use core::ptr;
 
 #[cfg(debug_assertions)]
 fn assert_nonoverlapping(r1: (usize, usize), r2: (usize, usize)) {
@@ -28,33 +30,35 @@ fn assert_nonoverlapping(r1: (usize, usize), r2: (usize, usize)) {
     alloc_assert!(c >= b);
 }
 
+#[cfg(not(test))]
 #[global_allocator]
 static GLOBAL: BsAlloc = BsAlloc;
 
-unsafe impl<'a> Alloc for &'a BsAlloc {
-    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+unsafe impl GlobalAlloc for BsAlloc {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         (*ALLOC).alloc(l.size())
     }
 
-    unsafe fn dealloc(&mut self, item: *mut u8, l: Layout) {
+    unsafe fn dealloc(&self, item: *mut u8, l: Layout) {
         (*ALLOC).free(item, l.size())
     }
 
-    unsafe fn realloc(&mut self,
-                      ptr: *mut u8,
-                      old_l: Layout,
-                      new_l: Layout)
-                      -> Result<*mut u8, AllocErr> {
-        let old_size = old_l.size();
-        let new_size = new_l.size();
-        let new_memory = self.alloc(new_l).expect("alloc failed");
-        #[cfg(debug_assertions)]
-        {
-            assert_nonoverlapping((ptr as usize, ptr as usize + old_size),
-                                  (new_memory as usize, new_memory as usize + new_size));
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let old_size = layout.size();
+        // TODO(joshlf): To technically implement realloc correctly, we need to
+        // preserve the alignment of the old allocation. To do this, we need to
+        // round up new_size to a multiple of that alignment.
+        let new_memory = self.alloc(Layout::from_size_align(new_size, 1).unwrap());
+        if new_memory.is_null() {
+            return new_memory;
         }
+        #[cfg(debug_assertions)]
+        assert_nonoverlapping(
+            (ptr as usize, ptr as usize + old_size),
+            (new_memory as usize, new_memory as usize + new_size),
+        );
         ptr::copy_nonoverlapping(ptr, new_memory, cmp::min(old_size, new_size));
-        self.dealloc(ptr, old_l);
-        Ok(new_memory)
+        self.dealloc(ptr, layout);
+        new_memory
     }
 }
