@@ -37,11 +37,9 @@ pub trait BackingAlloc {
 
 /// An `UntypedObjectAlloc` that uses arbitrary allocators.
 pub mod alloc {
-    extern crate alloc;
-    extern crate object_alloc;
-    use self::alloc::allocator::{Alloc, AllocErr, Layout};
-    use self::object_alloc::{UntypedObjectAlloc};
+    use alloc::alloc::{Alloc, AllocErr, Layout};
     use core::ptr::NonNull;
+    use object_alloc::UntypedObjectAlloc;
 
     /// An `UntypedObjectAlloc` that uses an arbitrary allocator.
     #[derive(Clone)]
@@ -63,16 +61,13 @@ pub mod alloc {
 
         unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
             match self.alloc.alloc(self.layout.clone()) {
-                Ok(ptr) => Some(NonNull::new_unchecked(ptr)),
-                Err(AllocErr::Exhausted { .. }) => None,
-                Err(AllocErr::Unsupported { details }) => {
-                    unreachable!("unexpected unsupported alloc: {}", details)
-                }
+                Ok(ptr) => Some(ptr),
+                Err(AllocErr) => None,
             }
         }
 
         unsafe fn dealloc(&mut self, ptr: NonNull<u8>) {
-            self.alloc.dealloc(ptr.as_ptr(), self.layout.clone());
+            self.alloc.dealloc(ptr, self.layout.clone());
         }
     }
 }
@@ -80,8 +75,8 @@ pub mod alloc {
 /// A `BackingAlloc` that uses the heap.
 #[cfg(feature = "std")]
 pub mod heap {
-    extern crate alloc;
-    use self::alloc::heap::{Heap, Layout};
+    use alloc::alloc::{Global, Layout};
+
     use super::alloc::AllocObjectAlloc;
     use super::BackingAlloc;
     use PAGE_SIZE;
@@ -89,20 +84,20 @@ pub mod heap {
     pub struct HeapBackingAlloc;
 
     impl BackingAlloc for HeapBackingAlloc {
-        type Aligned = AllocObjectAlloc<Heap>;
-        type Large = AllocObjectAlloc<Heap>;
+        type Aligned = AllocObjectAlloc<Global>;
+        type Large = AllocObjectAlloc<Global>;
     }
 
-    pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<Heap>> {
+    pub fn get_aligned(layout: Layout) -> Option<AllocObjectAlloc<Global>> {
         if layout.size() > *PAGE_SIZE {
             None
         } else {
-            Some(AllocObjectAlloc::new(Heap, layout))
+            Some(AllocObjectAlloc::new(Global, layout))
         }
     }
 
-    pub fn get_large(layout: Layout) -> AllocObjectAlloc<Heap> {
-        AllocObjectAlloc::new(Heap, layout)
+    pub fn get_large(layout: Layout) -> AllocObjectAlloc<Global> {
+        AllocObjectAlloc::new(Global, layout)
     }
 }
 

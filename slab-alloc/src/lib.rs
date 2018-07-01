@@ -76,30 +76,32 @@ extern crate object_alloc;
 #[macro_use]
 extern crate object_alloc_test;
 extern crate sysconf;
+#[cfg(test)]
+extern crate test;
 
-use core::marker::PhantomData;
-use core::default::Default;
-use core::mem;
-use core::ptr::NonNull;
-use self::util::list::*;
-use util::workingset::WorkingSet;
-use init::*;
+use self::alloc::allocator::Layout;
 use self::init::InitSystem;
 use self::object_alloc::{ObjectAlloc, UntypedObjectAlloc};
-use self::alloc::allocator::Layout;
+use self::util::list::*;
+use core::default::Default;
+use core::marker::PhantomData;
+use core::mem;
+use core::ptr::NonNull;
+use init::*;
+use util::workingset::WorkingSet;
 
-pub use backing::BackingAlloc;
 #[cfg(feature = "std")]
 use backing::heap::HeapBackingAlloc;
 #[cfg(feature = "os")]
 use backing::mmap::MmapBackingAlloc;
+pub use backing::BackingAlloc;
 
 use init::NopInitSystem;
 type DefaultInitSystem<T> = init::InitInitSystem<T, init::DefaultInitializer<T>>;
 type FnInitSystem<T, F> = init::InitInitSystem<T, init::FnInitializer<T, F>>;
 type UnsafeFnInitSystem<T, F> = init::InitInitSystem<T, init::UnsafeFnInitializer<T, F>>;
 
-lazy_static!{
+lazy_static! {
     static ref PAGE_SIZE: usize = self::sysconf::page::pagesize();
     static ref PAGE_ALIGN_MASK: usize = !(*PAGE_SIZE - 1);
 }

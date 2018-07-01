@@ -54,18 +54,15 @@
 //! alignment. We do the same for the post-stack padding in order to give the array of objects the
 //! proper alignment.
 
-extern crate alloc;
-extern crate object_alloc;
-
-use SlabSystem;
-use init::InitSystem;
-use core::{mem, ptr};
+use alloc::alloc;
 use core::ptr::NonNull;
-use util::stack::Stack;
+use core::{mem, ptr};
+use init::InitSystem;
+use object_alloc::UntypedObjectAlloc;
 use util::color::{Color, ColorSettings};
 use util::list::*;
-use self::alloc::allocator;
-use self::object_alloc::UntypedObjectAlloc;
+use util::stack::Stack;
+use SlabSystem;
 
 /// Configuration to customize a stack-based slab implementation.
 ///
@@ -116,7 +113,8 @@ impl<I: InitSystem, A: UntypedObjectAlloc, C: ConfigData> SlabSystem<I> for Syst
 
     fn alloc_slab(&mut self) -> Option<NonNull<SlabHeader>> {
         unsafe {
-            let color = self.layout
+            let color = self
+                .layout
                 .color_settings
                 .next_color(self.layout.layout.align());
             let slab = self.alloc.alloc()?.cast();
@@ -220,7 +218,7 @@ impl SlabHeader {
 #[derive(Clone)]
 pub struct Layout {
     pub num_obj: usize,
-    pub layout: allocator::Layout,
+    pub layout: alloc::Layout,
     pub stack_begin_offset: usize,
     pub array_begin_offset: usize,
     pub color_settings: ColorSettings,
@@ -230,7 +228,7 @@ impl Layout {
     /// Determines whether an allocator can be constructed for T using the given slab size. If so,
     /// it returns a constructed Layout for T using that slab size and the amount of unused space
     /// left at the end of the slab (when no coloring is used).
-    pub fn for_slab_size(layout: allocator::Layout, slab_size: usize) -> Option<(Layout, usize)> {
+    pub fn for_slab_size(layout: alloc::Layout, slab_size: usize) -> Option<(Layout, usize)> {
         let obj_size = layout.size();
         let obj_align = layout.align();
         let hdr_size = mem::size_of::<SlabHeader>();
@@ -247,11 +245,10 @@ impl Layout {
             // total_hdr_size = size of header, post-header padding, and stack
             let total_hdr_size = stack_begin_offset + Stack::<usize>::bytes_for(candidate);
 
-            // padding between the pointer stack and the array of objects
-            use self::alloc::allocator::Layout;
-            // NOTE: The Layout alignment isn't used here, so we use 1 because it's guaranteed not
-            // to cause from_size_align to return None.
-            let post_stack_padding = Layout::from_size_align(total_hdr_size, 1)
+            // Padding between the pointer stack and the array of objects. NOTE:
+            // The Layout alignment isn't used here, so we use 1 because it's
+            // guaranteed not to cause from_size_align to return None.
+            let post_stack_padding = alloc::Layout::from_size_align(total_hdr_size, 1)
                 .unwrap()
                 .padding_needed_for(obj_align);
 
@@ -279,7 +276,8 @@ impl Layout {
         // assert that the objects fit within the slab
         assert!(
             slab_size
-                >= l.array_begin_offset + l.color_settings.max_color().as_usize()
+                >= l.array_begin_offset
+                    + l.color_settings.max_color().as_usize()
                     + (l.num_obj * obj_size)
         );
         Some((l, unused_space))

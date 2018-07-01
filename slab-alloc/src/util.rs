@@ -53,8 +53,8 @@ pub mod size {
 pub mod stack {
     extern crate alloc;
     use core::marker::PhantomData;
-    use core::{mem, ptr};
     use core::ptr::NonNull;
+    use core::{mem, ptr};
 
     /// A manually-allocated stack. The `Stack` object itself is only where the metadata lives; the
     /// data itself lives in memory which is manually allocated by the user.
@@ -133,14 +133,14 @@ pub mod stack {
 
 pub mod color {
     #[cfg(not(feature = "no-coloring"))]
-    pub use self::on::ColorSettings;
-    #[cfg(not(feature = "no-coloring"))]
     pub use self::on::Color;
+    #[cfg(not(feature = "no-coloring"))]
+    pub use self::on::ColorSettings;
 
     #[cfg(feature = "no-coloring")]
-    pub use self::off::ColorSettings;
-    #[cfg(feature = "no-coloring")]
     pub use self::off::Color;
+    #[cfg(feature = "no-coloring")]
+    pub use self::off::ColorSettings;
 
     /// An implementation of the coloring scheme described in Section 4 of [The Slab Allocator: An
     /// Object-Caching Kernel Memory Allocator][1].
