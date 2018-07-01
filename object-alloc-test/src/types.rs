@@ -41,7 +41,7 @@ macro_rules! call_macro {
 }
 
 macro_rules! impl_byte_n {
-    ($type:ident, $n:tt) => (
+    ($type:ident, $n:tt) => {
         #[derive(Copy)]
         pub struct $type(pub [u8; $n]);
         impl Default for $type {
@@ -56,57 +56,59 @@ macro_rules! impl_byte_n {
                 *self
             }
         }
-    )
+    };
 }
 
-call_macro!(impl_byte_n,
-            (Byte1, 1),
-            (Byte2, 2),
-            (Byte3, 3),
-            (Byte4, 4),
-            (Byte5, 5),
-            (Byte6, 6),
-            (Byte7, 7),
-            (Byte8, 8),
-            (Byte11, 11),
-            (Byte12, 12),
-            (Byte13, 13),
-            (Byte16, 16),
-            (Byte19, 19),
-            (Byte24, 24),
-            (Byte29, 29),
-            (Byte32, 32),
-            (Byte41, 41),
-            (Byte48, 48),
-            (Byte59, 59),
-            (Byte64, 64),
-            (Byte73, 73),
-            (Byte96, 96),
-            (Byte113, 113),
-            (Byte128, 128),
-            (Byte157, 157),
-            (Byte192, 192),
-            (Byte229, 229),
-            (Byte256, 256),
-            (Byte317, 317),
-            (Byte384, 384),
-            (Byte457, 457),
-            (Byte512, 512),
-            (Byte768, 768),
-            (Byte617, 617),
-            (Byte1024, 1024),
-            (Byte1277, 1277),
-            (Byte1536, 1536),
-            (Byte1777, 1777),
-            (Byte2048, 2048),
-            (Byte2557, 2557),
-            (Byte3072, 3072),
-            (Byte3539, 3539),
-            (Byte4096, 4096),
-            (Byte5119, 5119),
-            (Byte6144, 6144),
-            (Byte7151, 7151),
-            (Byte8192, 8192));
+call_macro!(
+    impl_byte_n,
+    (Byte1, 1),
+    (Byte2, 2),
+    (Byte3, 3),
+    (Byte4, 4),
+    (Byte5, 5),
+    (Byte6, 6),
+    (Byte7, 7),
+    (Byte8, 8),
+    (Byte11, 11),
+    (Byte12, 12),
+    (Byte13, 13),
+    (Byte16, 16),
+    (Byte19, 19),
+    (Byte24, 24),
+    (Byte29, 29),
+    (Byte32, 32),
+    (Byte41, 41),
+    (Byte48, 48),
+    (Byte59, 59),
+    (Byte64, 64),
+    (Byte73, 73),
+    (Byte96, 96),
+    (Byte113, 113),
+    (Byte128, 128),
+    (Byte157, 157),
+    (Byte192, 192),
+    (Byte229, 229),
+    (Byte256, 256),
+    (Byte317, 317),
+    (Byte384, 384),
+    (Byte457, 457),
+    (Byte512, 512),
+    (Byte768, 768),
+    (Byte617, 617),
+    (Byte1024, 1024),
+    (Byte1277, 1277),
+    (Byte1536, 1536),
+    (Byte1777, 1777),
+    (Byte2048, 2048),
+    (Byte2557, 2557),
+    (Byte3072, 3072),
+    (Byte3539, 3539),
+    (Byte4096, 4096),
+    (Byte5119, 5119),
+    (Byte6144, 6144),
+    (Byte7151, 7151),
+    (Byte8192, 8192)
+);
 
 // TODO: Document the pattern of matching particular types to avoid defining anything for them.
 

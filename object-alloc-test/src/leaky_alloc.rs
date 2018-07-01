@@ -5,8 +5,9 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-extern crate alloc;
-use self::alloc::heap::{Alloc, AllocErr, Heap, Layout};
+use std::ptr::NonNull;
+
+use alloc::alloc::{self, Alloc, AllocErr, Layout};
 
 /// An allocator that only frees memory when it is dropped.
 ///
@@ -19,42 +20,35 @@ pub struct LeakyAlloc {
 }
 
 struct Ptr {
-    ptr: *mut u8,
+    ptr: NonNull<u8>,
     layout: Layout,
 }
 
 impl Drop for Ptr {
     fn drop(&mut self) {
         unsafe {
-            Alloc::dealloc(&mut Heap, self.ptr, self.layout.clone());
+            alloc::dealloc(self.ptr.as_ptr(), self.layout.clone());
         }
     }
 }
 
 unsafe impl Alloc for LeakyAlloc {
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        let ptr = Alloc::alloc(&mut Heap, layout.clone())?;
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
+        let ptr = NonNull::new(alloc::alloc(layout.clone())).ok_or(AllocErr)?;
 
-        self.allocs
-            .push(Ptr {
-                      ptr: ptr,
-                      layout: layout,
-                  });
+        self.allocs.push(Ptr { ptr, layout });
         Ok(ptr)
     }
 
-    unsafe fn dealloc(&mut self, _: *mut u8, _: Layout) {}
+    unsafe fn dealloc(&mut self, _: NonNull<u8>, _: Layout) {}
 }
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
-    extern crate object_alloc;
-
-    use self::alloc::heap::{Alloc, AllocErr, Layout};
-    use self::object_alloc::ObjectAlloc;
+    use alloc::alloc::{Alloc, AllocErr, Layout};
+    use object_alloc::ObjectAlloc;
     use std::marker::PhantomData;
-    use std::ptr::NonNull;
+    use std::ptr::{self, NonNull};
 
     #[derive(Default)]
     struct LeakyObjectAlloc<T: Default> {
@@ -65,20 +59,17 @@ mod tests {
     unsafe impl<T: Default> ObjectAlloc<T> for LeakyObjectAlloc<T> {
         unsafe fn alloc(&mut self) -> Option<NonNull<T>> {
             let ptr = match Alloc::alloc(&mut self.alloc, Layout::new::<T>()) {
-                Ok(ptr) => NonNull::new(ptr).unwrap().cast(),
-                Err(AllocErr::Exhausted { .. }) => return None,
-                Err(AllocErr::Unsupported { details }) => {
-                    unreachable!("unexpected unsupported alloc: {}", details)
-                }
+                Ok(ptr) => ptr.cast(),
+                Err(AllocErr) => return None,
             };
 
-            ::std::ptr::write(ptr.as_ptr(), T::default());
+            ptr::write(ptr.as_ptr(), T::default());
             Some(ptr)
         }
 
         unsafe fn dealloc(&mut self, ptr: NonNull<T>) {
             ::std::ptr::drop_in_place(ptr.as_ptr());
-            Alloc::dealloc(&mut self.alloc, ptr.cast().as_ptr(), Layout::new::<T>());
+            Alloc::dealloc(&mut self.alloc, ptr.cast(), Layout::new::<T>());
         }
     }
 
