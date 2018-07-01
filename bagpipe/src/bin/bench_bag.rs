@@ -16,7 +16,7 @@ use std::sync::{Arc, Barrier};
 use std::time;
 use std::thread;
 
-type BagPipe<T: SharedWeakBag> = bagpipe::BagPipe<T, bagpipe::DummyCleanup<T::Item>>;
+type BagPipe<T> = bagpipe::BagPipe<T, bagpipe::DummyCleanup<<T as SharedWeakBag>::Item>>;
 
 struct WorkloadStats {
     nthreads: usize,
