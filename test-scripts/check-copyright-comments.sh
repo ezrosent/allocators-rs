@@ -7,16 +7,20 @@
 # the MIT license (the LICENSE-MIT file) at your option. This file may not be
 # copied, modified, or distributed except according to those terms.
 
-# last_modification_year <file>
-function last_modification_year {
-  COMMIT=$(git log --pretty=format:"%H" "$1" | head -n 1)
-  git show -s --format=%ci "$COMMIT" | cut -d - -f 1
-}
-
-# first_modification_year <file>
-function first_modification_year {
-  COMMIT=$(git log --pretty=format:"%H" "$1" | tail -n 1)
-  git show -s --format=%ci "$COMMIT" | cut -d - -f 1
+# modification_years <file>
+function modification_years {
+  # TODO(joshlf): I've determined that the 'git log' command is taking up the
+  # majority of the execution time of this script. It's unclear whether there's
+  # much opportunity for optimizing it, but it would be the primary target for
+  # it.
+  FIRST_LAST_YEARS=$(git log --pretty=format:"%ci" "$1" | awk 'NR==1; END{print}' | cut -d - -f 1 | tr '\n' ' ')
+  FIRST_YEAR=$(echo "$FIRST_LAST_YEARS" | cut -d ' ' -f 2)
+  LAST_YEAR=$(echo "$FIRST_LAST_YEARS" | cut -d ' ' -f 1)
+  if [ "$FIRST_YEAR" == "$LAST_YEAR" ]; then
+    echo "$FIRST_YEAR"
+  else
+    echo "${FIRST_YEAR}-${LAST_YEAR}"
+  fi
 }
 
 # like check_comments, checks the <line>th line for the comment
@@ -28,24 +32,14 @@ function check_comments_line {
   # but the other alternative is to pipe the output of find into
   # 'while read file', which spawns a subshell, and thus prevents
   # us from setting the RET variable from inside the loop.
-  for file in $(find . -name "*${1}"); do
-    # Don't check files that aren't in version control
-    if ! git ls-files --error-unmatch "$file" >/dev/null 2>/dev/null; then
-      continue
-    fi
 
+  for file in $(git ls-tree -r HEAD --name-only | grep "${1}$"); do
     # We're either looking for a comment of the form 'Copyright 2017'
     # or of the form 'Copyright 2017-2018'.
-    FIRST_YEAR=$(first_modification_year "$file")
-    LAST_YEAR=$(last_modification_year "$file")
-    YEAR=$(if [ "$FIRST_YEAR" == "$LAST_YEAR" ]; then
-      echo "$FIRST_YEAR"
-    else
-      echo "${FIRST_YEAR}-${LAST_YEAR}"
-    fi)
+    YEARS=$(modification_years "$file")
     # Including " the authors." is important, or else "Copyright 2017-2018 the authors."
-    # would be spuriously matched if the correct $YEAR was 2017.
-    COMMENT="$2 Copyright $YEAR the authors."
+    # would be spuriously matched if the correct $YEARS was 2017.
+    COMMENT="$2 Copyright $YEARS the authors."
 
     head -n "$3" "$file" | tail -n 1 | grep "$COMMENT" >/dev/null
     if [ $? -ne 0 ]; then
