@@ -15,11 +15,11 @@ extern crate rand;
 extern crate test;
 extern crate twox_hash;
 
+use self::object_alloc::ObjectAlloc;
+use self::test::black_box;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ptr::NonNull;
-use self::test::black_box;
-use self::object_alloc::ObjectAlloc;
 
 /// A type to test for memory corruption issues.
 ///
@@ -136,7 +136,7 @@ use self::object_alloc::ObjectAlloc;
 /// dropped, placing it in the `Invalid` state. Its backing memory pages could also be freed back
 /// to the kernel without being dropped. Neither of these will be detected.
 union CorruptionTester<T: Copy> {
-// ensure that a CorruptionTester is always large enough even if T isn't
+    // ensure that a CorruptionTester is always large enough even if T isn't
     _min: [u8; MIN_SIZE],
     _t: T,
 }
@@ -225,7 +225,11 @@ pub unsafe fn unsafe_default<T: Copy>(ptr: *mut CorruptionTesterUnsafe<T>) {
     // The memory we're being given should either be invalid (i.e., not a CorruptionTester) or
     // should be an already-dropped CorruptionTester.
     let state = (*ptr).0.state(Initializer::Unsafe);
-    assert!(state == State::Invalid || state == State::Dropped, "state: {:?}", state);
+    assert!(
+        state == State::Invalid || state == State::Dropped,
+        "state: {:?}",
+        state
+    );
 
     CorruptionTester::init(&mut (*ptr).0, Initializer::Unsafe);
     assert_eq!((*ptr).0.state(Initializer::Unsafe), State::New);
@@ -289,11 +293,13 @@ impl<T: Copy> CorruptionTester<T> {
                     Initializer::Default => 0,
                     Initializer::Unsafe => ptr as usize,
                 };
-                write(hdr,
-                      Header {
-                          state_nonce: NONCE_NEW,
-                          hash: Self::hash(ptr_arg, NONCE_NEW, slc),
-                      });
+                write(
+                    hdr,
+                    Header {
+                        state_nonce: NONCE_NEW,
+                        hash: Self::hash(ptr_arg, NONCE_NEW, slc),
+                    },
+                );
             }
             assert_eq!((*ptr).state(init), State::New);
         }
@@ -314,9 +320,11 @@ impl<T: Copy> CorruptionTester<T> {
                 State::Invalid
             }
         } else {
-            let hash = Self::hash(self as *const CorruptionTester<T> as usize,
-                                  hdr.state_nonce,
-                                  slc);
+            let hash = Self::hash(
+                self as *const CorruptionTester<T> as usize,
+                hdr.state_nonce,
+                slc,
+            );
             let tuple = (hdr.state_nonce, hdr.hash);
             if tuple == (NONCE_VALID, hash) {
                 State::Valid
@@ -371,10 +379,10 @@ impl<T: Copy> CorruptionTester<T> {
         let state = self.state(init);
         if state != State::Valid && state != State::New {
             let addr = self as *mut CorruptionTester<T> as usize;
-            panic!("unexpected state {:?} for object {:?} at address {}",
-                   state,
-                   self,
-                   addr);
+            panic!(
+                "unexpected state {:?} for object {:?} at address {}",
+                state, self, addr
+            );
         }
         self.update_state(State::Dropped);
         // prevent the optimizer from optimizing away this drop function
@@ -390,12 +398,15 @@ impl<T: Copy> CorruptionTester<T> {
 
         unsafe {
             let ptr = self as *const CorruptionTester<T> as usize;
-            (transmute(ptr), from_raw_parts((ptr + header_size) as *const u8, size - header_size))
+            (
+                transmute(ptr),
+                from_raw_parts((ptr + header_size) as *const u8, size - header_size),
+            )
         }
     }
 
     /// Split into a mutable header and byte slice.
-    #[cfg_attr(feature="cargo-clippy", allow(wrong_self_convention))]
+    #[cfg_attr(feature = "cargo-clippy", allow(wrong_self_convention))]
     fn to_header_and_slice_mut(&mut self) -> (&mut Header, &mut [u8]) {
         use std::mem::{size_of, transmute};
         use std::slice::from_raw_parts_mut;
@@ -404,8 +415,10 @@ impl<T: Copy> CorruptionTester<T> {
 
         unsafe {
             let ptr = self as *mut CorruptionTester<T> as usize;
-            (transmute(ptr),
-             from_raw_parts_mut((ptr + header_size) as *mut u8, size - header_size))
+            (
+                transmute(ptr),
+                from_raw_parts_mut((ptr + header_size) as *mut u8, size - header_size),
+            )
         }
     }
 
@@ -427,10 +440,10 @@ impl<T: Copy> CorruptionTester<T> {
 
 /// A utility for checking whether a region of memory is mapped.
 mod mapped {
-    #[cfg(unix)]
-    extern crate libc;
     #[cfg(windows)]
     extern crate kernel32;
+    #[cfg(unix)]
+    extern crate libc;
     #[cfg(windows)]
     extern crate winapi;
 
@@ -463,11 +476,11 @@ mod mapped {
 
     #[cfg(windows)]
     pub fn is_mapped_range(ptr: NonNull<u8>, len: usize) -> bool {
-        use std::mem::{uninitialized, size_of};
-        use self::kernel32::{K32QueryWorkingSet, GetCurrentProcess};
+        use self::kernel32::{GetCurrentProcess, K32QueryWorkingSet};
         use self::winapi::shared::basetsd::ULONG_PTR;
-        use std::os::raw::c_void;
         use self::winapi::um::psapi::PSAPI_WORKING_SET_BLOCK;
+        use std::mem::{size_of, uninitialized};
+        use std::os::raw::c_void;
 
         // NOTE: winapi 0.3.4 has winapi::um::psapi::PSAPI_WORKING_SET_INFORMATION,
         // but it's defined as having a single entry (just like the equivalent type
@@ -525,7 +538,10 @@ mod mapped {
             unsafe {
                 let ptr = NonNull::new(Box::into_raw(arr)).unwrap();
                 assert!(is_mapped_range(ptr.cast(), size_of::<[usize; 100]>()));
-                assert!(!is_mapped_range(NonNull::new(1usize as *mut u8).unwrap(), 1));
+                assert!(!is_mapped_range(
+                    NonNull::new(1usize as *mut u8).unwrap(),
+                    1
+                ));
                 Box::from_raw(ptr.as_ptr()); // make sure it gets dropped properly
             }
         }
@@ -597,9 +613,10 @@ impl<T, O: ObjectAlloc<T>, F: Fn() -> O> TestBuilder<T, O, F> {
 
 impl<T: Copy, O: ObjectAlloc<CorruptionTesterDefault<T>>, F: Fn() -> O>
     TestBuilder<CorruptionTesterDefault<T>, O, F>
-    where T: Send + 'static,
-          O: 'static,
-          F: Send + Sync + 'static
+where
+    T: Send + 'static,
+    O: 'static,
+    F: Send + Sync + 'static,
 {
     pub fn quickcheck(self) {
         self::quickcheck::test(self.new, self.qc_tests)
@@ -612,9 +629,10 @@ impl<T: Copy, O: ObjectAlloc<CorruptionTesterDefault<T>>, F: Fn() -> O>
 
 impl<T: Copy, O: ObjectAlloc<CorruptionTesterUnsafe<T>>, F: Fn() -> O>
     TestBuilder<CorruptionTesterUnsafe<T>, O, F>
-    where T: Send + 'static,
-          O: 'static,
-          F: Send + Sync + 'static
+where
+    T: Send + 'static,
+    O: 'static,
+    F: Send + Sync + 'static,
 {
     pub fn quickcheck(self) {
         self::quickcheck::test(self.new, self.qc_tests)
@@ -644,14 +662,15 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>, F: Fn() -> O> TestBuilder<C,
 mod quickcheck {
     extern crate quickcheck;
 
-    use self::quickcheck::{Arbitrary, Gen, QuickCheck, Testable, TestResult};
+    use self::quickcheck::{Arbitrary, Gen, QuickCheck, TestResult, Testable};
     use super::*;
     use std::marker::PhantomData;
 
     pub fn test<C, O, F>(new: F, tests: Option<usize>)
-        where C: CorruptionTesterWrapper + Send + 'static,
-              O: ObjectAlloc<C> + 'static,
-              F: Fn() -> O + Send + Sync + 'static
+    where
+        C: CorruptionTesterWrapper + Send + 'static,
+        O: ObjectAlloc<C> + 'static,
+        F: Fn() -> O + Send + Sync + 'static,
     {
         let mut qc = QuickCheck::new();
         if let Some(tests) = tests {
@@ -661,14 +680,16 @@ mod quickcheck {
     }
 
     struct TestGenerator<C, O, F>(F, PhantomData<C>)
-        where C: CorruptionTesterWrapper,
-              O: ObjectAlloc<C>,
-              F: Fn() -> O;
+    where
+        C: CorruptionTesterWrapper,
+        O: ObjectAlloc<C>,
+        F: Fn() -> O;
 
     impl<C, O, F> Testable for TestGenerator<C, O, F>
-        where C: CorruptionTesterWrapper + Send + 'static,
-              O: ObjectAlloc<C> + 'static,
-              F: Fn() -> O + Send + 'static
+    where
+        C: CorruptionTesterWrapper + Send + 'static,
+        O: ObjectAlloc<C> + 'static,
+        F: Fn() -> O + Send + 'static,
     {
         fn result<G: Gen>(&self, g: &mut G) -> TestResult {
             let ops = Vec::<AllocOp>::arbitrary(g);
@@ -692,9 +713,10 @@ mod quickcheck {
         }
     }
 
-    fn run_alloc_sequence<C: CorruptionTesterWrapper, O: ObjectAlloc<C>>(mut tester: Tester<C, O>,
-                                                                         seq: &[AllocOp])
-                                                                         -> TestResult {
+    fn run_alloc_sequence<C: CorruptionTesterWrapper, O: ObjectAlloc<C>>(
+        mut tester: Tester<C, O>,
+        seq: &[AllocOp],
+    ) -> TestResult {
         for op in seq {
             match *op {
                 AllocOp::Alloc => tester.alloc(),
@@ -733,7 +755,6 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
         }
     }
 
-
     fn alloc(&mut self) {
         let obj = unsafe { self.alloc.alloc().unwrap() };
         // check for double-allocate of the same pointer
@@ -750,9 +771,10 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
                 },
                 State::Valid => {}
                 state => {
-                    panic!("newly-allocated object at {:?} in unexpected state {:?}",
-                           obj,
-                           state);
+                    panic!(
+                        "newly-allocated object at {:?} in unexpected state {:?}",
+                        obj, state
+                    );
                 }
             }
         } else {
@@ -763,9 +785,10 @@ impl<C: CorruptionTesterWrapper, O: ObjectAlloc<C>> Tester<C, O> {
                     (*obj.as_ptr()).update_new(false);
                 },
                 state => {
-                    panic!("newly-allocated object at {:?} in unexpected state {:?}",
-                           obj,
-                           state);
+                    panic!(
+                        "newly-allocated object at {:?} in unexpected state {:?}",
+                        obj, state
+                    );
                 }
             }
         }
@@ -865,8 +888,10 @@ pub mod tests {
         test_corruption_tester_helper(make_unsafe_default_boxed());
     }
 
-    fn test_corruption_tester_corruption_helper<C: CorruptionTesterWrapper>(mut a: Box<C>,
-                                                                            mut b: Box<C>) {
+    fn test_corruption_tester_corruption_helper<C: CorruptionTesterWrapper>(
+        mut a: Box<C>,
+        mut b: Box<C>,
+    ) {
         assert_eq!(a.state(), State::New);
         assert_eq!(b.state(), State::New);
         a.update_new(true);
@@ -884,8 +909,10 @@ pub mod tests {
     #[test]
     fn test_corruption_tester_corruption() {
         test_corruption_tester_corruption_helper(make_default_boxed(), make_default_boxed());
-        test_corruption_tester_corruption_helper(make_unsafe_default_boxed(),
-                                                 make_unsafe_default_boxed());
+        test_corruption_tester_corruption_helper(
+            make_unsafe_default_boxed(),
+            make_unsafe_default_boxed(),
+        );
     }
 
     fn test_corruption_tester_corruption_panic_on_drop_helper<C: CorruptionTesterWrapper>() {

@@ -12,16 +12,17 @@
 #![feature(const_size_of)]
 #![feature(nonnull_cast)]
 #![feature(plugin)]
-
 #![plugin(interpolate_idents)]
 
+extern crate alloc;
 #[cfg(unix)]
 #[macro_use]
 extern crate lazy_static;
 #[cfg_attr(feature = "cargo-clippy", allow(useless_attribute))]
 #[allow(plugin_as_library)]
 extern crate interpolate_idents;
-pub use self::interpolate_idents::*;
+pub use interpolate_idents::*;
+extern crate object_alloc;
 
 pub mod corruption;
 pub mod leaky_alloc;
@@ -36,7 +37,7 @@ pub mod types;
 /// `foreach_align` is useful for testing allocators whose behavior may be sensitive to requested
 /// alignment.
 pub fn foreach_align<T, F: Fn(usize)>(f: F, max: usize) {
-    use std::mem::{size_of, align_of};
+    use std::mem::{align_of, size_of};
 
     let min_align = align_of::<T>();
     let size = size_of::<T>();
