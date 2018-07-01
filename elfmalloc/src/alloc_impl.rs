@@ -23,7 +23,7 @@ use std::intrinsics::unlikely;
 use std::mem;
 use std::ptr::NonNull;
 
-use alloc::allocator::{Alloc, AllocErr, Layout};
+use alloc::alloc::{Alloc, AllocErr, Layout};
 #[cfg(feature = "c-api")]
 use alloc_fmt::AllocUnwrap;
 #[cfg(feature = "c-api")]
@@ -40,7 +40,7 @@ use self::libc::{size_t, c_void};
 pub struct ElfMallocGlobal;
 
 unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
-    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+    unsafe fn alloc(&mut self, l: Layout) -> Result<NonNull<u8>, AllocErr> {
         // All objects are only guaranteed to be word-aligned except for powers of two. Powers of
         // two up to 1MiB are aligned to their size. Past that size, only page-alignment is
         // guaranteed.
@@ -49,20 +49,17 @@ unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
             global::alloc(l.size())
         } else {
             global::alloc(l.size().next_power_of_two())
-        }.map(NonNull::as_ptr).ok_or(AllocErr::Exhausted { request: ll })
+        }.ok_or(AllocErr)
     }
 
-    unsafe fn dealloc(&mut self, p: *mut u8, _l: Layout) {
-        alloc_debug_assert!(!p.is_null());
-        global::dealloc(NonNull::new_unchecked(p));
+    unsafe fn dealloc(&mut self, p: NonNull<u8>, _l: Layout) {
+        global::dealloc(p);
     }
 
-    unsafe fn realloc(&mut self, p: *mut u8, _l1: Layout, l2: Layout) -> Result<*mut u8, AllocErr> {
-        let ll2 = l2.clone();
-        alloc_debug_assert!(!p.is_null());
-        global::aligned_realloc(NonNull::new_unchecked(p), l2.size(), l2.align())
-            .map(NonNull::as_ptr)
-            .ok_or(AllocErr::Exhausted { request: ll2 })
+    unsafe fn realloc(&mut self, p: NonNull<u8>, _l1: Layout, new_size: usize) -> Result<NonNull<u8>, AllocErr> {
+        let (size, align) = unimplemented!();
+        global::aligned_realloc(p, size, align)
+            .ok_or(AllocErr)
     }
 }
 

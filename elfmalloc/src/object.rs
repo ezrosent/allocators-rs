@@ -9,7 +9,7 @@ use std::cmp;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use alloc::allocator::Layout;
+use alloc::alloc::Layout;
 use alloc_fmt::AllocUnwrap;
 use mmap_alloc::{MapAlloc, MapAllocBuilder};
 use object_alloc::UntypedObjectAlloc;

@@ -8,14 +8,10 @@
 #![feature(alloc)]
 #![feature(allocator_api)]
 #![cfg_attr(test, feature(test))]
-#![feature(thread_local_state)]
 #![feature(thread_local)]
-#![feature(const_fn)]
-#![feature(const_size_of)]
 #![feature(cfg_target_thread_local)]
 #![feature(core_intrinsics)]
-#![feature(const_ptr_null_mut)]
-#![feature(nonnull_cast)]
+#![feature(raw_vec_internals)]
 #![feature(specialization)]
 extern crate alloc;
 extern crate bagpipe;

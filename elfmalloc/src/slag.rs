@@ -89,7 +89,7 @@ impl<T> BagCleanup for PageCleanup<T> {
     type Item = *mut T;
     fn cleanup(&self, it: *mut T) {
         unsafe {
-            mmap::unmap(it as *mut u8, self.0);
+            mmap::unmap(NonNull::new_unchecked(it).cast(), self.0);
         }
     }
 }

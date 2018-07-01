@@ -16,8 +16,7 @@ extern crate smallvec;
 use std::{cmp, ops, ptr};
 use std::iter::{IntoIterator, Extend};
 
-use alloc::allocator::Alloc;
-use alloc::heap::Heap;
+use alloc::alloc::{Alloc, Global};
 use alloc::raw_vec::RawVec;
 use self::smallvec::VecLike;
 
@@ -107,8 +106,8 @@ impl<T> Default for AVec<T, GlobalAlloc> {
     }
 }
 
-impl<T> Default for AVec<T, Heap> {
-    fn default() -> AVec<T, Heap> {
+impl<T> Default for AVec<T, Global> {
+    fn default() -> AVec<T, Global> {
         AVec {
             buf: RawVec::new(),
             len: 0,
@@ -297,7 +296,7 @@ mod tests {
 
     #[bench]
     fn bench_push_avec_heap(b: &mut Bencher) {
-        bench_push::<AVec<usize, Heap>>(b);
+        bench_push::<AVec<usize, Global>>(b);
     }
 
     #[bench]
@@ -335,7 +334,7 @@ mod tests {
 
     #[bench]
     fn bench_push_nested_avec_heap(b: &mut Bencher) {
-        bench_push_nested::<AVec<usize, Heap>, AVec<AVec<usize, Heap>, Heap>>(b);
+        bench_push_nested::<AVec<usize, Global>, AVec<AVec<usize, Global>, Global>>(b);
     }
 
     #[bench]
@@ -378,7 +377,7 @@ mod tests {
 
     #[bench]
     fn bench_extend_avec_heap(b: &mut Bencher) {
-        bench_extend::<AVec<usize, Heap>>(b);
+        bench_extend::<AVec<usize, Global>>(b);
     }
 
     #[bench]

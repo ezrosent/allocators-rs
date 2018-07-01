@@ -48,7 +48,7 @@ use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-use alloc::allocator::Layout;
+use alloc::alloc::Layout;
 use alloc_fmt::AllocUnwrap;
 use mmap_alloc::{MapAlloc, MapAllocBuilder};
 
@@ -523,7 +523,7 @@ mod large_alloc {
     use std::cmp;
     use std::ptr::{self, NonNull};
 
-    use alloc::allocator::{Alloc, Layout};
+    use alloc::alloc::{Alloc, Layout};
     use alloc_fmt::AllocUnwrap;
     use mmap_alloc::MapAlloc;
 
@@ -556,7 +556,7 @@ mod large_alloc {
         // memory. See the comment in get_page_size.
 
         let layout = Layout::from_size_align(region_size + cmp::min(1, region_size % ELFMALLOC_SMALL_CUTOFF), ELFMALLOC_SMALL_CUTOFF).alloc_unwrap();
-        let mem = NonNull::new_unchecked(MapAlloc::default().alloc(layout).ok()?);
+        let mem = MapAlloc::default().alloc(layout).ok()?;
 
         // let alloc = MapAllocBuilder::default().
         // let src = MmapSource::new(ELFMALLOC_SMALL_CUTOFF);
@@ -616,7 +616,7 @@ mod large_alloc {
             });
         }
         // end extra debugging information
-        unmap(base_ptr.as_ptr(), size);
+        unmap(base_ptr, size);
     }
 
     pub unsafe fn get_size(item: NonNull<u8>) -> usize {

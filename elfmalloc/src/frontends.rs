@@ -524,7 +524,7 @@ mod magazine {
             let n_pages = (bytes >> page_size.trailing_zeros()) + cmp::min(1, rem);
             let region_size = n_pages * page_size;
             alloc_debug_assert!(bytes <= region_size);
-            let mem = mmap::map(region_size) as *mut Magazine;
+            let mem = mmap::map(region_size).cast().as_ptr();
             ptr::write(
                 mem,
                 Magazine {
@@ -549,7 +549,7 @@ mod magazine {
         unsafe fn destroy(slf: *mut Magazine) {
             alloc_debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
             alloc_debug_assert_eq!(slf as usize % mmap::page_size(), 0);
-            mmap::unmap(slf as *mut u8, (*slf).mapped)
+            mmap::unmap(NonNull::new_unchecked(slf).cast(), (*slf).mapped)
         }
 
         fn push(&mut self, item: NonNull<u8>) -> bool {

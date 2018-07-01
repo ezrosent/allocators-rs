@@ -11,13 +11,15 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
-use alloc::allocator::{Alloc, Layout};
+use alloc::alloc::{Alloc, Layout};
 use alloc::raw_vec::RawVec;
 use alloc_fmt::AllocUnwrap;
 use mmap_alloc::MapAlloc;
 
 pub mod mmap {
-    use alloc::allocator::{Alloc, Layout};
+    use std::ptr::NonNull;
+
+    use alloc::alloc::{Alloc, Layout};
     use alloc_fmt::AllocUnwrap;
     use mmap_alloc::{MapAlloc, MapAllocBuilder};
 
@@ -31,23 +33,23 @@ pub mod mmap {
         ::sysconf::page::pagesize()
     }
 
-    pub fn map(size: usize) -> *mut u8 {
+    pub fn map(size: usize) -> NonNull<u8> {
         fallible_map(size).alloc_expect("out of memory")
     }
 
-    pub fn fallible_map(size: usize) -> Option<*mut u8> {
+    pub fn fallible_map(size: usize) -> Option<NonNull<u8>> {
         unsafe { (&*MMAP).alloc(layout_for_size(size)).ok() }
     }
 
-    pub unsafe fn unmap(p: *mut u8, size: usize) {
+    pub unsafe fn unmap(p: NonNull<u8>, size: usize) {
         (&*MMAP).dealloc(p, layout_for_size(size));
     }
 
-    pub unsafe fn commit(p: *mut u8, size: usize) {
+    pub unsafe fn commit(p: NonNull<u8>, size: usize) {
         (&*MMAP).commit(p, layout_for_size(size))
     }
 
-    pub unsafe fn uncommit(p: *mut u8, size: usize) {
+    pub unsafe fn uncommit(p: NonNull<u8>, size: usize) {
         (&*MMAP).uncommit(p, layout_for_size(size));
     }
 
@@ -254,7 +256,7 @@ impl<T> MmapVec<T> {
             // allocate first
             let data = Alloc::alloc(&mut alloc, layout).ok()?;
             Some(MmapVec {
-                raw: RawVec::from_raw_parts_in(data as *mut _, cap, alloc),
+                raw: RawVec::from_raw_parts_in(data.cast().as_ptr(), cap, alloc),
                 len: 0,
                 #[cfg(debug_assertions)]
                 dropped: false,

@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ptr::{self, NonNull};
 
-use alloc::allocator::Layout;
+use alloc::alloc::Layout;
 use bagpipe::bag::WeakBag;
 use bagpipe::{BagPipe, BagCleanup};
 use bagpipe::queue::FAAQueueLowLevel;
@@ -31,7 +31,9 @@ impl<T> UnmapCleanup<T> {
 impl<T> BagCleanup for UnmapCleanup<T> {
     type Item = *mut T;
     fn cleanup(&self, it: *mut T) {
-        unsafe { ::util::mmap::unmap(it as *mut u8, self.0.size()) };
+        // TODO(joshlf): Since we're converting to NonNull, does it make sense
+        // for cleanup to take a NonNull?
+        unsafe { ::util::mmap::unmap(NonNull::new_unchecked(it).cast(), self.0.size()) };
     }
 }
 
@@ -52,11 +54,11 @@ pub unsafe trait PageAlloc: UntypedObjectAlloc {
 
 unsafe impl PageAlloc for MapAlloc {
     unsafe fn commit(&mut self, ptr: NonNull<u8>) {
-        MapAlloc::commit(self, ptr.as_ptr(), self.layout());
+        MapAlloc::commit(self, ptr, self.layout());
     }
 
     unsafe fn uncommit(&mut self, ptr: NonNull<u8>) {
-        MapAlloc::uncommit(self, ptr.as_ptr(), self.layout());
+        MapAlloc::uncommit(self, ptr, self.layout());
     }
 }
 
