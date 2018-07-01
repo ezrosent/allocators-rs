@@ -59,7 +59,7 @@ malloc-bind = { path = "../malloc-bind" }
 mmap-alloc = { path = "../mmap-alloc", features = ["large-align"] }
 num_cpus = "1.5"
 smallvec = "0.4.3"
-sysconf = "0.3.1"
+sysconf = ">= 0.3.3"
 
 [dev-dependencies]
 env_logger = "0.4.3"
