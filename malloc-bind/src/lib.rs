@@ -37,8 +37,8 @@
 compile_error!("malloc-bind only supports Linux, and Mac, and Windows");
 
 extern crate alloc;
-extern crate libc;
 extern crate errno;
+extern crate libc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 extern crate sysconf;
 // lazy_static's macros are only used in the macros we define, so if no macros are called (which is
@@ -47,15 +47,15 @@ extern crate sysconf;
 #[allow(unused_imports)]
 #[macro_use]
 extern crate lazy_static;
-use alloc::allocator::{Alloc, AllocErr, Layout};
+use alloc::alloc::{GlobalAlloc, Layout};
 
 // Export these so that they can be used from the macros as $crate::c_void and $crate::size_t.
 // See https://users.rust-lang.org/t/how-to-import-in-a-macro-without-conflicting/12785 for why
 // this is necessary.
-#[doc(hidden)]
-pub use libc::{c_void, size_t};
 use core::intrinsics::unlikely;
 use core::ptr;
+#[doc(hidden)]
+pub use libc::{c_void, size_t};
 
 /// A mechanism for mapping allocated objects to their `Layout`s.
 ///
@@ -168,9 +168,7 @@ pub const WORD_SIZE: usize = core::mem::size_of::<*mut c_void>();
 /// 1. `Malloc` requires an immutable reference to implement `Alloc` (rather than simply extending
 ///    `Alloc` itself) so that its own methods can be immutable. This is required because C allows
 ///    the functions of the allocation API to be called from multiple threads at once.
-pub unsafe trait Malloc: LayoutFinder
-    where for<'a> &'a Self: Alloc
-{
+pub unsafe trait Malloc: GlobalAlloc + LayoutFinder {
     /// The C `malloc` function.
     ///
     /// `malloc` allocates storage sufficient to hold `size` bytes, and returns a pointer to it.
@@ -193,18 +191,13 @@ pub unsafe trait Malloc: LayoutFinder
         let layout = layout_from_size_align(size as usize, MIN_ALIGN);
         // TODO: Check _HEAP_MAXREQ on Windows? "malloc sets errno to ENOMEM if a memory allocation
         // fails or if the amount of memory requested exceeds _HEAP_MAXREQ."
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The C `free` function.
@@ -221,8 +214,7 @@ pub unsafe trait Malloc: LayoutFinder
 
         let layout = self.get_layout(ptr as *mut u8);
         self.delete_layout(ptr as *mut u8);
-        let mut slf = self;
-        (&mut slf).dealloc(ptr as *mut u8, layout);
+        self.dealloc(ptr as *mut u8, layout);
     }
 
     /// The obsolete C `cfree` function (only implemented on Linux).
@@ -256,18 +248,13 @@ pub unsafe trait Malloc: LayoutFinder
         let layout = layout_from_size_align(total_size as usize, MIN_ALIGN);
         // TODO: Check _HEAP_MAXREQ on Windows? "calloc sets errno to ENOMEM if a memory allocation
         // fails or if the amount of memory requested exceeds _HEAP_MAXREQ."
-        let mut slf = self;
-        match (&mut slf).alloc_zeroed(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc_zeroed(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The obsolete C `valloc` function (only implemented on Linux and Mac).
@@ -291,18 +278,13 @@ pub unsafe trait Malloc: LayoutFinder
         let pagesize = sysconf::page::pagesize();
         let size = roundup(size, pagesize);
         let layout = layout_from_size_align(size as usize, pagesize);
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The obsolete C `pvalloc` function (only implemented on Linux).
@@ -320,18 +302,13 @@ pub unsafe trait Malloc: LayoutFinder
         let pagesize = sysconf::page::pagesize();
         let size = roundup(size, pagesize);
         let layout = layout_from_size_align(size as usize, pagesize);
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The C `realloc` function.
@@ -386,27 +363,23 @@ pub unsafe trait Malloc: LayoutFinder
         let size = roundup(size, MIN_ALIGN);
         let layout = self.get_layout(ptr as *mut u8);
         let new_layout = layout_from_size_align(size as usize, MIN_ALIGN);
-        let mut slf = self;
-        match (&mut slf).realloc(ptr as *mut u8, layout, new_layout.clone()) {
-            Ok(ptr) => {
-                self.delete_layout(ptr);
-                self.insert_layout(ptr, new_layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                // Linux: "The realloc() function returns... NULL if the request fails... If
-                // realloc() fails, the original block is left untouched; it is not freed or
-                // moved."
-                // Mac: "If there is an error, [realloc] return[s] a NULL pointer and set[s] errno
-                // to ENOMEM. For realloc(), the input pointer is still valid if reallocation
-                // failed."
-                // Windows: "If there is not enough available memory to expand the block to the
-                // given size, the original block is left unchanged, and NULL is returned."
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.delete_layout(ptr);
+            self.insert_layout(ptr, new_layout);
+        } else {
+            // Linux: "The realloc() function returns... NULL if the request
+            // fails... If realloc() fails, the original block is left
+            // untouched; it is not freed or moved."
+            // Mac: "If there is an error, [realloc] return[s] a NULL pointer
+            // and set[s] errno to ENOMEM. For realloc(), the input pointer is
+            // still valid if reallocation failed."
+            // Windows: "If there is not enough available memory to expand the
+            // block to the given size, the original block is left unchanged,
+            // and NULL is returned."
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The C `reallocf` function (only implemented on Mac).
@@ -428,20 +401,15 @@ pub unsafe trait Malloc: LayoutFinder
         let size = roundup(size, MIN_ALIGN);
         let layout = self.get_layout(ptr as *mut u8);
         let new_layout = layout_from_size_align(size as usize, MIN_ALIGN);
-        let mut slf = self;
-        match (&mut slf).realloc(ptr as *mut u8, layout, new_layout.clone()) {
-            Ok(ptr) => {
-                self.delete_layout(ptr);
-                self.insert_layout(ptr, new_layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                self.c_free(ptr);
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.delete_layout(ptr);
+            self.insert_layout(ptr, new_layout);
+        } else {
+            self.c_free(ptr as *mut c_void);
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The C `posix_memalign` function (only implemented on Linux and Mac).
@@ -465,11 +433,12 @@ pub unsafe trait Malloc: LayoutFinder
     /// created on the heap such that two different 0-sized allocations result in two distinct
     /// pointers.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    unsafe fn c_posix_memalign(&self,
-                               memptr: *mut *mut c_void,
-                               alignment: size_t,
-                               size: size_t)
-                               -> i32 {
+    unsafe fn c_posix_memalign(
+        &self,
+        memptr: *mut *mut c_void,
+        alignment: size_t,
+        size: size_t,
+    ) -> i32 {
         // See http://man7.org/linux/man-pages/man3/posix_memalign.3.html
 
         // NOTE: Unlike most other allocation functions, posix_memalign signals failure by
@@ -493,15 +462,13 @@ pub unsafe trait Malloc: LayoutFinder
         // think they have a smaller memory region than they actually do.
         let size = roundup(size, alignment);
         let layout = layout_from_size_align(size as usize, alignment);
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                *memptr = ptr as *mut c_void;
-                0
-            }
-            Err(AllocErr::Exhausted { .. }) => libc::ENOMEM,
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+            *memptr = ptr as *mut c_void;
+            0
+        } else {
+            libc::ENOMEM
         }
     }
 
@@ -536,18 +503,13 @@ pub unsafe trait Malloc: LayoutFinder
         // they have a smaller memory region than they actually do.
         let size = roundup(size, alignment);
         let layout = layout_from_size_align(size as usize, alignment);
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 
     /// The C `aligned_alloc` function (only implemented on Linux).
@@ -599,18 +561,13 @@ pub unsafe trait Malloc: LayoutFinder
         // think they have a smaller memory region than they actually do.
         let size = roundup(size, alignment);
         let layout = layout_from_size_align(size as usize, alignment);
-        let mut slf = self;
-        match (&mut slf).alloc(layout.clone()) {
-            Ok(ptr) => {
-                self.insert_layout(ptr, layout);
-                ptr as *mut c_void
-            }
-            Err(AllocErr::Exhausted { .. }) => {
-                errno::set_errno(errno::Errno(libc::ENOMEM));
-                ptr::null_mut()
-            }
-            Err(AllocErr::Unsupported { .. }) => core::intrinsics::abort(),
+        let ptr = self.alloc(layout.clone());
+        if !ptr.is_null() {
+            self.insert_layout(ptr, layout);
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOMEM));
         }
+        ptr as *mut c_void
     }
 }
 
@@ -655,7 +612,7 @@ unsafe fn layout_from_size_align(size: usize, align: usize) -> Layout {
 /// instead.
 #[macro_export]
 macro_rules! define_malloc {
-    ($alloc_ty:ty, $alloc_new:expr) => (
+    ($alloc_ty:ty, $alloc_new:expr) => {
         static __HEAP: $alloc_ty = $alloc_new;
 
         #[no_mangle]
@@ -680,7 +637,10 @@ macro_rules! define_malloc {
         }
 
         #[no_mangle]
-        pub extern "C" fn calloc(nmemb: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn calloc(
+            nmemb: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_calloc(nmemb, size) }
         }
@@ -700,46 +660,65 @@ macro_rules! define_malloc {
         }
 
         #[no_mangle]
-        pub extern "C" fn realloc(ptr: *mut $crate::c_void, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn realloc(
+            ptr: *mut $crate::c_void,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_realloc(ptr, size) }
         }
 
         #[cfg(target_os = "macos")]
         #[no_mangle]
-        pub extern "C" fn reallocf(ptr: *mut $crate::c_void, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn reallocf(
+            ptr: *mut $crate::c_void,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_reallocf(ptr, size) }
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         #[no_mangle]
-        pub extern "C" fn posix_memalign(memptr: *mut *mut $crate::c_void, alignment: $crate::size_t, size: $crate::size_t) -> i32 {
+        pub extern "C" fn posix_memalign(
+            memptr: *mut *mut $crate::c_void,
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> i32 {
             use $crate::Malloc;
             unsafe { __HEAP.c_posix_memalign(memptr, alignment, size) }
         }
 
         #[cfg(target_os = "linux")]
         #[no_mangle]
-        pub extern "C" fn memalign(alignment: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn memalign(
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_memalign(alignment, size) }
         }
 
         #[cfg(target_os = "linux")]
         #[no_mangle]
-        pub extern "C" fn aligned_alloc(alignment: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn aligned_alloc(
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_aligned_alloc(alignment, size) }
         }
 
         #[cfg(windows)]
         #[no_mangle]
-        pub extern "C" fn _aligned_malloc(size: $crate::size_t, alignment: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn _aligned_malloc(
+            size: $crate::size_t,
+            alignment: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c__aligned_malloc(size, alignment) }
         }
-    )
+    };
 }
 
 // This line re-exports the macros from lazy_static so that they'll be available to the code
@@ -757,8 +736,8 @@ pub use lazy_static::*;
 /// global `Malloc` instance.
 #[macro_export]
 macro_rules! define_malloc_lazy_static {
-    ($alloc_ty:ty, $alloc_new:expr) => (
-        lazy_static!{
+    ($alloc_ty:ty, $alloc_new:expr) => {
+        lazy_static! {
             static ref __HEAP: $alloc_ty = $alloc_new;
         }
 
@@ -782,7 +761,10 @@ macro_rules! define_malloc_lazy_static {
         }
 
         #[no_mangle]
-        pub extern "C" fn calloc(nmemb: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn calloc(
+            nmemb: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_calloc(nmemb, size) }
         }
@@ -802,44 +784,63 @@ macro_rules! define_malloc_lazy_static {
         }
 
         #[no_mangle]
-        pub extern "C" fn realloc(ptr: *mut $crate::c_void, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn realloc(
+            ptr: *mut $crate::c_void,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_realloc(ptr, size) }
         }
 
         #[cfg(target_os = "macos")]
         #[no_mangle]
-        pub extern "C" fn reallocf(ptr: *mut $crate::c_void, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn reallocf(
+            ptr: *mut $crate::c_void,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_reallocf(ptr, size) }
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         #[no_mangle]
-        pub extern "C" fn posix_memalign(memptr: *mut *mut $crate::c_void, alignment: $crate::size_t, size: $crate::size_t) -> i32 {
+        pub extern "C" fn posix_memalign(
+            memptr: *mut *mut $crate::c_void,
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> i32 {
             use $crate::Malloc;
             unsafe { __HEAP.c_posix_memalign(memptr, alignment, size) }
         }
 
         #[cfg(target_os = "linux")]
         #[no_mangle]
-        pub extern "C" fn memalign(alignment: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn memalign(
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_memalign(alignment, size) }
         }
 
         #[cfg(target_os = "linux")]
         #[no_mangle]
-        pub extern "C" fn aligned_alloc(alignment: $crate::size_t, size: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn aligned_alloc(
+            alignment: $crate::size_t,
+            size: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c_aligned_alloc(alignment, size) }
         }
 
         #[cfg(windows)]
         #[no_mangle]
-        pub extern "C" fn _aligned_malloc(size: $crate::size_t, alignment: $crate::size_t) -> *mut $crate::c_void {
+        pub extern "C" fn _aligned_malloc(
+            size: $crate::size_t,
+            alignment: $crate::size_t,
+        ) -> *mut $crate::c_void {
             use $crate::Malloc;
             unsafe { __HEAP.c__aligned_malloc(size, alignment) }
         }
-    )
+    };
 }
