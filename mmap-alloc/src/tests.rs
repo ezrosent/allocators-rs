@@ -413,7 +413,7 @@ fn test_large_align() {
     let layout = Layout::from_size_align(MB64, MB64).unwrap();
     unsafe {
         let ptr = <MapAlloc as Alloc>::alloc(&mut alloc, layout.clone()).unwrap();
-        assert_eq!(ptr as usize % MB64, 0, "ptr: {:?}", ptr);
+        assert_eq!(ptr.as_ptr() as usize % MB64, 0, "ptr: {:?}", ptr);
         test_zero_filled(ptr, MB64);
         test_write_read(ptr, MB64);
         <MapAlloc as Alloc>::dealloc(&mut alloc, ptr, layout.clone());
