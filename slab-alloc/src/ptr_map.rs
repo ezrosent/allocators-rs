@@ -202,12 +202,12 @@ impl<K, V: Copy> PtrHashMap<K, V> {
             let (mut first_free_bkt, mut first_free_idx) =
                 (ptr::null_mut() as *mut Bucket<K, V>, 0);
             macro_rules! update_first_free {
-                ($bkt:expr, $idx:expr) => (
+                ($bkt:expr, $idx:expr) => {
                     if first_free_bkt.is_null() {
                         first_free_bkt = $bkt;
                         first_free_idx = $idx;
                     }
-                )
+                };
             }
             let mut cur_bkt = unsafe { self.vec.get_unchecked_mut(i) as *mut Bucket<K, V> };
             while !cur_bkt.is_null() {

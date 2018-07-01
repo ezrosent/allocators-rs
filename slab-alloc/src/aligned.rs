@@ -23,15 +23,12 @@
 //! available objects in a stack of pointers rather than in a linked list. For more details on this
 //! approach to keeping track of available objects, see the `stack` module.
 
-extern crate alloc;
-extern crate object_alloc;
-
-use {stack, OBJECTS_PER_SLAB, PAGE_SIZE};
-use stack::{Layout, SlabHeader};
-use init::InitSystem;
-use self::alloc::allocator;
-use self::object_alloc::UntypedObjectAlloc;
+use alloc::alloc;
 use core::ptr::NonNull;
+use init::InitSystem;
+use object_alloc::UntypedObjectAlloc;
+use stack::{Layout, SlabHeader};
+use {stack, OBJECTS_PER_SLAB, PAGE_SIZE};
 
 pub struct ConfigData;
 
@@ -46,7 +43,7 @@ impl stack::ConfigData for ConfigData {
 pub type System<A> = stack::System<A, ConfigData>;
 
 impl<A: UntypedObjectAlloc> System<A> {
-    pub fn new(layout: allocator::Layout, alloc: A) -> Option<System<A>> {
+    pub fn new(layout: alloc::Layout, alloc: A) -> Option<System<A>> {
         if let Some((slab_layout, _)) = Layout::for_slab_size(layout, alloc.layout().size()) {
             Some(Self::from_config_data(ConfigData, slab_layout, alloc))
         } else {
@@ -55,7 +52,7 @@ impl<A: UntypedObjectAlloc> System<A> {
     }
 }
 
-pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
+pub fn backing_size_for<I: InitSystem>(layout: &alloc::Layout) -> usize {
     struct PowerOfTwoIterator(usize);
 
     impl Iterator for PowerOfTwoIterator {

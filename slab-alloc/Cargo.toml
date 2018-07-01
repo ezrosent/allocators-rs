@@ -45,4 +45,4 @@ mmap-alloc = { path = "../mmap-alloc" }
 object-alloc = { path = "../object-alloc" }
 object-alloc-test = { path = "../object-alloc-test" }
 rand = "0.3"
-sysconf = "0.3.1"
+sysconf = "=0.3.1"

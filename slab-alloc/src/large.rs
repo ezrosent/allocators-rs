@@ -24,17 +24,14 @@
 //! consists of a single allocated region of memory. For more details on this stack-based approach
 //! to keeping track of available objects, see the `stack` module.
 
-extern crate alloc;
-extern crate object_alloc;
-
-use {OBJECTS_PER_SLAB, PAGE_ALIGN_MASK, PAGE_SIZE};
+use alloc::alloc;
+use core::ptr::NonNull;
+use init::InitSystem;
+use object_alloc::UntypedObjectAlloc;
 use stack;
 use stack::{Layout, SlabHeader};
-use init::InitSystem;
 use util::ptrmap::*;
-use self::alloc::allocator;
-use self::object_alloc::UntypedObjectAlloc;
-use core::ptr::NonNull;
+use {OBJECTS_PER_SLAB, PAGE_ALIGN_MASK, PAGE_SIZE};
 
 pub struct ConfigData {
     pub map: Map<u8, NonNull<SlabHeader>>,
@@ -87,7 +84,7 @@ pub type System<A> = stack::System<A, ConfigData>;
 pub const DEFAULT_MAP_SIZE: usize = 256;
 
 impl<A: UntypedObjectAlloc> System<A> {
-    pub fn new(layout: allocator::Layout, alloc: A) -> Option<System<A>> {
+    pub fn new(layout: alloc::Layout, alloc: A) -> Option<System<A>> {
         if let Some((slab_layout, _)) = Layout::for_slab_size(layout.clone(), alloc.layout().size())
         {
             let map_by_page_addr = layout.size() < *PAGE_SIZE;
@@ -110,7 +107,7 @@ impl<A: UntypedObjectAlloc> System<A> {
     }
 }
 
-pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
+pub fn backing_size_for<I: InitSystem>(layout: &alloc::Layout) -> usize {
     struct PageIterator(usize);
 
     impl Iterator for PageIterator {
@@ -151,9 +148,9 @@ pub fn backing_size_for<I: InitSystem>(layout: &allocator::Layout) -> usize {
 mod tests {
     extern crate alloc;
 
-    use {DefaultInitSystem, SizedSlabAlloc};
+    use self::alloc::alloc::Layout;
     use init::DefaultInitializer;
-    use self::alloc::allocator::Layout;
+    use {DefaultInitSystem, SizedSlabAlloc};
 
     fn test_hash_table_bucket_distribution<T: Default>() {
         for i in 0..4 {
@@ -187,13 +184,13 @@ mod tests {
     }
 
     macro_rules! make_test_hash_table_bucket_distribution {
-        ($name:ident, $type:ty) => (
+        ($name:ident, $type:ty) => {
             #[test]
             #[ignore]
             fn $name() {
                 test_hash_table_bucket_distribution::<$type>();
             }
-        );
+        };
     }
 
     call_for_all_types_prefix!(
