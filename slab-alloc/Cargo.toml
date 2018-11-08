@@ -39,7 +39,6 @@ hashmap-no-resize = []
 hashmap-no-coalesce = []
 
 [dependencies]
-interpolate_idents = "0.2.2"
 lazy_static = { version = "1.0.0", features = ["spin_no_std"] }
 mmap-alloc = { path = "../mmap-alloc" }
 object-alloc = { path = "../object-alloc" }

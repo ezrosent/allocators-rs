@@ -51,9 +51,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(alloc, allocator_api)]
-#![feature(plugin)]
 #![cfg_attr(test, feature(test))]
-#![plugin(interpolate_idents)]
 
 mod aligned;
 mod backing;

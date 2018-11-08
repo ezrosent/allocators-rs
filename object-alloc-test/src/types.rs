@@ -110,6 +110,11 @@ call_macro!(
     (Byte8192, 8192)
 );
 
+// Re-export this so that we can access it from the macro, and thus not require
+// our clients to manually specify a dependency on the paste crate themselves.
+#[doc(hidden)]
+pub use paste::item as paste_item;
+
 // TODO: Document the pattern of matching particular types to avoid defining anything for them.
 
 /// Call a macro once for each type defined in the `types` module.
@@ -141,10 +146,8 @@ call_macro!(
 /// # Examples
 ///
 /// ```rust
-/// # #![feature(plugin)]
-/// # #![plugin(interpolate_idents)]
 /// # #[macro_use] extern crate object_alloc_test;
-/// # fn main() {
+/// # fn main() {}
 /// macro_rules! make_default_test {
 ///     ($name:ident, $type:ty) => (
 ///         fn $name() {
@@ -154,62 +157,64 @@ call_macro!(
 /// }
 ///
 /// call_for_all_types_prefix!(make_default_test, default_test);
-/// # }
 /// ```
 #[macro_export]
 macro_rules! call_for_all_types_prefix {
     // NOTE: The '$(, $arg:tt)*' syntax defines a set of optional arguments (note that there's only
     // a comma following '$prefix:ident' if there are optional arguments)
     ($fn:ident, $prefix:ident $(, $arg:tt)*) => (
-        interpolate_idents! {
+        // TODO(joshlf): Replace object_alloc_test with $crate once the
+        // following issue is fixed:
+        // https://github.com/rust-lang/rust/issues/55640
+        object_alloc_test::types::paste_item! {
             call_macro!($fn,
-                        ([$prefix _0001_byte], $crate::types::Byte1 $(,$arg)*),
-                        ([$prefix _0002_byte], $crate::types::Byte2 $(,$arg)*),
-                        ([$prefix _0003_byte], $crate::types::Byte3 $(,$arg)*),
-                        ([$prefix _0004_byte], $crate::types::Byte4 $(,$arg)*),
-                        ([$prefix _0005_byte], $crate::types::Byte5 $(,$arg)*),
-                        ([$prefix _0006_byte], $crate::types::Byte6 $(,$arg)*),
-                        ([$prefix _0007_byte], $crate::types::Byte7 $(,$arg)*),
-                        ([$prefix _0008_byte], $crate::types::Byte8 $(,$arg)*),
-                        ([$prefix _0011_byte], $crate::types::Byte11 $(,$arg)*),
-                        ([$prefix _0012_byte], $crate::types::Byte12 $(,$arg)*),
-                        ([$prefix _0013_byte], $crate::types::Byte13 $(,$arg)*),
-                        ([$prefix _0016_byte], $crate::types::Byte16 $(,$arg)*),
-                        ([$prefix _0019_byte], $crate::types::Byte19 $(,$arg)*),
-                        ([$prefix _0024_byte], $crate::types::Byte24 $(,$arg)*),
-                        ([$prefix _0029_byte], $crate::types::Byte29 $(,$arg)*),
-                        ([$prefix _0032_byte], $crate::types::Byte32 $(,$arg)*),
-                        ([$prefix _0041_byte], $crate::types::Byte41 $(,$arg)*),
-                        ([$prefix _0048_byte], $crate::types::Byte48 $(,$arg)*),
-                        ([$prefix _0059_byte], $crate::types::Byte59 $(,$arg)*),
-                        ([$prefix _0064_byte], $crate::types::Byte64 $(,$arg)*),
-                        ([$prefix _0073_byte], $crate::types::Byte73 $(,$arg)*),
-                        ([$prefix _0096_byte], $crate::types::Byte96 $(,$arg)*),
-                        ([$prefix _0113_byte], $crate::types::Byte113 $(,$arg)*),
-                        ([$prefix _0128_byte], $crate::types::Byte128 $(,$arg)*),
-                        ([$prefix _0157_byte], $crate::types::Byte157 $(,$arg)*),
-                        ([$prefix _0192_byte], $crate::types::Byte192 $(,$arg)*),
-                        ([$prefix _0229_byte], $crate::types::Byte229 $(,$arg)*),
-                        ([$prefix _0256_byte], $crate::types::Byte256 $(,$arg)*),
-                        ([$prefix _0317_byte], $crate::types::Byte317 $(,$arg)*),
-                        ([$prefix _0384_byte], $crate::types::Byte384 $(,$arg)*),
-                        ([$prefix _0457_byte], $crate::types::Byte457 $(,$arg)*),
-                        ([$prefix _0512_byte], $crate::types::Byte512 $(,$arg)*),
-                        ([$prefix _0768_byte], $crate::types::Byte768 $(,$arg)*),
-                        ([$prefix _0617_byte], $crate::types::Byte617 $(,$arg)*),
-                        ([$prefix _1024_byte], $crate::types::Byte1024 $(,$arg)*),
-                        ([$prefix _1277_byte], $crate::types::Byte1277 $(,$arg)*),
-                        ([$prefix _1536_byte], $crate::types::Byte1536 $(,$arg)*),
-                        ([$prefix _1777_byte], $crate::types::Byte1777 $(,$arg)*),
-                        ([$prefix _2048_byte], $crate::types::Byte2048 $(,$arg)*),
-                        ([$prefix _2557_byte], $crate::types::Byte2557 $(,$arg)*),
-                        ([$prefix _3072_byte], $crate::types::Byte3072 $(,$arg)*),
-                        ([$prefix _3539_byte], $crate::types::Byte3539 $(,$arg)*),
-                        ([$prefix _4096_byte], $crate::types::Byte4096 $(,$arg)*),
-                        ([$prefix _5119_byte], $crate::types::Byte5119 $(,$arg)*),
-                        ([$prefix _6144_byte], $crate::types::Byte6144 $(,$arg)*),
-                        ([$prefix _7151_byte], $crate::types::Byte7151 $(,$arg)*),
-                        ([$prefix _8192_byte], $crate::types::Byte8192 $(,$arg)*));
+                        ([<$prefix _0001_byte>], object_alloc_test::types::Byte1 $(,$arg)*),
+                        ([<$prefix _0002_byte>], object_alloc_test::types::Byte2 $(,$arg)*),
+                        ([<$prefix _0003_byte>], object_alloc_test::types::Byte3 $(,$arg)*),
+                        ([<$prefix _0004_byte>], object_alloc_test::types::Byte4 $(,$arg)*),
+                        ([<$prefix _0005_byte>], object_alloc_test::types::Byte5 $(,$arg)*),
+                        ([<$prefix _0006_byte>], object_alloc_test::types::Byte6 $(,$arg)*),
+                        ([<$prefix _0007_byte>], object_alloc_test::types::Byte7 $(,$arg)*),
+                        ([<$prefix _0008_byte>], object_alloc_test::types::Byte8 $(,$arg)*),
+                        ([<$prefix _0011_byte>], object_alloc_test::types::Byte11 $(,$arg)*),
+                        ([<$prefix _0012_byte>], object_alloc_test::types::Byte12 $(,$arg)*),
+                        ([<$prefix _0013_byte>], object_alloc_test::types::Byte13 $(,$arg)*),
+                        ([<$prefix _0016_byte>], object_alloc_test::types::Byte16 $(,$arg)*),
+                        ([<$prefix _0019_byte>], object_alloc_test::types::Byte19 $(,$arg)*),
+                        ([<$prefix _0024_byte>], object_alloc_test::types::Byte24 $(,$arg)*),
+                        ([<$prefix _0029_byte>], object_alloc_test::types::Byte29 $(,$arg)*),
+                        ([<$prefix _0032_byte>], object_alloc_test::types::Byte32 $(,$arg)*),
+                        ([<$prefix _0041_byte>], object_alloc_test::types::Byte41 $(,$arg)*),
+                        ([<$prefix _0048_byte>], object_alloc_test::types::Byte48 $(,$arg)*),
+                        ([<$prefix _0059_byte>], object_alloc_test::types::Byte59 $(,$arg)*),
+                        ([<$prefix _0064_byte>], object_alloc_test::types::Byte64 $(,$arg)*),
+                        ([<$prefix _0073_byte>], object_alloc_test::types::Byte73 $(,$arg)*),
+                        ([<$prefix _0096_byte>], object_alloc_test::types::Byte96 $(,$arg)*),
+                        ([<$prefix _0113_byte>], object_alloc_test::types::Byte113 $(,$arg)*),
+                        ([<$prefix _0128_byte>], object_alloc_test::types::Byte128 $(,$arg)*),
+                        ([<$prefix _0157_byte>], object_alloc_test::types::Byte157 $(,$arg)*),
+                        ([<$prefix _0192_byte>], object_alloc_test::types::Byte192 $(,$arg)*),
+                        ([<$prefix _0229_byte>], object_alloc_test::types::Byte229 $(,$arg)*),
+                        ([<$prefix _0256_byte>], object_alloc_test::types::Byte256 $(,$arg)*),
+                        ([<$prefix _0317_byte>], object_alloc_test::types::Byte317 $(,$arg)*),
+                        ([<$prefix _0384_byte>], object_alloc_test::types::Byte384 $(,$arg)*),
+                        ([<$prefix _0457_byte>], object_alloc_test::types::Byte457 $(,$arg)*),
+                        ([<$prefix _0512_byte>], object_alloc_test::types::Byte512 $(,$arg)*),
+                        ([<$prefix _0768_byte>], object_alloc_test::types::Byte768 $(,$arg)*),
+                        ([<$prefix _0617_byte>], object_alloc_test::types::Byte617 $(,$arg)*),
+                        ([<$prefix _1024_byte>], object_alloc_test::types::Byte1024 $(,$arg)*),
+                        ([<$prefix _1277_byte>], object_alloc_test::types::Byte1277 $(,$arg)*),
+                        ([<$prefix _1536_byte>], object_alloc_test::types::Byte1536 $(,$arg)*),
+                        ([<$prefix _1777_byte>], object_alloc_test::types::Byte1777 $(,$arg)*),
+                        ([<$prefix _2048_byte>], object_alloc_test::types::Byte2048 $(,$arg)*),
+                        ([<$prefix _2557_byte>], object_alloc_test::types::Byte2557 $(,$arg)*),
+                        ([<$prefix _3072_byte>], object_alloc_test::types::Byte3072 $(,$arg)*),
+                        ([<$prefix _3539_byte>], object_alloc_test::types::Byte3539 $(,$arg)*),
+                        ([<$prefix _4096_byte>], object_alloc_test::types::Byte4096 $(,$arg)*),
+                        ([<$prefix _5119_byte>], object_alloc_test::types::Byte5119 $(,$arg)*),
+                        ([<$prefix _6144_byte>], object_alloc_test::types::Byte6144 $(,$arg)*),
+                        ([<$prefix _7151_byte>], object_alloc_test::types::Byte7151 $(,$arg)*),
+                        ([<$prefix _8192_byte>], object_alloc_test::types::Byte8192 $(,$arg)*));
         }
     );
 }
