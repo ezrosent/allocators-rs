@@ -8,19 +8,12 @@
 #![feature(alloc)]
 #![feature(allocator_api)]
 #![feature(test)]
-#![feature(const_fn)]
-#![feature(const_size_of)]
-#![feature(plugin)]
-#![plugin(interpolate_idents)]
 
 extern crate alloc;
 #[cfg(unix)]
 #[macro_use]
 extern crate lazy_static;
-#[cfg_attr(feature = "cargo-clippy", allow(useless_attribute))]
-#[allow(plugin_as_library)]
-extern crate interpolate_idents;
-pub use interpolate_idents::*;
+extern crate paste;
 extern crate object_alloc;
 
 pub mod corruption;
