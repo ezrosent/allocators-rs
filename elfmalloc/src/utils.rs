@@ -12,7 +12,7 @@ use std::cell::UnsafeCell;
 
 pub mod mmap {
     use mmap_alloc::{MapAlloc, MapAllocBuilder};
-    use alloc::allocator::{Alloc, Layout};
+    use alloc::alloc::{Alloc, Layout};
 
     lazy_static!{ 
         static ref MMAP: MapAlloc = MapAllocBuilder::default()

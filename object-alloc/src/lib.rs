@@ -8,10 +8,9 @@
 #![no_std]
 #![feature(alloc, allocator_api)]
 #![feature(core_intrinsics)]
-#![feature(nonnull_cast)]
 
 extern crate alloc;
-use alloc::allocator::Layout;
+use alloc::alloc::Layout;
 use core::intrinsics::abort;
 use core::ptr::NonNull;
 

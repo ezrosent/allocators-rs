@@ -69,7 +69,7 @@ pub mod stack {
         /// given size (in bytes) and the data used for a stack. The object must be aligned to at
         /// least the same alignment as T, or else the value returned may be incorrect.
         pub fn padding_after(size: usize) -> usize {
-            use self::alloc::allocator::Layout;
+            use self::alloc::alloc::Layout;
             // NOTE: The Layout alignment isn't used here, so we use 1 because it's guaranteed not
             // to cause from_size_align to return None.
             Layout::from_size_align(size, 1)
@@ -488,7 +488,7 @@ pub mod workingset {
 
 pub mod misc {
     extern crate alloc;
-    use self::alloc::allocator::Layout;
+    use self::alloc::alloc::Layout;
 
     pub fn satisfy_min_align(layout: Layout, min_align: usize) -> Layout {
         if min_align <= layout.align() {

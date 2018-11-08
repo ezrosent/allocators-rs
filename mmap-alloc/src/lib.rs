@@ -37,7 +37,7 @@ extern crate kernel32;
 #[cfg(windows)]
 extern crate winapi;
 
-use self::alloc::allocator::{Alloc, AllocErr, CannotReallocInPlace, Excess, Layout};
+use self::alloc::alloc::{Alloc, AllocErr, CannotReallocInPlace, Excess, Layout};
 use self::object_alloc::UntypedObjectAlloc;
 use core::ptr::{self, NonNull};
 

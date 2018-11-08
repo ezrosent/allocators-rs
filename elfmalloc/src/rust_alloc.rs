@@ -73,7 +73,7 @@
 //! specially: in the other system, they would need their own `Creek`.
 extern crate num_cpus;
 
-use super::alloc::allocator::{Alloc, AllocErr, Layout};
+use super::alloc::alloc::{Alloc, AllocErr, Layout};
 use super::general::{Multiples, PowersOfTwo, ObjectAlloc, MULTIPLE, AllocMap};
 use super::slag::{PageAlloc, Metadata, RevocablePipe, compute_metadata, SlagPipe, PageCleanup};
 #[allow(unused_imports)]
