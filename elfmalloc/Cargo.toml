@@ -51,7 +51,7 @@ c-api = []
 alloc-fmt = { path = "../alloc-fmt" }
 alloc-tls = { path = "../alloc-tls" }
 bagpipe = { path = "../bagpipe" }
-bsalloc = "0.1.0"
+bsalloc = { path = "../bsalloc" }
 lazy_static = "1.0.0"
 libc = "0.2"
 log = "0.3.8"

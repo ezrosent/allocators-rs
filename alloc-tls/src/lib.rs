@@ -12,8 +12,6 @@
 
 #![feature(allow_internal_unsafe)]
 #![feature(const_fn)]
-#![feature(const_ptr_null_mut)]
-#![feature(const_unsafe_cell_new)]
 #![feature(core_intrinsics)]
 #![feature(test)]
 #![feature(thread_local)]

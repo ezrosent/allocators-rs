@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::mem;
 use super::utils::{likely, mmap};
 
-use alloc::allocator::{Alloc, Layout};
+use alloc::alloc::{Alloc, Layout};
 use mmap_alloc::MapAlloc;
 
 /// A generator of chunks of memory providing an `sbrk`-like interface.

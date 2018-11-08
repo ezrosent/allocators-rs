@@ -107,7 +107,7 @@ pub mod mmap {
     extern crate alloc;
     extern crate mmap_alloc;
     extern crate sysconf;
-    use self::alloc::allocator::Layout;
+    use self::alloc::alloc::Layout;
     #[cfg(target_os = "linux")]
     use self::mmap_alloc::MapAlloc;
     #[cfg(not(target_os = "linux"))]

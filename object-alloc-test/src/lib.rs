@@ -10,7 +10,6 @@
 #![feature(test)]
 #![feature(const_fn)]
 #![feature(const_size_of)]
-#![feature(nonnull_cast)]
 #![feature(plugin)]
 #![plugin(interpolate_idents)]
 

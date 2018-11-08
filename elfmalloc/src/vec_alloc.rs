@@ -13,7 +13,7 @@
 
 extern crate smallvec;
 use self::smallvec::VecLike;
-use super::alloc::allocator::Alloc;
+use super::alloc::alloc::Alloc;
 use super::alloc::heap::Heap;
 use super::alloc::raw_vec::RawVec;
 use super::rust_alloc;

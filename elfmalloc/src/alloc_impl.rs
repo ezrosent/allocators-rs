@@ -18,7 +18,7 @@ extern crate alloc;
 extern crate malloc_bind;
 #[cfg(feature = "c-api")]
 extern crate libc;
-use self::alloc::allocator::{Alloc, AllocErr, Layout};
+use self::alloc::alloc::{Alloc, AllocErr, Layout};
 #[cfg(feature = "c-api")]
 use self::malloc_bind::{LayoutFinder, Malloc, MIN_ALIGN};
 use super::general::global;

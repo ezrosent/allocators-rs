@@ -51,7 +51,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(alloc, allocator_api)]
-#![feature(nonnull_cast)]
 #![feature(plugin)]
 #![cfg_attr(test, feature(test))]
 #![plugin(interpolate_idents)]
@@ -79,7 +78,7 @@ extern crate sysconf;
 #[cfg(test)]
 extern crate test;
 
-use self::alloc::allocator::Layout;
+use self::alloc::alloc::Layout;
 use self::init::InitSystem;
 use self::object_alloc::{ObjectAlloc, UntypedObjectAlloc};
 use self::util::list::*;
