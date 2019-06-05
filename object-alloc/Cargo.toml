@@ -7,7 +7,7 @@
 
 [package]
 name = "object-alloc"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 license = "Apache-2.0/MIT"
 description = "An object allocator trait for Rust."
