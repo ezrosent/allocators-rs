@@ -18,10 +18,12 @@ extern crate alloc;
 extern crate malloc_bind;
 #[cfg(feature = "c-api")]
 extern crate libc;
-use self::alloc::alloc::{Alloc, AllocErr, Layout};
+use self::alloc::alloc::{Alloc, AllocErr, Layout, GlobalAlloc};
 #[cfg(feature = "c-api")]
 use self::malloc_bind::{LayoutFinder, Malloc, MIN_ALIGN};
 use super::general::global;
+use std::ptr;
+use std::ptr::NonNull;
 use std::mem;
 #[cfg(feature = "c-api")]
 use std::intrinsics::unlikely;
@@ -34,23 +36,41 @@ use self::libc::{size_t, c_void};
 pub struct ElfMallocGlobal;
 
 unsafe impl<'a> Alloc for &'a ElfMallocGlobal {
-    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+    unsafe fn alloc(&mut self, l: Layout) -> Result<NonNull<u8>, AllocErr> {
         // All objects are only guaranteed to be word-aligned except for powers of two. Powers of
         // two up to 1MiB are aligned to their size. Past that size, only page-alignment is
         // guaranteed.
         if l.size().is_power_of_two() || l.align() <= mem::size_of::<usize>() {
-            Ok(global::alloc(l.size()))
+            Ok(NonNull::new_unchecked(global::alloc(l.size())))
         } else {
-            Ok(global::alloc(l.size().next_power_of_two()))
+            Ok(NonNull::new_unchecked(global::alloc(l.size().next_power_of_two())))
         }
     }
 
-    unsafe fn dealloc(&mut self, p: *mut u8, _l: Layout) {
-        global::free(p);
+    unsafe fn dealloc(&mut self, p: NonNull<u8>, _l: Layout) {
+        global::free(p.as_ptr());
     }
 
-    unsafe fn realloc(&mut self, p: *mut u8, _l1: Layout, l2: Layout) -> Result<*mut u8, AllocErr> {
-        Ok(global::aligned_realloc(p, l2.size(), l2.align()))
+    unsafe fn realloc(&mut self, p: NonNull<u8>, l1: Layout, size: usize) -> Result<NonNull<u8>, AllocErr> {
+        Ok(NonNull::new_unchecked(global::aligned_realloc(p.as_ptr(), size, l1.align())))
+    }
+}
+
+unsafe impl GlobalAlloc for ElfMallocGlobal {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        Alloc::alloc(&mut &*self, l)
+            .map(|p| p.as_ptr())
+            .unwrap_or(ptr::null_mut())
+    }
+
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        Alloc::dealloc(&mut &*self, NonNull::new_unchecked(p), l)
+    }
+
+    unsafe fn realloc(&self, p: *mut u8, l1: Layout, size: usize) -> *mut u8 {
+        Alloc::realloc(&mut &*self, NonNull::new_unchecked(p), l1, size)
+            .map(|p| p.as_ptr())
+            .unwrap_or(ptr::null_mut())
     }
 }
 

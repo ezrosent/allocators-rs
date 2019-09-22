@@ -406,6 +406,7 @@ mod magazine {
     //! because we implement the `Depot` using a `BagPipe`; as a result, the `Depot` should not be
     //! a source of contention except in the case where magazines are quite small.
 
+    use std::ptr::NonNull;
     use super::*;
     use super::super::bagpipe::bag::WeakBag;
     use super::super::bagpipe::{BagPipe, BagCleanup};
@@ -444,7 +445,7 @@ mod magazine {
             let n_pages = (bytes >> page_size.trailing_zeros()) + cmp::min(1, rem);
             let region_size = n_pages * page_size;
             alloc_debug_assert!(bytes <= region_size);
-            let mem = mmap::map(region_size) as *mut Magazine;
+            let mem = mmap::map(region_size).as_ptr() as *mut Magazine;
             ptr::write(
                 mem,
                 Magazine {
@@ -469,7 +470,7 @@ mod magazine {
         unsafe fn destroy(slf: *mut Magazine) {
             alloc_debug_assert_eq!(((*slf).base as *mut Magazine).offset(-1), slf);
             alloc_debug_assert_eq!(slf as usize % mmap::page_size(), 0);
-            mmap::unmap(slf as *mut u8, (*slf).mapped)
+            mmap::unmap(NonNull::new_unchecked(slf as *mut u8), (*slf).mapped)
         }
 
         fn push(&mut self, item: *mut u8) -> bool {

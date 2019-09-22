@@ -50,7 +50,8 @@
 //   - Corrollary: given an array of T, the offset of the ith element is just i * sizeof(T)
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(alloc, allocator_api)]
+#![feature(allocator_api)]
+#![feature(alloc_layout_extra)]
 #![cfg_attr(test, feature(test))]
 
 mod aligned;
@@ -149,7 +150,7 @@ impl<T, I: InitSystem> SlabAllocBuilder<T, I> {
         assert!(align <= mem::size_of::<T>());
         assert_eq!(mem::size_of::<T>() % align, 0);
         assert!(align <= *PAGE_SIZE);
-        self.layout = self.layout.align_to(align);
+        self.layout = self.layout.align_to(align).unwrap();
         self
     }
 
@@ -346,7 +347,7 @@ impl<I: InitSystem> UntypedSlabAllocBuilder<I> {
         assert!(align <= self.layout.size());
         assert_eq!(self.layout.size() % align, 0);
         assert!(align <= *PAGE_SIZE);
-        self.layout = self.layout.align_to(align);
+        self.layout = self.layout.align_to(align).unwrap();
         self
     }
 

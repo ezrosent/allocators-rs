@@ -5,7 +5,6 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#![feature(alloc)]
 #![feature(allocator_api)]
 #![feature(test)]
 

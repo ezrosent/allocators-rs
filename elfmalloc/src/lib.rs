@@ -5,16 +5,13 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#![feature(alloc)]
 #![feature(allocator_api)]
 #![cfg_attr(test, feature(test))]
-#![feature(thread_local_state)]
 #![feature(thread_local)]
 #![feature(const_fn)]
-#![feature(const_size_of)]
 #![feature(cfg_target_thread_local)]
 #![feature(core_intrinsics)]
-#![feature(const_ptr_null_mut)]
+#![feature(raw_vec_internals)]
 extern crate alloc;
 extern crate bagpipe;
 extern crate mmap_alloc;

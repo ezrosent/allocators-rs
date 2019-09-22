@@ -12,7 +12,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, feature(test))]
-#![feature(alloc, allocator_api)]
+#![feature(allocator_api)]
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("mmap-alloc only supports Windows, Linux, and Mac");

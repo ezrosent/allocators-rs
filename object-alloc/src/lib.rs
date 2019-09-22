@@ -6,7 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 #![no_std]
-#![feature(alloc, allocator_api)]
+#![feature(allocator_api)]
 #![feature(core_intrinsics)]
 
 extern crate alloc;
@@ -151,7 +151,7 @@ pub unsafe trait UntypedObjectAlloc {
     }
 }
 
-unsafe impl<T> UntypedObjectAlloc for ObjectAlloc<T> {
+unsafe impl<T> UntypedObjectAlloc for dyn ObjectAlloc<T> {
     fn layout(&self) -> Layout {
         // NOTE: This is safe because the layout method doesn't guarantee that it provides the most
         // specific layout, but rather simply that all objects returned from alloc are guaranteed

@@ -5,17 +5,16 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#![feature(alloc)]
 #![feature(allocator_api)]
 extern crate alloc;
 extern crate elfmalloc;
 extern crate num_cpus;
 use std::marker;
-use alloc::heap;
+use std::alloc::{Alloc, Layout};
 use std::mem;
 use std::thread;
 use std::time;
-use std::ptr::write_volatile;
+use std::ptr::{write_volatile, NonNull};
 
 // use elfmalloc::slag::{AllocBuilder, LocalAllocator, MagazineAllocator};
 // use elfmalloc::general::global;
@@ -69,8 +68,6 @@ impl<T> Clone for ElfGlobal<T> {
 }
 unsafe impl<T> Send for ElfGlobal<T> {}
 
-use alloc::allocator::{Alloc, Layout};
-
 impl<T: 'static> AllocLike for ElfGlobal<T> {
     type Item = T;
     fn create() -> Self {
@@ -78,12 +75,12 @@ impl<T: 'static> AllocLike for ElfGlobal<T> {
     }
 
     unsafe fn allocate(&mut self) -> *mut T {
-        (&ElfMallocGlobal{}).alloc(Layout::new::<T>()).unwrap() as *mut T
+        (&ElfMallocGlobal{}).alloc(Layout::new::<T>()).unwrap().as_ptr() as *mut T
         // global::alloc(mem::size_of::<T>()) as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        (&ElfMallocGlobal{}).dealloc(item as *mut u8, Layout::new::<T>())
+        (&ElfMallocGlobal{}).dealloc(NonNull::new_unchecked(item as *mut u8), Layout::new::<T>())
         // global::free(item as *mut u8)
     }
 
@@ -151,16 +148,15 @@ impl<T> AllocLike for DefaultMalloc<T> {
         DefaultMalloc(marker::PhantomData)
     }
     unsafe fn allocate(&mut self) -> *mut T {
-        use heap::{Alloc, Layout};
-        heap::Heap
-            .alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
-            .unwrap() as *mut T
+        use alloc::alloc::Global;
+        Global.alloc(Layout::from_size_align(mem::size_of::<T>(), 8).unwrap())
+            .unwrap().as_ptr() as *mut T
     }
 
     unsafe fn deallocate(&mut self, item: *mut T) {
-        use heap::{Alloc, Layout};
-        heap::Heap.dealloc(
-            item as *mut u8,
+        use alloc::alloc::Global;
+        Global.dealloc(
+            NonNull::new_unchecked(item as *mut u8),
             Layout::from_size_align(mem::size_of::<T>(), 8).unwrap(),
         );
     }

@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::mem;
+use std::ptr::NonNull;
 use super::utils::{likely, mmap};
 
 use alloc::alloc::{Alloc, Layout};
@@ -27,7 +28,7 @@ where
     ///
     /// Currently, there is code (see the `Coalescer` in the `slag` module) that relies on fresh
     /// pages returned from `carve` to be filled with zeros.
-    fn carve(&self, npages: usize) -> Option<*mut u8>;
+    fn carve(&self, npages: usize) -> Option<NonNull<u8>>;
 }
 
 /// A `MemorySource` that can tell which pointers lie in a region returned by `carve`.
@@ -54,7 +55,7 @@ impl MemorySource for MmapSource {
         self.page_size
     }
 
-    fn carve(&self, npages: usize) -> Option<*mut u8> {
+    fn carve(&self, npages: usize) -> Option<NonNull<u8>> {
         trace!("carve({:?})", npages);
         // Even if self.page_size is larger than the system page size, that's OK
         // because we're using mmap-alloc's large-align feature, which allows
@@ -74,7 +75,7 @@ struct MapAddr(*mut u8, usize);
 impl Drop for MapAddr {
     fn drop(&mut self) {
         unsafe {
-            mmap::unmap(self.0, self.1);
+            mmap::unmap(NonNull::new_unchecked(self.0), self.1);
         }
     }
 }
@@ -123,7 +124,7 @@ impl MemorySource for Creek {
         self.page_size
     }
 
-    fn carve(&self, npages: usize) -> Option<*mut u8> {
+    fn carve(&self, npages: usize) -> Option<NonNull<u8>> {
         check_bump!(self);
         unsafe {
             let new_bump = self.bump
@@ -132,7 +133,7 @@ impl MemorySource for Creek {
                 .unwrap()
                 .fetch_add(npages, Ordering::Relaxed);
             if likely((new_bump + npages) * self.page_size < self.map_info.1) {
-                Some(self.base.offset((new_bump * self.page_size) as isize))
+                Some(NonNull::new_unchecked(self.base.offset((new_bump * self.page_size) as isize)))
             } else {
                 None
             }
@@ -162,9 +163,9 @@ impl MemorySource for Creek {
         alloc_assert!(page_size.is_power_of_two());
         alloc_assert!(page_size > mem::size_of::<usize>());
         // first, let's grab some memory;
-        let (orig_base, heap_size) = get_heap();
+        let (mut orig_base, heap_size) = get_heap();
         info!("created heap of size {}", heap_size);
-        let orig_addr = orig_base as usize;
+        let orig_addr = orig_base.as_ptr() as usize;
         let (slush_addr, real_addr) = {
             // allocate some `slush` space at the beginning of the creek. This gives us space to
             // store the `bump` pointer. In the future, we may store more things in this slush
@@ -186,7 +187,7 @@ impl MemorySource for Creek {
         };
         Creek {
             page_size: page_size,
-            map_info: Arc::new(MapAddr(orig_base, heap_size)),
+            map_info: Arc::new(MapAddr(orig_base.as_ptr(), heap_size)),
             base: real_addr,
             bump: AtomicPtr::new(slush_addr as *mut AtomicUsize),
         }
