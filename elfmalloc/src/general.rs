@@ -768,7 +768,7 @@ impl<M: MemorySource, D: DirtyFn, AM: AllocMap<ObjectAlloc<PageAlloc<M, D>>, Key
         n_classes: usize,
     ) -> Self {
         use self::mmap::map;
-        let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes) as *mut Metadata;
+        let mut meta_pointer = map(mem::size_of::<Metadata>() * n_classes).as_ptr() as *mut Metadata;
         let small_page_size = pa_small.backing_memory().page_size();
         let am = AM::init(start_from, n_classes, |size: usize| {
             let (u_size, pa, ty) = if size < ELFMALLOC_SMALL_CUTOFF {
@@ -920,6 +920,7 @@ mod large_alloc {
     use std::cell::RefCell;
     use std::cmp;
     use std::ptr;
+    use std::ptr::NonNull;
     use super::super::sources::{MemorySource, MmapSource};
     use super::{ELFMALLOC_PAGE_SIZE, ELFMALLOC_SMALL_CUTOFF, round_to_page};
     use super::super::alloc_type::AllocType;
@@ -950,25 +951,24 @@ mod large_alloc {
         let src = MmapSource::new(ELFMALLOC_SMALL_CUTOFF);
         let n_pages = region_size / ELFMALLOC_SMALL_CUTOFF + cmp::min(1, region_size % ELFMALLOC_SMALL_CUTOFF);
         let mem = src.carve(n_pages).expect("[lage_alloc::alloc] mmap failed");
-        let res = mem.offset(ELFMALLOC_PAGE_SIZE as isize);
+        let res = mem.as_ptr().offset(ELFMALLOC_PAGE_SIZE as isize);
         let addr = get_commitment_mut(res);
         ptr::write(
             addr,
             AllocInfo {
                 ty: AllocType::Large,
-                base: mem,
+                base: mem.as_ptr(),
                 region_size: region_size,
             },
         );
 
         // begin extra debugging information
-        alloc_debug_assert!(!mem.is_null());
-        alloc_debug_assert_eq!(mem as usize % ELFMALLOC_SMALL_CUTOFF, 0);
+        alloc_debug_assert_eq!(mem.as_ptr() as usize % ELFMALLOC_SMALL_CUTOFF, 0);
         let upage: usize = 4096;
-        alloc_debug_assert_eq!(mem as usize % upage, 0);
+        alloc_debug_assert_eq!(mem.as_ptr() as usize % upage, 0);
         alloc_debug_assert_eq!(res as usize % upage, 0);
-        alloc_debug_assert_eq!(get_commitment(res), (size + ELFMALLOC_PAGE_SIZE, mem));
-        #[cfg(test)] SEEN_PTRS.try_with(|hs| hs.borrow_mut().insert(mem, region_size));
+        alloc_debug_assert_eq!(get_commitment(res), (size + ELFMALLOC_PAGE_SIZE, mem.as_ptr()));
+        #[cfg(test)] SEEN_PTRS.try_with(|hs| hs.borrow_mut().insert(mem.as_ptr(), region_size));
         // end extra debugging information
         res
     }
@@ -1006,7 +1006,7 @@ mod large_alloc {
             });
         }
         // end extra debugging information
-        unmap(base_ptr, size);
+        unmap(NonNull::new_unchecked(base_ptr), size);
     }
 
     pub unsafe fn get_size(item: *mut u8) -> usize {

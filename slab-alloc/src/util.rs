@@ -494,7 +494,7 @@ pub mod misc {
         if min_align <= layout.align() {
             layout
         } else if layout.size() % min_align == 0 {
-            layout.align_to(min_align)
+            layout.align_to(min_align).unwrap()
         } else {
             let remainder = layout.size() % min_align;
             Layout::from_size_align(layout.size() + min_align - remainder, min_align).unwrap()

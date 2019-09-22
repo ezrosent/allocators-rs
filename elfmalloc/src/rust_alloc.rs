@@ -87,6 +87,7 @@ use super::alloc_type::AllocType;
 use std::cmp;
 use std::mem;
 use std::ptr;
+use std::ptr::NonNull;
 
 /// A shared concurrent data-structure for caching large objects.
 ///
@@ -120,27 +121,27 @@ impl<M: MemorySource> PageSource<M> {
         }
     }
 
-    unsafe fn free(&mut self, p: *mut u8, old_size: usize) {
+    unsafe fn free(&mut self, p: NonNull<u8>, old_size: usize) {
         if self.pages.size_guess() >= self.target_size as isize {
             mmap::unmap(p, self.source.page_size());
             return;
         }
         if old_size >= self.cutoff_bytes {
             mmap::uncommit(
-                p.offset(self.cutoff_bytes as isize),
+                NonNull::new_unchecked(p.as_ptr().offset(self.cutoff_bytes as isize)),
                 self.source.page_size() - self.cutoff_bytes,
             );
         }
-        self.pages.push_mut(p);
+        self.pages.push_mut(p.as_ptr());
     }
 
-    unsafe fn alloc(&mut self) -> Option<*mut u8> {
-        self.pages.pop_mut().or_else(|| {
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
+        self.pages.pop_mut().map(|p| NonNull::new_unchecked(p)).or_else(|| {
             let npages = 4;
             self.source.carve(npages).and_then(|pages| {
                 for i in 1..npages {
                     let offset = (i * self.source.page_size()) as isize;
-                    self.pages.push_mut(pages.offset(offset));
+                    self.pages.push_mut(pages.as_ptr().offset(offset));
                 }
                 Some(pages)
             })
@@ -178,16 +179,16 @@ impl<M: MemorySource> PageFrontend<M> {
         }
     }
 
-    unsafe fn alloc(&mut self) -> Option<*mut u8> {
-        self.pages.pop_mut().or_else(|| self.parent.alloc())
+    unsafe fn alloc(&mut self) -> Option<NonNull<u8>> {
+        self.pages.pop_mut().map(|p| NonNull::new_unchecked(p)).or_else(|| self.parent.alloc())
     }
 
-    unsafe fn free(&mut self, item: *mut u8) {
+    unsafe fn free(&mut self, mut item: NonNull<u8>) {
         if self.pages.size_guess() >= self.max_overhead as isize {
             self.parent.free(item, self.local_size);
             return;
         }
-        self.pages.try_push_mut(item).unwrap_or_else(|_| {
+        self.pages.try_push_mut(item.as_mut()).unwrap_or_else(|_| {
             self.parent.free(item, self.local_size);
         })
     }
@@ -267,12 +268,12 @@ macro_rules! case_analyze {
 
 unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
     #[inline(always)]
-    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+    unsafe fn alloc(&mut self, l: Layout) -> Result<NonNull<u8>, AllocErr> {
         trace!("alloc({:?})", l);
         case_analyze!(
             self,
             l,
-            small Ok(
+            small Ok(NonNull::new_unchecked(
                 self.small
                     .get_mut(if l.align() > mem::size_of::<usize>() {
                         l.size().next_power_of_two()
@@ -280,20 +281,22 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
                         l.size()
                     })
                     .alloc(),
-            );
+            ));
             medium match self.large.get_mut(l.size()).alloc() {
                 Some(p) => Ok(p),
-                None => Err(AllocErr::Exhausted { request: l }),
+                None => Err(::std::alloc::AllocErr),
+                // None => Err(AllocErr::Exhausted { request: l }),
             };
             large match mmap::fallible_map(l.size()) {
                 Some(p) => Ok(p),
-                None => Err(AllocErr::Exhausted { request: l }),
+                None => Err(::std::alloc::AllocErr),
+                // None => Err(AllocErr::Exhausted { request: l }),
             };
         )
     }
 
     #[inline(always)]
-    unsafe fn dealloc(&mut self, item: *mut u8, l: Layout) {
+    unsafe fn dealloc(&mut self, mut item: NonNull<u8>, l: Layout) {
         trace!("dealloc({:?}, {:?})", item, l);
         case_analyze!(
             self,
@@ -303,7 +306,7 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
                     } else {
                         // round up to nearest MULTIPLE
                         (l.size() + (MULTIPLE - 1)) & !(MULTIPLE - 1)
-                    }).free(item);
+                    }).free(item.as_mut());
             medium self.large.get_mut(l.size()).free(item);
             large mmap::unmap(item, l.size());)
     }
@@ -328,11 +331,11 @@ unsafe impl<M: MemorySource> Alloc for ElfMalloc<M> {
 }
 
 unsafe impl<M: MemorySource> Alloc for OwnedElfMalloc<M> {
-    unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+    unsafe fn alloc(&mut self, l: Layout) -> Result<NonNull<u8>, AllocErr> {
         self.0.alloc(l)
     }
 
-    unsafe fn dealloc(&mut self, p: *mut u8, l: Layout) {
+    unsafe fn dealloc(&mut self, p: NonNull<u8>, l: Layout) {
         self.0.dealloc(p, l)
     }
 
@@ -401,7 +404,7 @@ impl ElfMallocBuilder {
         let pa = PageAlloc::<M>::new(self.page_size, self.target_pa_size, self.large_pipe_size, AllocType::SmallSlag);
         let n_small_classes = (self.page_size / 4) / MULTIPLE;
         alloc_assert!(n_small_classes > 0);
-        let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes) as
+        let mut meta_pointers = mmap::map(mem::size_of::<Metadata>() * n_small_classes).as_ptr() as
             *mut Metadata;
         let small_classes = Multiples::init(MULTIPLE, n_small_classes, |size: usize| {
             let meta = meta_pointers;
@@ -580,10 +583,10 @@ mod global {
     pub struct SharedAlloc;
 
     unsafe impl Alloc for SharedAlloc {
-        unsafe fn alloc(&mut self, l: Layout) -> Result<*mut u8, AllocErr> {
+        unsafe fn alloc(&mut self, l: Layout) -> Result<NonNull<u8>, AllocErr> {
             with_instance!(r_ptr, r_ptr.alloc(l))
         }
-        unsafe fn dealloc(&mut self, p: *mut u8, l: Layout) {
+        unsafe fn dealloc(&mut self, p: NonNull<u8>, l: Layout) {
             with_instance!(r_ptr, r_ptr.dealloc(p, l))
         }
         fn usable_size(&self, l: &Layout) -> (usize, usize) {
@@ -611,12 +614,12 @@ mod tests {
         unsafe {
             let mut ptrs = Vec::new();
             for l in &layouts {
-                let p = alloc.alloc(l.clone()).expect("alloc should not fail") as *mut usize;
+                let p = alloc.alloc(l.clone()).expect("alloc should not fail").as_ptr() as *mut usize;
                 ptr::write_volatile(p, !0);
                 ptrs.push(p);
             }
             for (ptr, l) in ptrs.into_iter().zip(layouts.into_iter()) {
-                alloc.dealloc(ptr as *mut u8, l);
+                alloc.dealloc(NonNull::new_unchecked(ptr as *mut u8), l);
             }
         }
     }
@@ -633,13 +636,13 @@ mod tests {
                 for _ in 0..2 {
                     let mut ptrs = Vec::new();
                     for l in &my_layouts {
-                        let p = my_alloc.alloc(l.clone()).expect("alloc should not fail") as
+                        let p = my_alloc.alloc(l.clone()).expect("alloc should not fail").as_ptr() as
                             *mut usize;
                         ptr::write_volatile(p, !0);
                         ptrs.push(p);
                     }
                     for (ptr, l) in ptrs.into_iter().zip(my_layouts.iter()) {
-                        my_alloc.dealloc(ptr as *mut u8, (*l).clone());
+                        my_alloc.dealloc(NonNull::new_unchecked(ptr as *mut u8), (*l).clone());
                     }
                 }
             }))

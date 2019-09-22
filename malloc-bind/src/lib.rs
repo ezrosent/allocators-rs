@@ -28,7 +28,6 @@
 
 #![no_std]
 #![feature(allocator_api)]
-#![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(const_fn)]
 

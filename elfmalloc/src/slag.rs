@@ -69,6 +69,7 @@ use super::alloc_type::AllocType;
 use super::sources::MemorySource;
 use std::marker::PhantomData;
 use std::ptr;
+use std::ptr::NonNull;
 use std::cmp;
 
 pub type SlagPipe<T> = BagPipe<FAAQueueLowLevel<*mut T>, PageCleanup<T>>;
@@ -87,7 +88,7 @@ impl<T> BagCleanup for PageCleanup<T> {
     type Item = *mut T;
     fn cleanup(&self, it: *mut T) {
         unsafe {
-            mmap::unmap(it as *mut u8, self.0);
+            mmap::unmap(NonNull::new_unchecked(it as *mut u8), self.0);
         }
     }
 }
@@ -108,7 +109,7 @@ where
     /// `c.backing_memory().contains(c.alloc())`*.
     ///
     /// *That is, if that code actually compiled and didn't have a lifetime issue.
-    unsafe fn alloc(&mut self) -> *mut u8;
+    unsafe fn alloc(&mut self) -> NonNull<u8>;
 
     /// Free a page of memory back to the allocator.
     ///
@@ -958,7 +959,7 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
     ///
     /// One of these pages is returned to the caller for allocation. The rest are added to the
     /// clean `BagPipe`.
-    fn refresh_pages(&mut self) -> *mut u8 {
+    fn refresh_pages(&mut self) -> NonNull<u8> {
         // If we are using a higher alignment, just allocate a single higher-aligned page. If not,
         // allocate two pages.
         let npages = cmp::max(self.pages_per, 2);
@@ -971,11 +972,11 @@ impl<C: MemorySource, D: DirtyFn> PageAlloc<C, D> {
         // unnecessary, but refresh_pages is not called in the hot path and the cost of writing
         // additional values is trivial compared with synchronization from the BagPipe. As such, it
         // makes sense to perform this write unconditionally.
-        unsafe { ptr::write(pages as *mut AllocType, self.ty) };
+        unsafe { ptr::write(pages.as_ptr() as *mut AllocType, self.ty) };
         let iter = (1..npages).map(|i| unsafe {
-            pages.offset(page_size as isize * (i as isize))
+            NonNull::new_unchecked(pages.as_ptr().offset(page_size as isize * (i as isize)))
         });
-        self.clean.bulk_add(iter);
+        self.clean.bulk_add(iter.map(|p| p.as_ptr()));
         pages
     }
 }
@@ -987,15 +988,15 @@ impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
         &self.creek
     }
 
-    unsafe fn alloc(&mut self) -> *mut u8 {
+    unsafe fn alloc(&mut self) -> NonNull<u8> {
         if let Ok(ptr) = self.dirty.try_pop_mut() {
             trace_event!(grabbed_dirty);
-            return ptr;
+            return NonNull::new_unchecked(ptr);
         }
         if let Ok(ptr) = self.clean.try_pop_mut() {
             trace_event!(grabbed_clean);
             D::dirty(ptr);
-            return ptr;
+            return NonNull::new_unchecked(ptr);
         }
         self.refresh_pages()
     }
@@ -1005,7 +1006,7 @@ impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
         use std::cmp;
         let minor_page_size = mmap::page_size() as isize;
         if self.dirty.size_guess() >= self.target_overhead as isize {
-            uncommit(ptr, self.backing_memory().page_size());
+            uncommit(NonNull::new_unchecked(ptr), self.backing_memory().page_size());
             self.clean.push_mut(ptr);
             return;
         }
@@ -1017,7 +1018,7 @@ impl<C: MemorySource, D: DirtyFn> CoarseAllocator for PageAlloc<C, D> {
             if uncommit_len == 0 {
                 self.dirty.push_mut(ptr);
             } else {
-                uncommit(ptr.offset(minor_page_size), uncommit_len);
+                uncommit(NonNull::new_unchecked(ptr.offset(minor_page_size)), uncommit_len);
                 self.dirty.push_mut(ptr);
             }
         } else {
@@ -1074,7 +1075,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
         mut pa: CA,
         avail: RevocablePipe<Slag>,
     ) -> Self {
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pa.alloc() }.as_ptr() as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
@@ -1104,7 +1105,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
             max_objects,
             AllocType::SmallSlag,
         )));
-        let first_slag = unsafe { pa.alloc() } as *mut Slag;
+        let first_slag = unsafe { pa.alloc() }.as_ptr() as *mut Slag;
         unsafe {
             Slag::init(first_slag, meta.as_ref().expect("metadata null"));
         };
@@ -1168,7 +1169,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
                     slab
                 }
                 Err(_) => {
-                    let new_raw = self.pages.alloc() as *mut Slag;
+                    let new_raw = self.pages.alloc().as_ptr() as *mut Slag;
                     if (*new_raw).meta.load(Ordering::Relaxed) != self.m {
                         Slag::init(new_raw, meta);
                     }
@@ -1262,7 +1263,7 @@ impl<CA: CoarseAllocator> SlagAllocator<CA> {
 impl<CA: CoarseAllocator> Clone for SlagAllocator<CA> {
     fn clone(&self) -> Self {
         let mut new_page_handle = self.pages.clone();
-        let first_slag = unsafe { new_page_handle.alloc() as *mut Slag };
+        let first_slag = unsafe { new_page_handle.alloc().as_ptr() as *mut Slag };
         unsafe {
             Slag::init(
                 first_slag,

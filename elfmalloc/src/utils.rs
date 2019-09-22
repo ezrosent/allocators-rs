@@ -7,10 +7,12 @@
 
 //! Some basic utilities used throughout the allocator code.
 use std::cmp;
+use std::ptr::NonNull;
 use std::ops::{Deref, DerefMut};
 use std::cell::UnsafeCell;
 
 pub mod mmap {
+    use std::ptr::NonNull;
     use mmap_alloc::{MapAlloc, MapAllocBuilder};
     use alloc::alloc::{Alloc, Layout};
 
@@ -24,23 +26,23 @@ pub mod mmap {
         ::sysconf::page::pagesize()
     }
 
-    pub fn map(size: usize) -> *mut u8 {
+    pub fn map(size: usize) -> NonNull<u8> {
         fallible_map(size).expect("mmap should not fail")
     }
 
-    pub fn fallible_map(size: usize) -> Option<*mut u8> {
+    pub fn fallible_map(size: usize) -> Option<NonNull<u8>> {
         unsafe { (&*MMAP).alloc(layout_for_size(size)).ok() }
     }
 
-    pub unsafe fn unmap(p: *mut u8, size: usize) {
+    pub unsafe fn unmap(p: NonNull<u8>, size: usize) {
         (&*MMAP).dealloc(p, layout_for_size(size));
     }
 
-    pub unsafe fn commit(p: *mut u8, size: usize) {
+    pub unsafe fn commit(p: NonNull<u8>, size: usize) {
         (&*MMAP).commit(p, layout_for_size(size))
     }
 
-    pub unsafe fn uncommit(p: *mut u8, size: usize) {
+    pub unsafe fn uncommit(p: NonNull<u8>, size: usize) {
         (&*MMAP).uncommit(p, layout_for_size(size));
     }
 
@@ -163,7 +165,7 @@ impl<T> TypedArray<T> {
         let region_size = n_pages * page_size;
         let mem = mmap::map(region_size);
         TypedArray {
-            data: mem as *mut T,
+            data: mem.as_ptr() as *mut T,
             len: size,
             mapped: region_size,
         }
@@ -187,7 +189,7 @@ impl<T> TypedArray<T> {
     }
 
     pub unsafe fn destroy(&self) {
-        mmap::unmap(self.data as *mut u8, self.mapped);
+        mmap::unmap(NonNull::new_unchecked(self.data as *mut u8), self.mapped);
     }
 }
 

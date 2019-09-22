@@ -7,7 +7,6 @@
 
 #![no_std]
 #![feature(allocator_api)]
-#![feature(alloc)]
 
 extern crate alloc;
 #[macro_use]

@@ -13,8 +13,7 @@
 
 extern crate smallvec;
 use self::smallvec::VecLike;
-use super::alloc::alloc::Alloc;
-use super::alloc::heap::Heap;
+use super::alloc::alloc::{Alloc, Global};
 use super::alloc::raw_vec::RawVec;
 use super::rust_alloc;
 use super::rust_alloc::{DynamicAlloc, SharedAlloc};
@@ -37,7 +36,7 @@ impl<T, A: Alloc> VecLike<T> for AVec<T, A> {
     #[inline]
     fn push(&mut self, val: T) {
         // borrowed from the RawVec docs
-        if self.len == self.buf.cap() {
+        if self.len == self.buf.capacity() {
             self.buf.double();
         }
         unsafe {
@@ -108,8 +107,8 @@ impl<T> Default for AVec<T, SharedAlloc> {
     }
 }
 
-impl<T> Default for AVec<T, Heap> {
-    fn default() -> AVec<T, Heap> {
+impl<T> Default for AVec<T, Global> {
+    fn default() -> AVec<T, Global> {
         AVec {
             buf: RawVec::new(),
             len: 0,
@@ -297,7 +296,7 @@ mod tests {
 
     #[bench]
     fn bench_push_avec_heap(b: &mut Bencher) {
-        bench_push::<AVec<usize, Heap>>(b);
+        bench_push::<AVec<usize, Global>>(b);
     }
 
     #[bench]
@@ -335,7 +334,7 @@ mod tests {
 
     #[bench]
     fn bench_push_nested_avec_heap(b: &mut Bencher) {
-        bench_push_nested::<AVec<usize, Heap>, AVec<AVec<usize, Heap>, Heap>>(b);
+        bench_push_nested::<AVec<usize, Global>, AVec<AVec<usize, Global>, Global>>(b);
     }
 
     #[bench]
@@ -378,7 +377,7 @@ mod tests {
 
     #[bench]
     fn bench_extend_avec_heap(b: &mut Bencher) {
-        bench_extend::<AVec<usize, Heap>>(b);
+        bench_extend::<AVec<usize, Global>>(b);
     }
 
     #[bench]

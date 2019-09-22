@@ -5,7 +5,6 @@
 // the MIT license (the LICENSE-MIT file) at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#![feature(alloc)]
 #![feature(log_syntax)]
 #![feature(allocator_api)]
 #![feature(test)]
@@ -17,7 +16,6 @@ extern crate test;
 use test::stats::Stats;
 use elfmalloc::rust_alloc::SharedAlloc;
 use elfmalloc::vec_alloc::AVec;
-use alloc::heap::Heap;
 use smallvec::VecLike;
 
 use std::thread;
@@ -163,14 +161,14 @@ macro_rules! bench_group {
                           _t,
                           1,
                           $iters,
-                          $fn::<AVec<_, Heap>>($param, _t));
+                          $fn::<AVec<_, ::alloc::alloc::Global>>($param, _t));
             create_bench!(v2n,
                           format!("{}_avec_heap", stringify!($name)),
                           $param ::: $pty = $pval,
                           _t,
                           num_cpus::get(),
                           $iters,
-                          $fn::<AVec<_, Heap>>($param, _t));
+                          $fn::<AVec<_, ::alloc::alloc::Global>>($param, _t));
             create_bench!(v3,
                           format!("{}_avec_elf", stringify!($name)),
                           $param ::: $pty = $pval,
