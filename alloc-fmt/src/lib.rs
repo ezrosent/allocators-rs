@@ -49,7 +49,7 @@ extern crate libc;
 extern crate spin;
 
 use core::fmt::{Arguments, Result as FmtResult, Write};
-use core::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT};
+use core::sync::atomic::{AtomicBool};
 use core::sync::atomic::Ordering::SeqCst;
 
 // Import items that macros need to reference. They will reference them as $crate::foo instead of
@@ -152,7 +152,7 @@ macro_rules! alloc_eprintln {
 // (essentially short-circuiting what would eventually happen if print_backtrace_and_abort
 // successfully finished executing).
 #[doc(hidden)]
-pub static IS_PANICKING: AtomicBool = ATOMIC_BOOL_INIT;
+pub static IS_PANICKING: AtomicBool = AtomicBool::new(false);
 
 #[macro_export]
 macro_rules! alloc_panic {
