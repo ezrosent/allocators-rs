@@ -7,12 +7,12 @@
 
 [package]
 name = "alloc-fmt"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Joshua Liebow-Feeser <hello@joshlf.com>"]
 license = "Apache-2.0/MIT"
 description = "Formatting utilities safe for use in an allocator."
 
-keywords = ["format", "print", "string", "assert", "panic", "allocator"]
+keywords = ["format", "print", "assert", "panic", "allocator"]
 categories = ["memory-management", "no-std"]
 
 readme = "README.md"
