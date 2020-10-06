@@ -11,14 +11,13 @@ set -x
 set -e
 
 travis-cargo --only nightly build
-# Use opt-level=3 because the corruption tests take a long time, and the
+# Use --release because the corruption tests take a long time, and the
 # optimized build saves more time in test execution than it adds in compilation
 # time.
 # TODO: Now that we have opt-level = 3 in the test profile in Cargo.toml,
 # is this necessary anymore?
-RUSTFLAGS='-C opt-level=3' RUST_BACKTRACE=1 travis-cargo --only nightly test
+RUST_BACKTRACE=1 travis-cargo --only nightly test -- --release
 # TODO: Once no-std and no-os work, add those features.
 for feature in build-ignored-tests use-stdlib-hashmap no-coloring hashmap-no-resize hashmap-no-coalesce; do
-  RUSTFLAGS='-C opt-level=3' RUST_BACKTRACE=1 travis-cargo --only nightly test -- \
-  --features "$feature"
+  RUST_BACKTRACE=1 travis-cargo --only nightly test -- --release --features "$feature"
 done
