@@ -11,6 +11,7 @@ rust:
   - nightly
   - beta
   - stable
+  - 1.13.0
 os:
   - linux
   - osx
@@ -38,6 +39,17 @@ script:
   - ./test-scripts/check-copyright-comments.sh
 
 env:
+  - ARCH=x86_64
+  - ARCH=i686
+
+script:
+  - cd */
+  - curl -sSL https://raw.githubusercontent.com/carllerche/travis-rust-matrix/master/test | bash
+
+env:
   global:
     # Override the default `--features unstable` used for the nightly branch
     - TRAVIS_CARGO_NIGHTLY_FEATURE=""
+  matrix:
+    - ARCH=x86_64
+    - ARCH=i686
